@@ -18,7 +18,12 @@ from akshara_vision.core.constants import (
 )
 from akshara_vision.core.env import env_status, load_env_files
 from akshara_vision.core.input_discovery import discover_inputs
-from akshara_vision.core.models import ModelSettings, RunRequest, WorkflowProfile
+from akshara_vision.core.models import (
+    ModelSettings,
+    RunRequest,
+    WorkflowProfile,
+    effective_translation_mode,
+)
 from akshara_vision.core.pipeline import find_executable, run_pipeline
 from akshara_vision.instructions import (
     DEFAULT_PRESET,
@@ -139,6 +144,20 @@ def _menu_command() -> str:
         "Clean local outputs": "/clean",
         "Exit": "/exit",
     }[action]
+
+
+def _translation_label(profile: WorkflowProfile) -> str:
+    mode = profile.normalized_translation_mode()
+    resolved = effective_translation_mode(
+        profile.source_language,
+        profile.output_language,
+        profile.translation_mode,
+    )
+    if mode == "auto":
+        return f"auto -> {resolved}"
+    if resolved != mode:
+        return f"{mode} -> {resolved}"
+    return mode
 
 
 def _dispatch_session_command(raw: str) -> bool:
@@ -353,11 +372,19 @@ def onboard(
     profile.name = ui.text("Profile name (Enter accepts default)", profile.name)
     profile.workflow = ui.choose("Workflow", WORKFLOWS, profile.workflow)
     profile.document_type = ui.choose("Document type", DOCUMENT_TYPES, profile.document_type)
-    profile.source_language = ui.text("Source language", profile.source_language)
-    profile.output_language = ui.text("Output language", profile.output_language)
+    profile.source_language = ui.text(
+        "Source language (for example: English, Hindi, Kannada)",
+        profile.source_language,
+    )
+    profile.output_language = ui.text(
+        "Output language (for example: English, Hindi, Kannada)",
+        profile.output_language,
+    )
+    ui.write("Translation will switch on automatically when the output language differs.")
     profile.translation_mode = ui.choose(
         "Translation mode",
         [
+            "auto",
             "off",
             "same-language-cleanup",
             "translate",
@@ -367,6 +394,7 @@ def onboard(
         ],
         profile.translation_mode,
     )
+    profile.sync_translation_defaults()
 
     profile.model = choose_model(profile.model)
     profile.model.execution_mode = ui.choose(
@@ -505,6 +533,7 @@ def execute_run(
     recursive: bool = False,
     dry_run: bool = False,
 ):
+    profile.sync_translation_defaults()
     input_values = list(inputs or [])
     if not input_values:
         entered = ui.text("Input files, folders, globs, or manifest paths")
@@ -538,6 +567,7 @@ def review_run(profile: WorkflowProfile, selection) -> None:
         ["Document type", profile.document_type],
         ["Source language", profile.source_language],
         ["Output language", profile.output_language],
+        ["Translation", _translation_label(profile)],
         ["Provider", profile.model.provider],
         ["Model", profile.model.model],
         ["Mode", profile.model.execution_mode],
@@ -583,6 +613,19 @@ def _finished_screen(result) -> None:
 
     usage = metadata.get("metadata", {}).get("usage") or metadata.get("usage") or {}
     truncated = usage.get("truncated", False)
+    run_metadata = metadata.get("metadata", {}) if isinstance(metadata.get("metadata"), dict) else {}
+    translation = run_metadata.get("translation") if isinstance(run_metadata.get("translation"), dict) else {}
+    restoration = run_metadata.get("restoration") if isinstance(run_metadata.get("restoration"), list) else []
+    issues = []
+
+    if truncated:
+        issues.append("model context or output limit reached")
+    if isinstance(translation, dict) and translation.get("failure_reason"):
+        issues.append(str(translation.get("failure_reason")))
+    for item in restoration:
+        if isinstance(item, dict) and item.get("failure_reason"):
+            issues.append(str(item.get("failure_reason")))
+    issues = list(dict.fromkeys(issue for issue in issues if issue))
 
     if truncated:
         ui.heading("Akshara Vision", "Finished (Truncated)")
@@ -599,6 +642,16 @@ def _finished_screen(result) -> None:
         ["Manifest", str(manifest_path)],
         ["Exports", str(len(exports))],
     ]
+    if isinstance(translation, dict):
+        rows.append(
+            [
+                "Translation",
+                f"{translation.get('mode', 'skipped')} -> {translation.get('resolved_mode', 'off')}",
+            ]
+        )
+        rows.append(["Output language", str(translation.get("output_language", ""))])
+    if issues:
+        rows.append(["Warnings", str(len(issues))])
 
     if usage and (usage.get("prompt_tokens") or usage.get("completion_tokens")):
         rows.append(["Input tokens", str(usage.get("prompt_tokens", 0))])
@@ -619,6 +672,10 @@ def _finished_screen(result) -> None:
                 for export in exports
             ]
         )
+    if issues:
+        ui.section("Issues")
+        for issue in issues:
+            ui.write(f"  {issue}")
     ui.section("Next")
     ui.table(
         [
@@ -777,7 +834,7 @@ def _list_profiles(store: ConfigStore, show_heading: bool = True) -> None:
         ui.write("No profiles yet. Choose Create new profile or run `akv i`.")
         return
     default_name = store.default_profile_name()
-    rows = [["Name", "Default", "Locked", "Provider", "Model", "Outputs"]]
+    rows = [["Name", "Default", "Locked", "Translation", "Provider", "Model", "Outputs"]]
     for profile_name in profiles:
         profile = store.load_profile(profile_name)
         rows.append(
@@ -785,6 +842,7 @@ def _list_profiles(store: ConfigStore, show_heading: bool = True) -> None:
                 profile.name,
                 "yes" if profile.name == default_name else "",
                 "yes" if profile.locked else "",
+                _translation_label(profile),
                 profile.model.provider,
                 profile.model.model,
                 ", ".join(profile.output_formats),
@@ -813,7 +871,7 @@ def _show_profile(profile: WorkflowProfile) -> None:
             ["Document type", profile.document_type],
             ["Source language", profile.source_language],
             ["Output language", profile.output_language],
-            ["Translation", profile.translation_mode],
+            ["Translation", _translation_label(profile)],
             ["Outputs", ", ".join(profile.output_formats)],
             ["Instruction", profile.instruction_preset],
             ["Output folder", profile.output_dir],
@@ -848,11 +906,19 @@ def _edit_profile_interactive(store: ConfigStore, name: str) -> None:
         profile.workflow = ui.choose("Workflow", WORKFLOWS, profile.workflow)
         profile.document_type = ui.choose("Document type", DOCUMENT_TYPES, profile.document_type)
     if section in {"Languages and translation", "Everything"}:
-        profile.source_language = ui.text("Source language", profile.source_language)
-        profile.output_language = ui.text("Output language", profile.output_language)
+        profile.source_language = ui.text(
+            "Source language (for example: English, Hindi, Kannada)",
+            profile.source_language,
+        )
+        profile.output_language = ui.text(
+            "Output language (for example: English, Hindi, Kannada)",
+            profile.output_language,
+        )
+        ui.write("Translation will switch on automatically when the output language differs.")
         profile.translation_mode = ui.choose(
             "Translation mode",
             [
+                "auto",
                 "off",
                 "same-language-cleanup",
                 "translate",
@@ -862,6 +928,7 @@ def _edit_profile_interactive(store: ConfigStore, name: str) -> None:
             ],
             profile.translation_mode,
         )
+        profile.sync_translation_defaults()
     if section in {"Model and limits", "Everything"}:
         profile.model = choose_model(profile.model)
         profile.model.execution_mode = ui.choose(

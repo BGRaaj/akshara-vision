@@ -10,8 +10,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-from akshara_vision.core.constants import EXECUTION_MODES
-from akshara_vision.core.models import RunRequest, WorkflowProfile
+from akshara_vision.core.constants import (
+    EXECUTION_MODES,
+    TRANSLATION_FAILURE_REASONS,
+)
+from akshara_vision.core.models import RunRequest, WorkflowProfile, effective_translation_mode
 from akshara_vision.exporters.base import ExportResult
 from akshara_vision.instructions import load_instruction
 from akshara_vision.registries.exporters import exporter_registry
@@ -44,6 +47,7 @@ def run_pipeline(
     request: RunRequest, progress: Optional[ProgressCallback] = None
 ) -> Dict[str, object]:
     profile = request.profile
+    profile.sync_translation_defaults()
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     output_root = Path(profile.output_dir).expanduser()
     run_dir = output_root / f"{profile.name}-{timestamp}"
@@ -120,6 +124,7 @@ def run_pipeline(
                 "source": _safe_path(path),
                 "status": restoration_record["status"],
                 "chunks": restoration_record["chunks"],
+                "failure_reason": restoration_record.get("failure_reason", ""),
             }
         )
         cleaned_parts.append(f"===== {path.name} =====\n{cleaned}".strip())
@@ -131,6 +136,17 @@ def run_pipeline(
     _notify(progress, "write", "Writing raw OCR text", advance=1)
     (run_dir / "raw_ocr.txt").write_text(raw_text, encoding="utf-8")
 
+    translation_result = _apply_translation_stage(
+        cleaned_text,
+        profile,
+        provider,
+        progress,
+    )
+    final_text = translation_result["text"]
+    translation_metadata = translation_result["metadata"]
+    translation_usage = translation_result["usage"]
+    _add_usage(translation_usage)
+
     metadata = {
         "title": f"Akshara Vision - {profile.name}",
         "created_at": timestamp,
@@ -139,10 +155,12 @@ def run_pipeline(
         "source_language": profile.source_language,
         "output_language": profile.output_language,
         "translation_mode": profile.translation_mode,
+        "translation_mode_effective": profile.effective_translation_mode(),
         "provider": profile.model.provider,
         "model": profile.model.model,
         "instruction_preset": profile.instruction_preset,
         "restoration": restoration_records,
+        "translation": translation_metadata,
         "inputs": [_safe_path(path) for path in request.inputs.files],
         "missing": request.inputs.missing,
         "unsupported": [_safe_path(path) for path in request.inputs.unsupported],
@@ -157,7 +175,7 @@ def run_pipeline(
         if exporter is None:
             continue
         _notify(progress, "export", f"Exporting {output_format}", advance=1)
-        exports.append(exporter.export(cleaned_text, destination, metadata))
+        exports.append(exporter.export(final_text, destination, metadata))
 
     _notify(progress, "manifest", "Writing run manifest", advance=1)
     profile_manifest = profile.to_dict()
@@ -223,6 +241,7 @@ def _restore_text(
         restored_text = parsed["restored_text"].strip()
         if not restored_text:
             restored_text = chunk.strip()
+            parsed["failure_reason"] = parsed["failure_reason"] or "source unreadable or too blurry"
         restored_chunks.append(restored_text)
         structured_chunks.append(
             {
@@ -232,12 +251,22 @@ def _restore_text(
                 "uncertain": parsed["uncertain"],
                 "notes": parsed["notes"],
                 "status": parsed["status"],
+                "failure_reason": parsed["failure_reason"],
             }
         )
     combined = "\n\n".join(part for part in restored_chunks if part.strip()).strip()
     if not combined:
         combined = "[missing text]"
-    return combined + "\n", {"status": "restored", "chunks": structured_chunks}, total_usage
+    file_failure_reason = next(
+        (chunk["failure_reason"] for chunk in structured_chunks if chunk.get("failure_reason")),
+        "",
+    )
+    file_status = "restored" if not file_failure_reason else "partial"
+    return (
+        combined + "\n",
+        {"status": file_status, "chunks": structured_chunks, "failure_reason": file_failure_reason},
+        total_usage,
+    )
 
 
 def _copy_source(path: Path, destination: Path, index: int) -> None:
@@ -332,11 +361,13 @@ def _parse_restoration_result(response: str, fallback_text: str) -> Dict[str, ob
             uncertain = data.get("uncertain") if isinstance(data.get("uncertain"), list) else []
             notes = str(data.get("notes") or "")
             status = str(data.get("status") or "restored")
+            failure_reason = str(data.get("failure_reason") or "").strip()
             return {
                 "restored_text": restored_text,
                 "uncertain": [str(item) for item in uncertain],
                 "notes": notes,
                 "status": status,
+                "failure_reason": failure_reason,
             }
     if _looks_like_meta_response(candidate):
         return {
@@ -344,12 +375,14 @@ def _parse_restoration_result(response: str, fallback_text: str) -> Dict[str, ob
             "uncertain": [],
             "notes": "fallback to source chunk because model returned commentary",
             "status": "fallback",
+            "failure_reason": "model returned commentary instead of output",
         }
     return {
         "restored_text": candidate,
         "uncertain": [],
         "notes": "",
         "status": "restored",
+        "failure_reason": "",
     }
 
 
@@ -473,7 +506,7 @@ def _task_text(raw_text: str, profile: WorkflowProfile) -> str:
         f"Document type: {profile.document_type}\n"
         f"Source language: {profile.source_language}\n"
         f"Output language: {profile.output_language}\n"
-        f"Translation mode: {profile.translation_mode}\n"
+        f"Translation mode: {profile.normalized_translation_mode()}\n"
         f"Execution mode: {execution_mode}\n\n"
     )
 
@@ -493,9 +526,10 @@ def _task_text(raw_text: str, profile: WorkflowProfile) -> str:
             context
             + "Look at the attached image carefully.\n"
             + depth_instruction
-            + "Extract ALL text visible in the image exactly as written.\n"
+            + "Restoration stage only: extract ALL text visible in the image exactly as written.\n"
             "Preserve the original language, script, spelling, line breaks, and formatting.\n"
             "If any words are unclear, mark them as [unclear].\n"
+            "Do not translate yet. Translation happens as a final stage after extraction.\n"
             "Return ONLY the extracted text. Do not add explanations, commentary, "
             "JSON formatting, code fences, or any other markup.\n"
             "If the image is completely unreadable, return only: [missing text]"
@@ -503,13 +537,17 @@ def _task_text(raw_text: str, profile: WorkflowProfile) -> str:
 
     # Text-chunk restoration prompt — strict JSON output.
     return (
-        "Return only a valid JSON object with keys restored_text, uncertain, and notes.\n"
+        "Return only a valid JSON object with keys restored_text, uncertain, notes, status, and failure_reason.\n"
         "restored_text must contain only the cleaned text for this chunk.\n"
         "uncertain must be an array of uncertain words or phrases.\n"
         "notes must be a short string or an empty string.\n"
+        "status must be restored, partial, fallback, or failed.\n"
+        "failure_reason must be one of: "
+        + ", ".join(TRANSLATION_FAILURE_REASONS)
+        + " or an empty string.\n"
         "Do not include markdown, code fences, or commentary.\n"
         "If the chunk is empty or unreadable, return "
-        '{"restored_text":"[missing text]","uncertain":[],"notes":"unreadable source"}.\n'
+        '{"restored_text":"[missing text]","uncertain":[],"notes":"unreadable source","status":"failed","failure_reason":"source unreadable or too blurry"}.\n'
         + context
         + "SOURCE CHUNK\n"
         + raw_text
@@ -531,12 +569,14 @@ def _restore_multimodal_image(
 
     # Try JSON parsing first (in case the model does return structured data).
     restored_text = _extract_multimodal_text(result)
+    failure_reason = ""
 
     if not restored_text:
         restored_text = "[missing text]"
+        failure_reason = _infer_failure_reason(result, usage, media_path=path)
 
     record = {
-        "status": "restored",
+        "status": "restored" if not failure_reason else "partial",
         "chunks": [
             {
                 "index": 1,
@@ -544,9 +584,11 @@ def _restore_multimodal_image(
                 "restored_text": restored_text,
                 "uncertain": [],
                 "notes": "",
-                "status": "restored",
+                "status": "restored" if failure_reason == "" else "partial",
+                "failure_reason": failure_reason,
             }
         ],
+        "failure_reason": failure_reason,
     }
     return restored_text + "\n", record, usage
 
@@ -596,6 +638,231 @@ def _extract_multimodal_text(response: str) -> str:
     ).strip()
 
     return cleaned
+
+
+def _infer_failure_reason(
+    response: str,
+    usage: Optional[dict] = None,
+    media_path: Optional[Path] = None,
+    exception: Optional[Exception] = None,
+) -> str:
+    if usage and usage.get("truncated"):
+        return "model context or output limit reached"
+
+    if exception is not None:
+        message = str(exception).lower()
+        if "timeout" in message:
+            return "provider timeout"
+        if "vision" in message or "image" in message or "support" in message:
+            return "model does not support the selected script or language"
+        if "connection" in message or "network" in message:
+            return "network or API error"
+        return "model returned malformed output"
+
+    if not response.strip():
+        if media_path is not None:
+            return "source unreadable or too blurry"
+        return "model returned malformed output"
+
+    if _looks_like_meta_response(response):
+        return "model returned malformed output"
+
+    return "source unreadable or too blurry"
+
+
+def _translation_instruction(profile: WorkflowProfile) -> str:
+    mode = effective_translation_mode(
+        profile.source_language,
+        profile.output_language,
+        profile.translation_mode,
+    )
+    return (
+        "You are performing the final translation stage for a restored historical document.\n"
+        f"Source language: {profile.source_language}\n"
+        f"Target language: {profile.output_language}\n"
+        f"Requested mode: {mode}\n"
+        "Translate only after restoration is complete.\n"
+        "Preserve names, dates, citations, paragraph breaks, headings, and page order.\n"
+        "Do not add commentary, explanations, summaries, or markdown fences.\n"
+        "Preserve [unclear] markers exactly as written.\n"
+        "Return only the translated text.\n"
+        "If the source and target languages are the same, return the cleaned text unchanged.\n"
+    )
+
+
+def _translation_prompt(chunk: str, profile: WorkflowProfile) -> str:
+    mode = effective_translation_mode(
+        profile.source_language,
+        profile.output_language,
+        profile.translation_mode,
+    )
+    if mode == "bilingual":
+        return (
+            "Return a valid JSON object with keys translated_text and notes.\n"
+            "translated_text must contain the translated version of the supplied restored text.\n"
+            "notes must be a short string or an empty string.\n"
+            "Do not add markdown fences or commentary.\n"
+            "SOURCE TEXT\n"
+            f"{chunk}"
+        )
+    return (
+        "Return a valid JSON object with keys translated_text and notes.\n"
+        "translated_text must contain only the translated text.\n"
+        "notes must be a short string or an empty string.\n"
+        "Do not add markdown fences or commentary.\n"
+        "SOURCE TEXT\n"
+        f"{chunk}"
+    )
+
+
+def _parse_translation_result(response: str, fallback_text: str) -> Dict[str, object]:
+    candidate = response.strip()
+    json_candidate = _extract_json_object(candidate)
+    if json_candidate:
+        try:
+            data = json.loads(json_candidate)
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict):
+            translated_text = str(
+                data.get("translated_text") or data.get("text") or data.get("output") or ""
+            ).strip()
+            notes = str(data.get("notes") or "")
+            status = str(data.get("status") or "translated")
+            failure_reason = str(data.get("failure_reason") or "").strip()
+            return {
+                "translated_text": translated_text,
+                "notes": notes,
+                "status": status,
+                "failure_reason": failure_reason,
+            }
+
+    if _looks_like_meta_response(candidate):
+        return {
+            "translated_text": fallback_text.strip(),
+            "notes": "fallback to source text because model returned commentary",
+            "status": "fallback",
+            "failure_reason": "model returned malformed output",
+        }
+
+    return {
+        "translated_text": candidate,
+        "notes": "",
+        "status": "translated",
+        "failure_reason": "",
+    }
+
+
+def _apply_translation_stage(
+    cleaned_text: str,
+    profile: WorkflowProfile,
+    provider,
+    progress: Optional[ProgressCallback] = None,
+) -> Dict[str, object]:
+    mode = effective_translation_mode(
+        profile.source_language,
+        profile.output_language,
+        profile.translation_mode,
+    )
+    if mode in {"off", "same-language-cleanup", "metadata-only"}:
+        return {
+            "text": cleaned_text,
+            "metadata": {
+                "status": "skipped",
+                "mode": mode,
+                "source_language": profile.source_language,
+                "output_language": profile.output_language,
+                "resolved_mode": mode,
+                "chunks": [],
+                "failure_reason": "",
+            },
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "truncated": False,
+            },
+        }
+
+    chunks = _split_text_chunks(cleaned_text)
+    translated_parts: List[str] = []
+    translation_chunks: List[Dict[str, object]] = []
+    total_usage = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "truncated": False,
+    }
+    translation_instruction = _translation_instruction(profile)
+
+    for index, chunk in enumerate(chunks, start=1):
+        _notify(progress, "translate", f"Translating text chunk {index}/{len(chunks)}", advance=1)
+        prompt = _translation_prompt(chunk, profile)
+        result, usage = provider.restore_text(prompt, translation_instruction, profile.model)
+        if usage:
+            total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
+            total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
+            total_usage["total_tokens"] += usage.get("total_tokens", 0)
+            if usage.get("truncated"):
+                total_usage["truncated"] = True
+
+        parsed = _parse_translation_result(result, chunk)
+        translated_text = parsed["translated_text"].strip()
+        if not translated_text:
+            translated_text = chunk.strip()
+            parsed["failure_reason"] = parsed["failure_reason"] or "model returned malformed output"
+        translated_parts.append(translated_text)
+        translation_chunks.append(
+            {
+                "index": index,
+                "input": _short_excerpt(chunk),
+                "translated_text": translated_text,
+                "notes": parsed["notes"],
+                "status": parsed["status"],
+                "failure_reason": parsed["failure_reason"],
+            }
+        )
+
+    translated_text = "\n\n".join(part for part in translated_parts if part.strip()).strip()
+    if not translated_text:
+        translated_text = cleaned_text.strip()
+
+    if mode == "bilingual":
+        final_text = (
+            "RESTORED SOURCE\n"
+            f"{cleaned_text.strip()}\n\n"
+            "TRANSLATION\n"
+            f"{translated_text}"
+        ).strip()
+    else:
+        final_text = translated_text
+
+    failure_reason = ""
+    if any(chunk.get("failure_reason") for chunk in translation_chunks):
+        failure_reason = next(
+            (str(chunk.get("failure_reason")) for chunk in translation_chunks if chunk.get("failure_reason")),
+            "",
+        )
+    if total_usage.get("truncated"):
+        failure_reason = "model context or output limit reached"
+
+    status = "translated"
+    if failure_reason:
+        status = "partial"
+
+    return {
+        "text": final_text + "\n",
+        "metadata": {
+            "status": status,
+            "mode": mode,
+            "source_language": profile.source_language,
+            "output_language": profile.output_language,
+            "resolved_mode": mode,
+            "chunks": translation_chunks,
+            "failure_reason": failure_reason,
+        },
+        "usage": total_usage,
+    }
 
 
 def _restore_multimodal_pdf(
@@ -662,8 +929,10 @@ def _restore_multimodal_pdf(
                 if usage.get("truncated"):
                     total_usage["truncated"] = True
             restored_text = _extract_multimodal_text(result)
+            failure_reason = ""
             if not restored_text:
                 restored_text = "[missing text]"
+                failure_reason = _infer_failure_reason(result, usage, media_path=page_img)
             restored_pages.append(restored_text)
             chunks_record.append(
                 {
@@ -672,12 +941,22 @@ def _restore_multimodal_pdf(
                     "restored_text": restored_text,
                     "uncertain": [],
                     "notes": "",
-                    "status": "restored",
+                    "status": "restored" if failure_reason == "" else "partial",
+                    "failure_reason": failure_reason,
                 }
             )
 
         combined = "\n\n".join(restored_pages) + "\n"
-        return combined, {"status": "restored", "chunks": chunks_record}, total_usage
+        file_failure_reason = next(
+            (chunk["failure_reason"] for chunk in chunks_record if chunk.get("failure_reason")),
+            "",
+        )
+        file_status = "restored" if not file_failure_reason else "partial"
+        return (
+            combined,
+            {"status": file_status, "chunks": chunks_record, "failure_reason": file_failure_reason},
+            total_usage,
+        )
     finally:
         temp_dir.cleanup()
 
@@ -770,8 +1049,10 @@ def _restore_multimodal_zip(
                     if usage.get("truncated"):
                         total_usage["truncated"] = True
                 restored_text = _extract_multimodal_text(result)
+                failure_reason = ""
                 if not restored_text:
                     restored_text = "[missing text]"
+                    failure_reason = _infer_failure_reason(result, usage, media_path=ext_file)
                 restored_parts.append(restored_text)
                 chunks_record.append(
                     {
@@ -780,12 +1061,22 @@ def _restore_multimodal_zip(
                         "restored_text": restored_text,
                         "uncertain": [],
                         "notes": "",
-                        "status": "restored",
+                        "status": "restored" if failure_reason == "" else "partial",
+                        "failure_reason": failure_reason,
                     }
                 )
                 chunk_idx += 1
 
         combined = "\n\n".join(restored_parts) + "\n"
-        return combined, {"status": "restored", "chunks": chunks_record}, total_usage
+        file_failure_reason = next(
+            (chunk["failure_reason"] for chunk in chunks_record if chunk.get("failure_reason")),
+            "",
+        )
+        file_status = "restored" if not file_failure_reason else "partial"
+        return (
+            combined,
+            {"status": file_status, "chunks": chunks_record, "failure_reason": file_failure_reason},
+            total_usage,
+        )
     finally:
         temp_dir.cleanup()

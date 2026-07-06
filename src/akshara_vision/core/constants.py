@@ -44,6 +44,26 @@ OUTPUT_FORMATS = {
 
 DEFAULT_OUTPUT_FORMATS = ["txt"]
 
+TRANSLATION_MODES = [
+    "auto",
+    "off",
+    "same-language-cleanup",
+    "translate",
+    "bilingual",
+    "transliterate",
+    "metadata-only",
+]
+
+TRANSLATION_FAILURE_REASONS = [
+    "source unreadable or too blurry",
+    "page rendering or OCR dependency missing",
+    "model context or output limit reached",
+    "provider timeout",
+    "model does not support the selected script or language",
+    "model returned malformed output",
+    "network or API error",
+]
+
 DOCUMENT_TYPES = [
     "Book",
     "Manuscript",

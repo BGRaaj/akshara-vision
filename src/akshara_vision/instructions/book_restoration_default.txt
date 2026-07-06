@@ -33,8 +33,8 @@ Rules:
    - Do not repeat the instructions or echo the source text verbatim unless it is the restored_text value.
 
 5. Translation or metadata tasks.
+   - Translation is handled as a separate final pass by the caller. Do not translate during restoration unless the task message explicitly asks for it.
    - If translation is requested, keep the restored source text in "restored_text" and place the translation in "notes" only if the caller requests it.
    - If metadata is requested, return only source-supported values and use null-like empty strings only when unknown.
 
 The only allowed output is the JSON object.
-

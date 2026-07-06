@@ -82,6 +82,15 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(prefs["density"], "compact")
             self.assertEqual(prefs["prompt"], "short")
 
+    def test_confirm_uses_default_without_terminal(self):
+        from akshara_vision.cli.ui import MonoUI
+
+        ui = MonoUI()
+        with patch("sys.stdin.isatty", return_value=False):
+            with patch("sys.stdout.isatty", return_value=False):
+                self.assertTrue(ui.confirm("Start this run?", True))
+                self.assertFalse(ui.confirm("Start this run?", False))
+
     def test_input_discovery_supports_text(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "sample.txt"
@@ -152,6 +161,64 @@ class CoreTests(unittest.TestCase):
             manifest = (run_dir / "run_manifest.json").read_text()
             self.assertIn("source.txt", manifest)
             self.assertNotIn(str(tmp_path), manifest)
+
+    def test_translation_auto_enables_when_output_language_differs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "source.txt"
+            source.write_text("hello world", encoding="utf-8")
+            profile = WorkflowProfile(
+                name="translate",
+                output_formats=["txt"],
+                output_dir=str(tmp_path / "out"),
+            )
+            profile.source_language = "en"
+            profile.output_language = "hi"
+            profile.translation_mode = "off"
+            selection = discover_inputs([str(source)])
+
+            class TranslationProvider:
+                name = "mock"
+
+                def restore_text(self, text, instruction, settings, media_path=None):
+                    del settings, media_path
+                    if "final translation stage" in instruction:
+                        return (
+                            '{"translated_text":"नमस्ते दुनिया","notes":"","status":"translated"}',
+                            {
+                                "prompt_tokens": 5,
+                                "completion_tokens": 7,
+                                "total_tokens": 12,
+                                "truncated": False,
+                            },
+                        )
+                    return (
+                        '{"restored_text":"hello world","uncertain":[],"notes":"","status":"restored","failure_reason":""}',
+                        {
+                            "prompt_tokens": 4,
+                            "completion_tokens": 6,
+                            "total_tokens": 10,
+                            "truncated": False,
+                        },
+                    )
+
+            with patch("akshara_vision.core.pipeline.get_provider", return_value=TranslationProvider()):
+                result = run_pipeline(RunRequest(profile=profile, inputs=selection))
+            run_dir = Path(result["run_dir"])
+            output_text = (run_dir / "akshara_output.txt").read_text(encoding="utf-8")
+            manifest = (run_dir / "run_manifest.json").read_text(encoding="utf-8")
+            self.assertEqual(profile.translation_mode, "auto")
+            self.assertIn("नमस्ते दुनिया", output_text)
+            self.assertIn('"resolved_mode": "translate"', manifest)
+            self.assertIn('"translation_mode_effective": "translate"', manifest)
+
+    def test_failure_reason_helper_reports_blurry_or_unreadable_source(self):
+        from akshara_vision.core.pipeline import _infer_failure_reason
+
+        self.assertEqual(
+            _infer_failure_reason("", {}, media_path=Path("scan.png")),
+            "source unreadable or too blurry",
+        )
 
     def test_pipeline_emits_progress_events(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
-from akshara_vision.core.constants import DEFAULT_OUTPUT_FORMATS
+from akshara_vision.core.constants import DEFAULT_OUTPUT_FORMATS, TRANSLATION_MODES
 
 
 @dataclass
@@ -23,7 +23,7 @@ class WorkflowProfile:
     document_type: str = "Book"
     source_language: str = "auto"
     output_language: str = "same"
-    translation_mode: str = "off"
+    translation_mode: str = "auto"
     output_formats: List[str] = field(default_factory=lambda: list(DEFAULT_OUTPUT_FORMATS))
     instruction_preset: str = "book_restoration_default"
     model: ModelSettings = field(default_factory=ModelSettings)
@@ -37,7 +37,7 @@ class WorkflowProfile:
             "document_type": self.document_type,
             "source_language": self.source_language,
             "output_language": self.output_language,
-            "translation_mode": self.translation_mode,
+            "translation_mode": self.normalized_translation_mode(),
             "output_formats": list(self.output_formats),
             "instruction_preset": self.instruction_preset,
             "locked": self.locked,
@@ -67,7 +67,7 @@ class WorkflowProfile:
             document_type=str(data.get("document_type") or "Book"),
             source_language=str(data.get("source_language") or "auto"),
             output_language=str(data.get("output_language") or "same"),
-            translation_mode=str(data.get("translation_mode") or "off"),
+            translation_mode=normalize_translation_mode(data.get("translation_mode")),
             output_formats=list(output_formats),
             instruction_preset=str(data.get("instruction_preset") or "book_restoration_default"),
             locked=bool(data.get("locked") or False),
@@ -87,6 +87,30 @@ class WorkflowProfile:
                 and str(model_data.get("generation_limit")).strip() not in {"", "None"}
                 else None,
             ),
+        )
+
+    def normalized_translation_mode(self) -> str:
+        return normalize_translation_mode(self.translation_mode)
+
+    def translation_required(self) -> bool:
+        return translation_required_for_languages(
+            self.source_language,
+            self.output_language,
+            self.normalized_translation_mode(),
+        )
+
+    def effective_translation_mode(self) -> str:
+        return effective_translation_mode(
+            self.source_language,
+            self.output_language,
+            self.normalized_translation_mode(),
+        )
+
+    def sync_translation_defaults(self) -> None:
+        self.translation_mode = normalized_profile_translation_mode(
+            self.source_language,
+            self.output_language,
+            self.normalized_translation_mode(),
         )
 
 
@@ -114,3 +138,69 @@ class RunRequest:
     inputs: InputSelection
     dry_run: bool = False
     resume: bool = True
+
+
+def normalize_translation_mode(value: object) -> str:
+    mode = str(value or "auto").strip().lower().replace("_", "-")
+    aliases = {
+        "on": "translate",
+        "yes": "translate",
+        "true": "translate",
+        "cleanup": "same-language-cleanup",
+        "same-language": "same-language-cleanup",
+        "same-language-cleanup": "same-language-cleanup",
+        "translit": "transliterate",
+        "transliteration": "transliterate",
+        "metadata": "metadata-only",
+        "metadata-only": "metadata-only",
+        "off": "off",
+        "auto": "auto",
+        "translate": "translate",
+        "bilingual": "bilingual",
+    }
+    mode = aliases.get(mode, mode)
+    return mode if mode in TRANSLATION_MODES else "auto"
+
+
+def _normalize_language(value: object) -> str:
+    language = str(value or "").strip().lower().replace("_", "-")
+    if not language:
+        return "auto"
+    return language
+
+
+def translation_required_for_languages(
+    source_language: object, output_language: object, translation_mode: object
+) -> bool:
+    mode = normalize_translation_mode(translation_mode)
+    if mode in {"off", "same-language-cleanup", "metadata-only"}:
+        return False
+    if mode in {"translate", "bilingual", "transliterate"}:
+        return True
+    source = _normalize_language(source_language)
+    target = _normalize_language(output_language)
+    if target in {"same", "auto"}:
+        return False
+    if source in {"auto", "unknown"}:
+        return True
+    return source != target
+
+
+def effective_translation_mode(
+    source_language: object, output_language: object, translation_mode: object
+) -> str:
+    mode = normalize_translation_mode(translation_mode)
+    if mode != "auto":
+        return mode
+    return "translate" if translation_required_for_languages(source_language, output_language, "auto") else "off"
+
+
+def normalized_profile_translation_mode(
+    source_language: object, output_language: object, translation_mode: object
+) -> str:
+    mode = normalize_translation_mode(translation_mode)
+    if mode == "off" and translation_required_for_languages(source_language, output_language, "auto"):
+        return "auto"
+    if mode == "auto" and not translation_required_for_languages(source_language, output_language, "auto"):
+        return "auto"
+    return mode

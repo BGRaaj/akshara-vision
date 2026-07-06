@@ -38,17 +38,23 @@ The onboarding flow creates a portable profile. A profile stores the default wor
 document type, languages, model provider, output formats, instruction preset,
 and output folder.
 
+Language fields accept full names or local labels such as `English`,
+`Hindi`, or `Kannada`, and matching is case-insensitive.
+
 Recommended first profile:
 
 - Workflow: `Full pipeline`
 - Document type: `Book`
 - Source language: `auto`
 - Output language: `same`
-- Translation mode: `off`
+- Translation mode: `auto`
 - Provider: `ollama` if installed, otherwise `mock`
 - Execution mode: `balanced`
 - Outputs: `txt`, `md`, `json`, `review`
 - Lock profile: yes
+
+`auto` means translation switches on when the output language differs from the
+source language.
 
 Once locked, run:
 

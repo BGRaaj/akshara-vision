@@ -1,170 +1,172 @@
-# Akshara Vision
-
-Akshara Vision is a local-first terminal app for OCR cleanup, model-assisted
-text restoration, optional translation prompts, and archival export workflows.
-
-It is built for keyboard-first work: interactive boards, dropdowns, checkboxes,
-profiles, local/cloud model setup, and clean run manifests.
-
-## Terminal Snapshot
-
 ```text
-============================================================================
-        _        _  __  _____  _   _       _       ____        _
-       / \      | |/ / / ___/ | | | |     / \     |  _ \      / \
-      / _ \     | ' /  \___ \ | |_| |    / _ \    | |_) |    / _ \
-     / ___ \    | . \   ___) ||  _  |   / ___ \   |  _ <    / ___ \
-    /_/   \_\   |_|\_\ |____/ |_| |_|  /_/   \_\  |_| \_\  /_/   \_\
-                              V I S I O N
-                              AKSHARA VISION
-                         Restore. Read. Preserve.
-============================================================================
-
-Board
------
-+-------------------------------+  +-------------------------------+
-| Run                           |  | Quick                         |
-| /run                          |  | /quick                        |
-| Full guided workflow          |  | Use saved defaults            |
-+-------------------------------+  +-------------------------------+
+=================================================================================
+                     _    _  __ ____  _   _    _    ____      _
+                    / \  | |/ // ___|| | | |  / \  |  _ \    / \
+                   / _ \ | ' / \___ \| |_| | / _ \ | |_) |  / _ \
+                  / ___ \| . \  ___) |  _  |/ ___ \|  _ <  / ___ \
+                 /_/   \_\_|\_\|____/|_| |_/_/   \_\_| \_\/_/   \_\
+                                              V I S I O N
+                                   AKSHARA VISION
+                              Restore. Read. Preserve.
+             Choose a workflow, inspect the plan, then run only when ready.
+=================================================================================
 ```
 
-Run progress and completion:
+Akshara Vision is a local-first terminal application for OCR cleanup,
+model-assisted book restoration, final-stage translation, batch processing, and
+archival exports.
 
-```text
-Working
--------
-  Run complete ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 10/10 0:00:00
+It is designed for keyboard-first archival work: guided onboarding, interactive
+menus, reusable profiles, model selection, API key checks, batch input discovery,
+transparent run manifests, and clean text-first outputs.
 
-============================================================================
-                               AKSHARA VISION
-                                  Finished
-============================================================================
-SUCCESS  Run completed.
+Accuracy, translation quality, and language coverage depend on the selected
+model, provider, scan quality, script complexity, and document damage.
 
-Output
-------
-Run folder  akshara-output/<profile-run>
-Manifest    akshara-output/<profile-run>/run_manifest.json
-Exports     1
-```
+## Features
+
+| Area | Support |
+| --- | --- |
+| Interactive CLI | Monochrome terminal UI, home board, dropdowns, checkboxes, confirmations, profile manager, model setup, doctor checks |
+| Restoration | Text cleanup, OCR error correction, uncertainty markers, chunked long-text processing, raw OCR preservation |
+| Vision input | Direct multimodal processing for scanned images and rendered PDF pages with vision-capable models |
+| Translation | Automatic final-pass translation when output language differs from source language; manual modes for translate, bilingual, transliterate, and metadata-only workflows |
+| Batch processing | Files, folders, recursive folders, globs, ZIP archives, CSV manifests, and JSON manifests |
+| Profiles | Portable TOML profiles with defaults for workflow, languages, translation mode, model, output formats, destination, and locked quick runs |
+| Models | Ollama, LM Studio, Jan, llama.cpp/OpenAI-compatible local servers, OpenAI, Anthropic, Gemini, and mock/offline preview |
+| Exports | Text, Markdown, HTML, DOCX, EPUB, JSON, JSONL, YAML, OCR sidecars, review files, and PDF request notes |
+| Auditability | Raw OCR file, copied source inputs, structured run manifest, model usage metadata, truncation warnings, and failure reasons |
 
 ## Install
 
-1. **Setup Virtual Environment and Python Dependencies**:
-
-   **macOS / Linux**:
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   python -m pip install -e .
-   ```
-
-   **Windows PowerShell**:
-   ```powershell
-   python -m venv .venv
-   Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
-   .\.venv\Scripts\Activate.ps1
-   python -m pip install -e .
-   ```
-
-2. **Install System Dependencies (Poppler)**:
-   ```bash
-   akv install
-   ```
-
-If the `akv` command is not recognized, you can run:
-```bash
-python -m akshara_vision install
-```
-
-## Start
+### macOS / Linux
 
 ```bash
-akshara
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+akv install
 ```
 
-The module entrypoint is also available anywhere the package is installed:
+### Windows PowerShell
+
+```powershell
+python -m venv .venv
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e .
+akv install
+```
+
+If the command is not on PATH yet, use the module entrypoint:
 
 ```bash
 python -m akshara_vision
+python -m akshara_vision install
+```
+
+## Quick Start
+
+```bash
+akshara
+akv i
+akv q examples/sample.txt
 ```
 
 Inside the interactive shell:
 
 ```text
 /menu
-/guide
-/mode
-/ui
-/env
-/models
+/run
 /quick examples/sample.txt --dry-run
+/batch path/to/folder
+/profiles
+/models
+/env
+/doctor
 /exit
 ```
 
-Onboarding looks like this:
+## Commands
 
-```text
-============================================================================
-                               AKSHARA VISION
-                                Onboarding
-============================================================================
-? Profile name default
-? Workflow Full pipeline
-? Document type Book
-? Source language auto
-? Output language same
-? Translation mode off
-? Model provider ollama / lm-studio / openai / gemini / mock
-? Execution mode balanced
-? Output formats txt, md, json, review
-? Lock this profile as the default quick-run workflow? Yes
-```
+| Command | Alias | Use |
+| --- | --- | --- |
+| `akshara` | `akv` | Open the interactive home screen |
+| `akshara init` | `akv i` | Guided onboarding and default profile creation |
+| `akshara run` | `akv r` | Guided full workflow |
+| `akshara quick` | `akv q` | Run with saved defaults |
+| `akshara batch` | `akv b` | Process folders, manifests, and mixed batches |
+| `akshara profile` | `akv p` | Create, modify, duplicate, delete, import, export, lock, or switch profiles |
+| `akshara model` | `akv m` | Detect, test, and choose local/cloud models |
+| `akshara instruct` | `akv ins` | View, edit, reset, or install editable instructions |
+| `akshara doctor` | `akv d` | Check dependencies, model providers, API keys, and export support |
+| `akshara export` | `akv x` | Re-export an existing run |
+| `akshara check` | `akv t` | Compile and run unit tests |
+| `akshara clean` | `akv clean` | Remove generated local artifacts |
 
-Execution mode changes how hard the pipeline works:
+## Supported Inputs
 
-| Mode | What it changes |
+| Type | Formats |
 | --- | --- |
-| `fast` | Uses lighter OCR defaults, shorter provider timeouts, and a more throughput-focused prompt. |
-| `balanced` | Keeps the default mix of speed and fidelity. |
-| `quality` | Uses heavier OCR defaults, longer provider timeouts, and a more fidelity-focused prompt. |
+| PDFs | `.pdf` |
+| Images | `.jpg`, `.jpeg`, `.png`, `.webp`, `.tif`, `.tiff`, `.bmp` |
+| Text/OCR | `.txt`, `.md`, `.html`, `.hocr`, `.xml`, `.json` |
+| Archives | `.zip` |
+| Manifests | `.csv`, `.manifest.json`, JSON files with `inputs` or `files` |
+| Selection | Single files, multiple paths, folders, recursive folders, and glob patterns |
 
-Restoration now asks the model for a JSON object with `restored_text`, `uncertain`, and
-`notes`, then extracts the cleaned text for the text-based outputs. Long inputs are split
-into smaller restoration chunks so the model works on smaller batches instead of one huge
-prompt.
+Mixed batches are supported. Akshara Vision detects each file type and records
+missing or unsupported inputs in the run manifest.
 
-Progress shown during a run is timer-based and indeterminate. You will see the active
-step and elapsed time, not a fabricated percentage or word count.
+## Supported Outputs
 
-## Common Commands
-
-| Command | Use |
+| Type | Formats |
 | --- | --- |
-| `akv i` | Onboard and create defaults |
-| `akv setup` | Install system dependencies (Poppler) |
-| `akv r <input>` | Guided run |
-| `akv q <input>` | Quick run with defaults |
-| `akv b <folder>` | Batch process |
-| `akv p` | Open profile manager |
-| `akv m setup` | Choose and save a model |
-| `akv env` | Show API key and endpoint setup |
-| `akv d` | Check OCR tools and models |
-| `akv install` | Install/check PDF rendering dependencies |
-| `akv check` / `akv t` | Compile and run unit tests |
-| `akv clean` | Remove generated local artifacts |
+| Default | Clean copy-paste `.txt` |
+| Publishing | `.md`, `.html`, `.docx`, `.epub` |
+| Structured | `.json`, `.jsonl`, `.yaml` |
+| OCR sidecars | `.hocr`, `.alto.xml`, `.page.xml` sidecar placeholders with restored text |
+| Review | `.review.md`, `raw_ocr.txt`, copied source files, `run_manifest.json` |
+| PDF requests | `.searchable-pdf.txt`, `.image-pdf.txt` notes when optional PDF assembly dependencies are not available |
+
+The `.txt` export is the primary default. Structured exports include metadata
+for inputs, provider, model, workflow, translation state, usage, restoration
+chunks, uncertainty notes, and failure reasons.
+
+## Translation
+
+Translation runs after extraction and restoration are complete. This keeps the
+first pass focused on faithfully reading the source and uses the model only once
+the cleaned text is available.
+
+Translation modes:
+
+| Mode | Behavior |
+| --- | --- |
+| `auto` | Translates when output language differs from source language |
+| `off` | Keeps restored source text only |
+| `translate` | Outputs translated text |
+| `bilingual` | Outputs restored source text followed by translation |
+| `transliterate` | Keeps the meaning and asks the model to rewrite the text in another script |
+| `metadata-only` | Skips translation and focuses on extracted metadata and audit fields |
+| `same-language-cleanup` | Cleans the source text without changing its language |
+
+If a profile has `source_language = English`, `output_language = Hindi`, and translation
+is `auto` or `off`, the CLI resolves it as `auto -> translate` before the run.
+
+Language fields accept full names or local labels such as `English`,
+`Hindi`, or `Kannada`, and the match is case-insensitive.
 
 ## Models And API Keys
 
-Local-first options:
+Local-first providers:
 
 - Ollama
 - LM Studio
 - Jan
 - llama.cpp/OpenAI-compatible servers
 
-Cloud options:
+Cloud providers:
 
 - OpenAI
 - Anthropic
@@ -186,63 +188,85 @@ AKSHARA_OPENAI_COMPATIBLE_BASE_URL=http://localhost:1234/v1
 AKSHARA_OPENAI_COMPATIBLE_API_KEY=
 ```
 
-Secrets are read from the shell or `.env`; they are not saved to profiles or manifests.
-
-### Multimodal Vision Models
-
-Akshara Vision supports handing over raw document page files directly to multimodal/vision-capable LLMs. Pages are analyzed visually by the LLM instead of converting them via local command-line OCR tools.
-
-To run page-by-page PDF analysis in multimodal mode, make sure system dependencies are installed and configured via:
-```bash
-akv install
-```
+Secrets are read from the shell or `.env`; they are not saved to profiles or
+run manifests.
 
 Recommended vision-capable models include:
-- **Ollama / Local**: `gemma4:12b`, `qwen3.6:27b`, `qwen3.5:4b`, `llama3.2-vision:11b`
-- **LM Studio / Jan**: GGUF variants of Llama 3.2 Vision, Qwen 3.6, Qwen 3.5, or Gemma 4
-- **Gemini (Cloud)**: `gemini-3.5-flash`, `gemini-3.5-pro`, `gemini-3.1-flash-lite`
-- **OpenAI (Cloud)**: `gpt-5.5`, `gpt-5.4`
-- **Anthropic (Cloud)**: `claude-sonnet-5`, `claude-fable-5`
 
-The CLI detects local models where possible and also lets you enter a custom model id.
+| Provider | Models |
+| --- | --- |
+| Ollama / Local | `gemma4:12b`, `qwen3.6:27b`, `qwen3.5:4b`, `llama3.2-vision:11b` |
+| LM Studio / Jan | GGUF variants of Gemma 4, Qwen 3.6, Qwen 3.5, or Llama 3.2 Vision |
+| Gemini | `gemini-3.5-flash`, `gemini-3.5-pro`, `gemini-3.1-flash-lite` |
+| OpenAI | `gpt-5.5`, `gpt-5.4` |
+| Anthropic | `claude-sonnet-5`, `claude-fable-5` |
 
-If a selected model does not support image or PDF vision inputs, the pipeline will immediately fail-safe with a clear explanation, avoiding corrupted or silently failed output text.
+For scanned images and PDFs, choose a vision-capable model. If the selected
+model does not support image input, the pipeline fails with a clear explanation
+instead of silently writing corrupted output.
 
-Accuracy still depends on the selected model, scan quality, script complexity, and
-page damage. Akshara Vision preserves the workflow, prompts, manifests, and exports;
-it does not guarantee that a model transcription is correct.
+## Profiles
 
-### Context Window & Token Limits
+Profiles are portable TOML files stored in the Akshara Vision config directory.
+They can be created, modified, duplicated, deleted, exported, imported, locked,
+and used as the default quick-run workflow.
 
-To prevent model truncation during deep reasoning or manuscript transcription:
-- **Context Size (`num_ctx`):** A minimum of **16,384 tokens** is required to accommodate system prompts, page content, and image embeddings.
-- **Generation Limit (`num_predict` / `max_tokens`):** Akshara Vision now scales output up to a hard limit of **16,384 tokens** for local and compatible providers.
-- If a completion is still truncated due to model/runtime constraints, the tool reports a warning at the end of the run for full transparency. Increase the model context window or split the input into smaller pages if needed.
+A profile stores:
 
-## Inputs And Outputs
+- Workflow and document type
+- Source and output languages
+- Translation mode
+- Provider, model, endpoint, execution mode, context window, and generation limit
+- Output formats and destination folder
+- Instruction preset
+- Lock/default status
 
-Inputs: PDFs, images, text/OCR files, ZIP archives, folders, globs, CSV manifests,
-and JSON manifests.
+## Execution Modes
 
-Default output: clean `.txt`.
+| Mode | Behavior |
+| --- | --- |
+| `fast` | Shorter provider timeout and faster extraction prompt |
+| `balanced` | Default balance between speed and fidelity |
+| `quality` | Longer provider timeout and more careful extraction prompt |
 
-Optional outputs: Markdown, HTML, DOCX, EPUB, JSON, JSONL, YAML, hOCR, ALTO XML,
-PAGE XML, review files, and run manifests.
+Akshara Vision requests up to 16,384 output tokens for compatible local and
+OpenAI-compatible providers. If a model still truncates output, the run finishes
+with a visible warning and records the reason in the manifest.
 
-JSON output includes the structured restoration metadata from the run, including chunk
-records and uncertainty notes.
+## Run Artifacts
 
-Note: PDF rendering for multimodal mode depends on local tools such as `pdftoppm`.
+Each run writes a timestamped folder under the configured output directory.
 
-The active execution mode affects prompting depth and model timeouts, but it does not change
-your selected input files or output formats.
+Typical files:
 
-## Test
+- `akshara_output.txt`
+- `raw_ocr.txt`
+- `run_manifest.json`
+- `sources/`
+- Any selected additional exports
+
+The manifest is the source of truth for audit data: selected profile, inputs,
+missing files, unsupported files, provider, model, instruction preset,
+translation status, token usage, restoration chunks, warnings, and exported
+file paths.
+
+## Development
 
 ```bash
 akv check
 akv q examples/sample.txt --dry-run
+python -m compileall src tests
 ```
 
-`compileall` is a Python module, so run it directly as `python -m compileall` if
-you need the raw command. For normal project checks, use `akv check`.
+`compileall` is a Python module, so run it as `python -m compileall`. For normal
+project checks, use `akv check`.
+
+## Notes
+
+- PDF page rendering for multimodal processing depends on Poppler `pdftoppm`.
+- Native searchable/image PDF assembly is represented by explicit request-note
+  files unless optional PDF assembly support is added.
+- OCR sidecar exports are portable placeholders containing restored text until a
+  dedicated OCR layout engine writes native layout data.
+- Model output should be reviewed before publication, especially for damaged
+  pages, rare scripts, tables, handwriting, or translated passages.

@@ -1,4 +1,5 @@
 import shutil
+import sys
 import time
 import textwrap
 from typing import Iterable, List, Optional
@@ -137,10 +138,13 @@ class MonoUI:
             return "akshara"
         return "akv" if self.width() < 72 else "akshara"
 
+    def interactive(self) -> bool:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+
     def choose(self, message: str, choices: List[str], default: Optional[str] = None) -> str:
         if not choices:
             raise ValueError("choose requires at least one choice")
-        if inquirer:
+        if inquirer and self.interactive():
             return str(
                 inquirer.select(
                     message=message, choices=choices, default=default or choices[0]
@@ -161,7 +165,7 @@ class MonoUI:
         self, message: str, choices: List[str], default: Optional[List[str]] = None
     ) -> List[str]:
         default = default or []
-        if inquirer:
+        if inquirer and self.interactive():
             return list(
                 inquirer.checkbox(message=message, choices=choices, default=default).execute()
             )
@@ -183,16 +187,19 @@ class MonoUI:
         return selected or default or [choices[0]]
 
     def text(self, message: str, default: str = "") -> str:
-        if inquirer:
+        if inquirer and self.interactive():
             return str(inquirer.text(message=message, default=default).execute())
         suffix = f" [{default}]" if default else ""
         raw = input(f"{message}{suffix}: ").strip()
         return raw or default
 
     def confirm(self, message: str, default: bool = True) -> bool:
-        if inquirer:
+        if inquirer and self.interactive():
             return bool(inquirer.confirm(message=message, default=default).execute())
         suffix = "Y/n" if default else "y/N"
+        if not self.interactive():
+            self.write(f"{message} ({suffix}): {'yes' if default else 'no'}")
+            return default
         raw = input(f"{message} ({suffix}): ").strip().lower()
         if not raw:
             return default

@@ -94,13 +94,18 @@ Akshara Vision detects local models where a runtime exposes them and also offers
 a custom model-id entry so profiles can track the model names used by your local
 server or cloud account.
 
+Translation is a separate final stage after extraction. The selected model still
+determines how well the tool handles the source script, target language, and
+long-form output.
+
 ### Safe Handling of Incompatible Models
 If you point it at a text-only model while trying to process an image or PDF, the
 provider client will catch common incompatibility errors and fail-safe with a clear
 message. This prevents silent failures or corrupted outputs.
 
 Model predictions are still model predictions: review output before publishing,
-especially for damaged pages, rare scripts, tables, and handwritten material.
+especially for damaged pages, rare scripts, tables, handwriting, or translated
+passages that use unfamiliar terminology.
 
 ### Context Window & Token Limits
 
