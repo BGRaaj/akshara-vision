@@ -1,4 +1,5 @@
 import shutil
+import time
 import textwrap
 from typing import Iterable, List, Optional
 
@@ -14,7 +15,7 @@ except ModuleNotFoundError:  # pragma: no cover - dependency fallback
     Console = None
 
 try:
-    from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn  # type: ignore
+    from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover - dependency fallback
     Progress = None
 
@@ -182,49 +183,47 @@ class MonoUI:
             return default
         return raw in {"y", "yes", "true", "1"}
 
-    def progress(self, title: str, total: int):
-        return ProgressReporter(self, title, total)
+    def progress(self, title: str, total: int = 0):
+        return ProgressReporter(self, title)
 
 
 ui = MonoUI()
 
 
 class ProgressReporter:
-    def __init__(self, ui_instance: MonoUI, title: str, total: int) -> None:
+    def __init__(self, ui_instance: MonoUI, title: str) -> None:
         self.ui = ui_instance
         self.title = title
-        self.total = max(total, 1)
-        self.current = 0
         self._progress = None
         self._task = None
+        self._started_at = 0.0
 
     def __enter__(self):
+        self._started_at = time.monotonic()
         if Progress and self.ui.console:
             self._progress = Progress(
                 SpinnerColumn(),
                 TextColumn("{task.description}"),
-                BarColumn(bar_width=None),
-                TextColumn("{task.completed}/{task.total}"),
                 TimeElapsedColumn(),
                 console=self.ui.console,
                 transient=False,
             )
             self._progress.__enter__()
-            self._task = self._progress.add_task(self.title, total=self.total)
+            self._task = self._progress.add_task(self.title)
         else:
             self.ui.section(self.title)
         return self
 
     def update(self, message: str, advance: int = 1) -> None:
-        self.current = min(self.current + advance, self.total)
+        del advance
         if self._progress is not None and self._task is not None:
-            self._progress.update(self._task, description=message, completed=self.current)
+            self._progress.update(self._task, description=message)
         else:
-            self.ui.write(f"[{self.current}/{self.total}] {message}")
+            elapsed = max(time.monotonic() - self._started_at, 0.0)
+            self.ui.write(f"[{elapsed:0.1f}s] {message}")
 
     def finish(self, message: str = "Complete") -> None:
-        if self.current < self.total:
-            self.update(message, self.total - self.current)
+        self.update(message)
 
     def __exit__(self, exc_type, exc, tb):
         if exc_type is None:

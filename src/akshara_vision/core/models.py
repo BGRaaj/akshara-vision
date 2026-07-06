@@ -11,6 +11,9 @@ class ModelSettings:
     model: str = "offline-restoration-preview"
     endpoint: Optional[str] = None
     temperature: float = 0.1
+    execution_mode: str = "balanced"
+    context_window: Optional[int] = None
+    generation_limit: Optional[int] = None
 
 
 @dataclass
@@ -21,7 +24,6 @@ class WorkflowProfile:
     source_language: str = "auto"
     output_language: str = "same"
     translation_mode: str = "off"
-    ocr_mode: str = "auto"
     output_formats: List[str] = field(default_factory=lambda: list(DEFAULT_OUTPUT_FORMATS))
     instruction_preset: str = "book_restoration_default"
     model: ModelSettings = field(default_factory=ModelSettings)
@@ -36,7 +38,6 @@ class WorkflowProfile:
             "source_language": self.source_language,
             "output_language": self.output_language,
             "translation_mode": self.translation_mode,
-            "ocr_mode": self.ocr_mode,
             "output_formats": list(self.output_formats),
             "instruction_preset": self.instruction_preset,
             "locked": self.locked,
@@ -46,6 +47,9 @@ class WorkflowProfile:
                 "model": self.model.model,
                 "endpoint": self.model.endpoint or "",
                 "temperature": self.model.temperature,
+                "execution_mode": self.model.execution_mode,
+                "context_window": self.model.context_window,
+                "generation_limit": self.model.generation_limit,
             },
         }
 
@@ -64,7 +68,6 @@ class WorkflowProfile:
             source_language=str(data.get("source_language") or "auto"),
             output_language=str(data.get("output_language") or "same"),
             translation_mode=str(data.get("translation_mode") or "off"),
-            ocr_mode=str(data.get("ocr_mode") or "auto"),
             output_formats=list(output_formats),
             instruction_preset=str(data.get("instruction_preset") or "book_restoration_default"),
             locked=bool(data.get("locked") or False),
@@ -74,6 +77,9 @@ class WorkflowProfile:
                 model=str(model_data.get("model") or "offline-restoration-preview"),
                 endpoint=str(model_data.get("endpoint") or "") or None,
                 temperature=float(model_data.get("temperature") or 0.1),
+                execution_mode=str(model_data.get("execution_mode") or "balanced"),
+                context_window=int(model_data.get("context_window")) if model_data.get("context_window") is not None and str(model_data.get("context_window")).strip() not in {"", "None"} else None,
+                generation_limit=int(model_data.get("generation_limit")) if model_data.get("generation_limit") is not None and str(model_data.get("generation_limit")).strip() not in {"", "None"} else None,
             ),
         )
 
@@ -102,4 +108,3 @@ class RunRequest:
     inputs: InputSelection
     dry_run: bool = False
     resume: bool = True
-

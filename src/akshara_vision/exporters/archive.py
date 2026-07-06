@@ -38,7 +38,6 @@ class ReviewExporter:
             "",
             f"- Workflow: {metadata.get('workflow')}",
             f"- Document type: {metadata.get('document_type')}",
-            f"- OCR mode: {metadata.get('ocr_mode')}",
             f"- Provider: {metadata.get('provider')}",
             f"- Model: {metadata.get('model')}",
             "",

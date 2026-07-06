@@ -64,13 +64,11 @@ WORKFLOWS = [
     "Custom",
 ]
 
-OCR_MODES = [
-    "auto",
-    "pdf-text",
-    "force-ocr",
-    "hybrid",
-    "images-only",
-    "text-cleanup-only",
+
+EXECUTION_MODES = [
+    "fast",
+    "balanced",
+    "quality",
 ]
 
 PROVIDER_TYPES = [

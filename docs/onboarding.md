@@ -29,12 +29,13 @@ akshara
 ```text
 /menu
 /guide
+/mode
 /ui
 /env
 ```
 
 The onboarding flow creates a portable profile. A profile stores the default workflow,
-document type, OCR mode, languages, model provider, output formats, instruction preset,
+document type, languages, model provider, output formats, instruction preset,
 and output folder.
 
 Recommended first profile:
@@ -44,8 +45,8 @@ Recommended first profile:
 - Source language: `auto`
 - Output language: `same`
 - Translation mode: `off`
-- OCR mode: `auto`
 - Provider: `ollama` if installed, otherwise `mock`
+- Execution mode: `balanced`
 - Outputs: `txt`, `md`, `json`, `review`
 - Lock profile: yes
 
@@ -56,3 +57,6 @@ akv q path/to/book.pdf
 ```
 
 Quick run asks only for inputs and uses the saved defaults.
+
+Use `/mode` later if you want to switch between faster prompting execution,
+balanced defaults, or the slower quality-focused analysis path.

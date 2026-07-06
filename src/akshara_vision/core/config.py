@@ -46,6 +46,21 @@ class ConfigStore:
             self.set_default_profile(profile.name)
         return path
 
+    def profile_exists(self, name: str) -> bool:
+        self.ensure()
+        return self.profile_path(name).exists()
+
+    def delete_profile(self, name: str) -> bool:
+        self.ensure()
+        path = self.profile_path(name)
+        if not path.exists():
+            return False
+        path.unlink()
+        if self.default_profile_name() == name:
+            remaining = self.list_profiles()
+            self.set_default_profile(remaining[0] if remaining else "default")
+        return True
+
     def load_profile(self, name: str = "default") -> WorkflowProfile:
         self.ensure()
         path = self.profile_path(name)

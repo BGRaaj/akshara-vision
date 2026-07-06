@@ -18,6 +18,8 @@ from akshara_vision.cli.workflows import (
     guide_command,
     interactive_session,
     instruct_command,
+    install_command,
+    mode_command,
     model_command,
     onboard,
     profile_command,
@@ -59,6 +61,11 @@ if typer:
     def init_command():
         onboard()
 
+    @app.command("install")
+    @app.command("setup")
+    def install():
+        install_command()
+
     @app.command("run")
     @app.command("r")
     def run_command(
@@ -99,7 +106,7 @@ if typer:
     @app.command("profile")
     @app.command("p")
     def profiles_command(
-        action: str = typer.Argument("list", help="list, show, create, use, lock, edit, export, import"),
+        action: str = typer.Argument("menu", help="menu, list, show, create, modify, use, lock, duplicate, delete, edit, export, import"),
         name: str = typer.Option("default", "--name", "-n", help="Profile name."),
         source: Optional[str] = typer.Option(None, "--source", "-s", help="Profile file to import."),
         lock: bool = typer.Option(False, "--lock", help="Lock as default."),
@@ -163,6 +170,11 @@ if typer:
     def guide():
         guide_command()
 
+    @app.command("mode")
+    @app.command("speed")
+    def mode():
+        mode_command()
+
     @app.command("ui")
     @app.command("theme")
     def customize_ui():
@@ -202,6 +214,8 @@ def _fallback_main(argv: List[str]) -> None:
         show_home(interactive=_interactive_allowed())
     elif command in {"init", "i"}:
         onboard()
+    elif command in {"install", "setup"}:
+        install_command()
     elif command in {"run", "r"}:
         run_guided(args.inputs, profile_name=args.profile, recursive=args.recursive, dry_run=args.dry_run)
     elif command in {"quick", "q", "process"}:
@@ -209,7 +223,7 @@ def _fallback_main(argv: List[str]) -> None:
     elif command in {"batch", "b"}:
         batch_run(args.inputs, profile_name=args.profile, dry_run=args.dry_run)
     elif command in {"profile", "p"}:
-        action = args.inputs[0] if args.inputs else "list"
+        action = args.inputs[0] if args.inputs else "menu"
         profile_command(action=action, name=args.name, source=args.source, lock=args.lock)
     elif command in {"model", "m"}:
         action = args.inputs[0] if args.inputs else "status"
@@ -236,6 +250,8 @@ def _fallback_main(argv: List[str]) -> None:
         clean_command(yes=args.yes)
     elif command in {"guide", "g"}:
         guide_command()
+    elif command in {"mode", "speed"}:
+        mode_command()
     elif command in {"ui", "theme"}:
         ui_command()
     else:
