@@ -42,7 +42,8 @@ Core commands:
 | `akshara instruct` | `akv ins` | Instructions |
 | `akshara doctor` | `akv d` | Diagnostics |
 | `akshara check` | `akv t` | Compile and run tests |
-| `akshara export` | `akv x` | Re-export |
+| `akshara resume` | `akv resume` | Recover interrupted checkpoints |
+| `akshara export` | `akv x` | Re-export or convert output files |
 | `akshara guide` | `akv g` | Choose guidance level |
 | `akshara mode` | `akv speed` | Choose speed versus quality |
 | `akshara ui` | `akshara theme` | Customize terminal display |

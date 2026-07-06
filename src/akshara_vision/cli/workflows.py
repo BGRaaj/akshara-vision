@@ -1,5 +1,7 @@
-import os
 import copy
+import json
+import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -50,6 +52,7 @@ HOME_ACTIONS = [
     "Instructions",
     "Doctor",
     "Combine outputs",
+    "Resume run",
     "Install dependencies",
     "Status",
     "Run checks",
@@ -108,18 +111,23 @@ def _render_home() -> None:
         ui.write("Use /guide to choose how much guidance Akshara Vision shows.")
     else:
         ui.write("Press Enter for options, /help for commands, or /exit to leave.")
+    ui.status("info", "Press Ctrl+C at any time to cancel")
 
 
 def interactive_session() -> None:
     store = ConfigStore()
     while True:
-        prefs = store.load_ui_preferences()
-        raw = ui.text(ui.prompt_label(prefs["prompt"]), "").strip()
-        if not raw:
-            raw = _menu_command()
-        if not raw:
-            continue
-        if _dispatch_session_command(raw) is False:
+        try:
+            prefs = store.load_ui_preferences()
+            raw = ui.text(ui.prompt_label(prefs["prompt"]), "").strip()
+            if not raw:
+                raw = _menu_command()
+            if not raw:
+                continue
+            if _dispatch_session_command(raw) is False:
+                return
+        except KeyboardInterrupt:
+            ui.write("\nGoodbye.")
             return
 
 
@@ -139,6 +147,7 @@ def _menu_command() -> str:
         "Instructions": "/instructions",
         "Doctor": "/doctor",
         "Combine outputs": "/combine",
+        "Resume run": "/resume",
         "Install dependencies": "/install",
         "Status": "/status",
         "Run checks": "/check",
@@ -164,9 +173,9 @@ def _translation_label(profile: WorkflowProfile) -> str:
 
 def _dispatch_session_command(raw: str) -> bool:
     try:
-        parts = shlex.split(raw)
+        parts = shlex.split(raw, posix=sys.platform != "win32")
     except ValueError as exc:
-        ui.write(f"Could not parse command: {exc}")
+        ui.status("error", f"Could not parse command: {exc}")
         return True
     if not parts:
         return True
@@ -225,6 +234,8 @@ def _dispatch_session_command(raw: str) -> bool:
         doctor_command()
     elif command in {"/combine", "/assemble", "/merge"}:
         combine_command(args[0] if args else None)
+    elif command in {"/resume", "/recover"}:
+        resume_command(args[0] if args else None)
     elif command in {"/install", "/setup"}:
         install_command()
     elif command in {"/check", "/checks", "/test", "/t"}:
@@ -271,6 +282,7 @@ def _session_help() -> None:
             ["/ui", "Customize hero, density, prompt"],
             ["/doctor", "Check local setup"],
             ["/combine [run-folder]", "Rebuild staged outputs into one document"],
+            ["/resume [run-folder]", "Recover completed checkpoints from an interrupted run"],
             ["/install", "Install PDF/image system dependencies"],
             ["/check, /test", "Compile and run unit tests"],
             ["/clean", "Remove local generated outputs"],
@@ -418,7 +430,9 @@ def onboard(
 
 def choose_model(current: Optional[ModelSettings] = None) -> ModelSettings:
     current = current or ModelSettings()
-    statuses = {name: provider.status() for name, provider in provider_registry().items()}
+    with ui.progress("Analyzing available model providers...") as reporter:
+        statuses = {name: provider.status() for name, provider in provider_registry().items()}
+        reporter.finish("Finished analyzing providers.")
     source = ui.choose("Model source", ["local", "cloud"], _provider_source(current.provider))
     if source == "cloud":
         provider_names = ["openai", "anthropic", "gemini"]
@@ -502,7 +516,7 @@ def choose_output_formats(defaults: Optional[List[str]] = None) -> List[str]:
 
 def choose_output_folder(default: str = "akshara-output") -> str:
     while True:
-        entered = ui.text("Output folder", default)
+        entered = ui.text("Path to output folder", default)
         validated = _validate_output_dir(entered)
         if validated is not None:
             return str(validated)
@@ -560,7 +574,7 @@ def execute_run(
     profile.sync_translation_defaults()
     input_values = list(inputs or [])
     if not input_values:
-        entered = ui.text("Input files, folders, globs, or manifest paths")
+        entered = ui.text("Path(s) to input files, folders, globs, or manifests")
         input_values = [item.strip() for item in entered.split(",") if item.strip()]
     selection = discover_inputs(input_values, recursive=recursive)
     if ui.interactive():
@@ -571,20 +585,38 @@ def execute_run(
         ui.write("Dry run complete. No outputs were written.")
         return None
     if not selection.files:
-        ui.write("No supported input files found.")
+        ui.status("error", "No supported input files found.")
         return None
     if not ui.confirm("Start this run?", True):
-        ui.write("Run cancelled.")
+        ui.status("info", "Run cancelled.")
         return None
     try:
         result = _run_with_progress(RunRequest(profile=profile, inputs=selection, dry_run=False))
+    except KeyboardInterrupt:
+        ui.section("Interrupted")
+        latest = _latest_run_folder(Path(profile.output_dir).expanduser())
+        if latest:
+            ui.write(f"Latest run folder: {latest}")
+            ui.write(f"Recover completed output with: akv resume {latest}")
+        else:
+            ui.status("warning", "Run interrupted before a recoverable folder was found.")
+        return None
     except Exception as exc:
         ui.section("Error")
-        ui.write(f"ERROR: {exc}")
+        ui.status("error", f"{exc}")
         ui.write("\nRun stopped. No outputs were written or modified.")
         return None
     _finished_screen(result)
     return result
+
+
+def _latest_run_folder(output_root: Path) -> Optional[Path]:
+    if not output_root.exists():
+        return None
+    candidates = [path for path in output_root.iterdir() if path.is_dir()]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
 
 
 def review_run(profile: WorkflowProfile, selection) -> None:
@@ -604,14 +636,12 @@ def review_run(profile: WorkflowProfile, selection) -> None:
         ["Inputs found", str(selection.supported_count)],
     ]
     ui.table(rows)
-    for line in selection.display_files():
-        ui.write(f"  {_friendly_path(Path(line))}")
+    ui.bullet_list([_friendly_path(Path(line)) for line in selection.display_files()])
     if selection.missing:
         ui.write(f"Missing: {', '.join(selection.missing)}")
     if selection.unsupported:
         ui.write("Unsupported:")
-        for item in selection.unsupported:
-            ui.write(f"  {item}")
+        ui.bullet_list(selection.unsupported)
 
 
 def _run_with_progress(request: RunRequest):
@@ -656,12 +686,10 @@ def _finished_screen(result) -> None:
 
     if truncated:
         ui.heading("Akshara Vision", "Finished (Truncated)")
-        ui.write(
-            "WARNING  Run completed with truncated output. One or more page chunks hit the token context/generation limit."
-        )
+        ui.status("warning", "Run completed with truncated output. One or more page chunks hit the token context/generation limit.")
     else:
         ui.heading("Akshara Vision", "Finished")
-        ui.write("SUCCESS  Run completed.")
+        ui.status("success", "Run completed.")
     ui.section("Output")
 
     rows = [
@@ -701,8 +729,7 @@ def _finished_screen(result) -> None:
         )
     if issues:
         ui.section("Issues")
-        for issue in issues:
-            ui.write(f"  {issue}")
+        ui.bullet_list(issues)
     ui.section("Next")
     ui.table(
         [
@@ -1112,7 +1139,7 @@ def doctor_command() -> None:
 
 def combine_command(run_dir: Optional[str] = None) -> None:
     ui.heading("Akshara Vision", "Combine Outputs")
-    target = run_dir or ui.text("Run folder containing staged outputs")
+    target = run_dir or ui.text("Path to Akshara run folder containing staged outputs")
     if not target:
         ui.write("No folder selected.")
         return
@@ -1129,6 +1156,57 @@ def combine_command(run_dir: Optional[str] = None) -> None:
         for item in exports:
             state = "available" if item.available else "setup note"
             ui.write(f"  {item.format}: {item.path} ({state})")
+
+
+def resume_command(run_dir: Optional[str] = None) -> None:
+    ui.heading("Akshara Vision", "Resume / Recover")
+    target = run_dir or ui.text("Path to interrupted Akshara run folder")
+    if not target:
+        ui.status("error", "No folder selected.")
+        return
+    run_path = Path(target).expanduser()
+    state_path = run_path / "run_state.json"
+    if not state_path.exists():
+        ui.status("error", f"No run_state.json found in {run_path}")
+        return
+
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        state = {}
+
+    status = state.get("status", "unknown")
+    completed = state.get("completed_inputs") if isinstance(state.get("completed_inputs"), list) else []
+    total_inputs = state.get("total_inputs", len(completed))
+    input_files = state.get("input_files", [])
+
+    ui.status("info", f"State: {status}")
+    ui.status("info", f"Completed inputs: {len(completed)}/{total_inputs}")
+
+    if status == "running":
+        state["status"] = "interrupted"
+        state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        status = "interrupted"
+
+    if status == "complete" or len(completed) >= total_inputs:
+        ui.write("Recovering completed checkpoints into final outputs.")
+        combine_command(str(run_path))
+        return
+
+    if input_files:
+        completed_paths = {item["path"] for item in completed}
+        pending_paths = [path for path in input_files if path not in completed_paths]
+
+        if pending_paths:
+            ui.status("info", f"Found {len(pending_paths)} pending inputs.")
+            if ui.confirm("Resume processing pending inputs in a new run?", True):
+                profile_dict = state.get("profile", {})
+                profile = WorkflowProfile.from_dict(profile_dict)
+                execute_run(profile, inputs=pending_paths)
+                return
+
+    ui.write("Combining already completed checkpoints into final outputs.")
+    combine_command(str(run_path))
 
 
 def check_command() -> int:
@@ -1181,20 +1259,83 @@ def provider_status_rows() -> List[List[str]]:
 
 def export_command(run_dir: str, formats: Optional[List[str]] = None) -> None:
     path = Path(run_dir).expanduser()
-    text_path = path / "akshara_output.txt"
-    raw_path = path / "raw_ocr.txt"
-    source_text = text_path if text_path.exists() else raw_path
-    if not source_text.exists():
-        ui.write("Could not find akshara_output.txt or raw_ocr.txt in that run folder.")
+    source_text, destination, metadata = _export_source(path)
+    if source_text is None:
+        ui.write("Could not find readable text in that run folder or output file.")
         return
     selected = formats or choose_output_formats(["txt"])
     registry = exporter_registry()
-    text = source_text.read_text(encoding="utf-8")
     for output_format in selected:
         exporter = registry.get(output_format)
         if exporter:
-            result = exporter.export(text, path / "akshara_output", {"title": path.name})
+            result = exporter.export(source_text, destination, metadata)
             ui.write(f"{result.format}: {result.path}")
+
+
+def _export_source(path: Path) -> tuple[Optional[str], Path, dict]:
+    if path.is_dir():
+        text_path = path / "akshara_output.txt"
+        raw_path = path / "raw_ocr.txt"
+        source_path = text_path if text_path.exists() else raw_path
+        if not source_path.exists():
+            return None, path / "akshara_output", {"title": path.name}
+        return (
+            source_path.read_text(encoding="utf-8", errors="replace"),
+            path / "akshara_output",
+            _run_metadata_for_export(path),
+        )
+
+    if not path.exists() or not path.is_file():
+        return None, path.with_name(path.stem + "_converted"), {"title": path.stem}
+    text = _read_compiled_output_file(path)
+    if text is None:
+        return None, path.with_name(path.stem + "_converted"), {"title": path.stem}
+    return text, path.with_name(path.stem + "_converted"), {"title": path.stem}
+
+
+def _read_compiled_output_file(path: Path) -> Optional[str]:
+    suffix = path.suffix.lower()
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    if suffix in {".txt", ".md", ".hocr", ".xml", ".html"}:
+        if suffix == ".html":
+            return re.sub(r"<[^>]+>", "", raw)
+        return raw
+    if suffix == ".json":
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return raw
+        if isinstance(data, dict):
+            return str(data.get("text") or data.get("restored_text") or data)
+        return str(data)
+    if suffix == ".jsonl":
+        lines = []
+        for line in raw.splitlines():
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                lines.append(line)
+                continue
+            lines.append(str(item.get("text") if isinstance(item, dict) else item))
+        return "\n\n".join(part for part in lines if part.strip())
+    if suffix in {".yaml", ".yml"}:
+        return raw
+    return None
+
+
+def _run_metadata_for_export(path: Path) -> dict:
+    manifest_path = path / "run_manifest.json"
+    if not manifest_path.exists():
+        return {"title": path.name}
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {"title": path.name}
+    metadata = manifest.get("metadata") if isinstance(manifest, dict) else None
+    return metadata if isinstance(metadata, dict) else {"title": path.name}
 
 
 def docs_command() -> None:
@@ -1226,7 +1367,6 @@ def clean_command(yes: bool = False) -> None:
     ui.heading("Akshara Vision", "Clean")
     targets = [
         Path("akshara-output"),
-        Path(".akshara-vision"),
         Path("build"),
         Path("dist"),
         Path(".pytest_cache"),
@@ -1301,9 +1441,14 @@ def _short_detail(detail: str) -> str:
 def _open_editor(path: Path) -> None:
     editor = os.environ.get("EDITOR")
     if not editor:
-        ui.write(f"Set EDITOR to edit in place. File: {path}")
-        return
-    subprocess.run([editor, str(path)], check=False)
+        if sys.platform == "win32":
+            editor = "notepad"
+        elif sys.platform == "darwin":
+            editor = "open -t"
+        else:
+            editor = "xdg-open"
+        ui.status("info", f"Using default editor '{editor}'. Set EDITOR env var to override.")
+    subprocess.run(shlex.split(editor, posix=sys.platform != "win32") + [str(path)], check=False)
 
 
 def _load_profile_dict(path: Path):

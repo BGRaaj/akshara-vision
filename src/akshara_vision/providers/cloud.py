@@ -1,3 +1,4 @@
+import gc
 import json
 import os
 import urllib.error
@@ -172,6 +173,13 @@ def _anthropic_message(
         if media_path:
             raise RuntimeError(f"Failed to connect to Anthropic API: {exc}")
         return "", {}
+    finally:
+        if media_path:
+            media_bytes = None
+            media_base64 = None
+            content = None
+            payload = None
+            gc.collect()
 
     content_parts = data.get("content") or []
     parts = [part.get("text", "") for part in content_parts if isinstance(part, dict)]
@@ -270,6 +278,13 @@ def _gemini_generate(
         if media_path:
             raise RuntimeError(f"Failed to connect to Gemini API: {exc}")
         return "", {}
+    finally:
+        if media_path:
+            media_bytes = None
+            media_base64 = None
+            parts = None
+            payload = None
+            gc.collect()
 
     candidates = data.get("candidates") or []
     if not candidates:

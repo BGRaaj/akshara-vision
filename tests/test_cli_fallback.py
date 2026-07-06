@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from akshara_vision.cli.app import main
-from akshara_vision.cli.workflows import clean_command
+from akshara_vision.cli.workflows import clean_command, export_command, resume_command
 from akshara_vision.core.config import ConfigStore
 from akshara_vision.core.models import WorkflowProfile
 
@@ -80,6 +80,33 @@ class CliFallbackTests(unittest.TestCase):
                 self.assertIn("Clean complete", output.getvalue())
             finally:
                 os.chdir(cwd)
+
+    def test_export_command_converts_existing_output_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "akshara_output.txt"
+            source.write_text("Finished text", encoding="utf-8")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                export_command(str(source), formats=["md"])
+            converted = Path(tmp) / "akshara_output_converted.md"
+            self.assertTrue(converted.exists())
+            self.assertIn("Finished text", converted.read_text(encoding="utf-8"))
+
+    def test_resume_command_recovers_partial_run_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            item_dir = run_dir / "items" / "0001-page-txt"
+            item_dir.mkdir(parents=True)
+            (item_dir / "restored__en.txt").write_text("Recovered text", encoding="utf-8")
+            (run_dir / "run_state.json").write_text(
+                '{"status":"running","completed_inputs":[{"index":1,"name":"page.txt"}]}',
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                resume_command(str(run_dir))
+            self.assertTrue((run_dir / "akshara_output.txt").exists())
+            self.assertIn("Completed inputs: 1", output.getvalue())
 
 
 if __name__ == "__main__":

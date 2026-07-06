@@ -207,6 +207,10 @@ class CoreTests(unittest.TestCase):
             self.assertTrue((run_dir / "akshara_output.md").exists())
             self.assertTrue((run_dir / "akshara_output.json").exists())
             self.assertTrue((run_dir / "run_manifest.json").exists())
+            self.assertTrue((run_dir / "run_state.json").exists())
+            state = json.loads((run_dir / "run_state.json").read_text(encoding="utf-8"))
+            self.assertEqual(state["status"], "complete")
+            self.assertEqual(len(state["completed_inputs"]), 1)
             self.assertIn("scanning example", (run_dir / "akshara_output.txt").read_text())
             manifest = (run_dir / "run_manifest.json").read_text()
             self.assertIn("source.txt", manifest)
@@ -579,7 +583,7 @@ class CoreTests(unittest.TestCase):
             self.assertIn("Recovered text", output_text)
 
     def test_execution_mode_changes_provider_settings(self):
-        from akshara_vision.core.pipeline import _task_text
+        from akshara_vision.core.pipeline import _new_consistency_state, _task_text
         from akshara_vision.providers.local import OllamaProvider, _generation_limit
 
         fast_profile = WorkflowProfile(name="fast-run")
@@ -593,6 +597,12 @@ class CoreTests(unittest.TestCase):
         self.assertIn("Execution mode: quality", _task_text("source", quality_profile))
         self.assertIn("Do not skip non-English", _task_text("", quality_profile))
         self.assertIn("dense", _task_text("", quality_profile))
+        consistency = _new_consistency_state(quality_profile)
+        consistency["paragraph_style"] = "blank line between paragraphs"
+        consistency["heading_style"] = "short uppercase headings preserved"
+        guided_prompt = _task_text("", quality_profile, consistency)
+        self.assertIn("Local consistency guide", guided_prompt)
+        self.assertIn("Do not override the main restoration rules", guided_prompt)
         self.assertEqual(_generation_limit(fast_profile.model, 32768), 20000)
 
         provider = OllamaProvider()

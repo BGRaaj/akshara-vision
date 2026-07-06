@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 
 APP_NAME = "Akshara Vision"
@@ -110,4 +111,11 @@ def default_config_dir() -> Path:
     override = os.environ.get("AKSHARA_CONFIG_HOME")
     if override:
         return Path(override).expanduser()
-    return Path.home() / ".akshara-vision"
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or "~"
+        return Path(base).expanduser() / "akshara-vision"
+    elif sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "akshara-vision"
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or "~/.config"
+        return Path(base).expanduser() / "akshara-vision"

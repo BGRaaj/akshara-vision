@@ -99,7 +99,8 @@ Inside the interactive shell:
 | `akshara instruct` | `akv ins` | View, edit, reset, or install editable instructions |
 | `akshara doctor` | `akv d` | Check dependencies, model providers, API keys, and export support |
 | `akshara combine` | `akv combine` | Rebuild a final document from staged outputs |
-| `akshara export` | `akv x` | Re-export an existing run |
+| `akshara resume` | `akv resume` | Recover completed checkpoints from an interrupted run |
+| `akshara export` | `akv x` | Re-export an existing run or convert an existing output file |
 | `akshara check` | `akv t` | Compile and run unit tests |
 | `akshara clean` | `akv clean` | Remove generated local artifacts |
 
@@ -139,6 +140,10 @@ for recoverable page/chunk checkpoints. Interrupted runs can be recombined later
 without reprocessing completed pages or chunks. Recombine restores the run's
 selected export formats when the original manifest is available.
 
+A run folder is the timestamped folder created inside your chosen output folder,
+for example `akshara-output/default-20260706-120000`. It is not the folder that
+contains your source images.
+
 Large PDFs are rendered and restored page by page. The CLI shows the current
 page being rendered or restored instead of waiting for the entire PDF to convert
 before the model starts.
@@ -151,6 +156,12 @@ Recursive folders keep their nested structure under `items/` and `sources/`.
 ZIP archives keep their nested folder structure under `items/<zip>/archive/`.
 Nested folders get local `combined__LANG.txt` files, so folder-level batches can
 be reviewed without mixing the whole run.
+
+During a run, Akshara Vision keeps a small internal consistency guide for the
+current batch or document. It learns recurring layout hints such as paragraph
+spacing, heading style, page markers, lists, and table spacing, then passes those
+hints to later pages for more uniform formatting. This guide never replaces the
+main restoration instruction and is not printed into restored outputs.
 
 ## Translation
 
@@ -185,8 +196,17 @@ is `auto` or `off`, the CLI resolves it as `auto -> translate` before the run.
 Language fields accept full names or local labels such as `English`,
 `Hindi`, or `Kannada`, and the match is case-insensitive.
 
-If a long run is interrupted, use `akv combine <run-folder>` to rebuild the
-final document from the staged files on disk.
+If a long run is interrupted, use `akv resume <run-folder>` to recover completed
+checkpoints into final outputs. Use `akv combine <run-folder>` when you want to
+rebuild whatever is currently present for testing.
+
+To create another output format without running extraction again, pass either a
+run folder or an existing compiled output file:
+
+```bash
+akv export akshara-output/default-20260706-120000 --format epub
+akv export akshara-output/default-20260706-120000/akshara_output.txt --format docx
+```
 
 ## Models And API Keys
 

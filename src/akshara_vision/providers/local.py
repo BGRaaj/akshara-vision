@@ -1,3 +1,4 @@
+import gc
 import json
 import os
 import shutil
@@ -84,10 +85,14 @@ class OllamaProvider:
                 encoding="utf-8",
                 errors="replace",
             )
-        except Exception:
+        except Exception as exc:
+            import sys
+            sys.stderr.write(f"\n[!] WARNING: Ollama connection failed ({exc}). Falling back to MockProvider.\n")
             return MockProvider().restore_text(text, instruction, settings)
         stdout = result.stdout or ""
         if result.returncode != 0 or not stdout.strip():
+            import sys
+            sys.stderr.write(f"\n[!] WARNING: Ollama command failed (exit {result.returncode}). Falling back to MockProvider.\n")
             return MockProvider().restore_text(text, instruction, settings)
         return stdout.strip() + "\n", {}
 
@@ -140,6 +145,8 @@ class OpenAICompatibleLocalProvider:
                 f"Failed to obtain response from OpenAI-compatible local server at {endpoint} "
                 f"using model '{settings.model}'."
             )
+        import sys
+        sys.stderr.write(f"\n[!] WARNING: Local server at {endpoint} failed. Falling back to MockProvider.\n")
         return MockProvider().restore_text(text, instruction, ModelSettings())
 
 
@@ -271,6 +278,13 @@ def _ollama_chat_http(
                 "Make sure Ollama is running (`ollama serve`) and the model is downloaded."
             )
         return "", {}
+    finally:
+        if media_path:
+            media_bytes = None
+            media_base64 = None
+            messages = None
+            payload = None
+            gc.collect()
 
 
 def openai_compatible_chat(
@@ -373,6 +387,13 @@ def openai_compatible_chat(
         if media_path:
             raise RuntimeError(f"Failed to connect to local/cloud endpoint at {url}: {exc}")
         return "", {}
+    finally:
+        if media_path:
+            media_bytes = None
+            media_base64 = None
+            messages = None
+            payload = None
+            gc.collect()
 
     choices = data.get("choices") or []
     usage_data = data.get("usage") or {}

@@ -57,8 +57,13 @@ Every run also writes:
 - `items/<input>/translated__SOURCE-to-TARGET.txt` when translation runs
 - `items/<input>/final__LANG.txt`
 - `stages/` with per-page and per-chunk checkpoint files
+- `run_state.json` with interruption/recovery state while a run is active
 - `run_manifest.json`
 - `sources/`
+
+The run folder is the timestamped folder created under the selected output
+folder. For example, if the output folder is `akshara-output`, a run folder might
+be `akshara-output/default-20260706-120000`.
 
 For PDFs, pages are rendered and restored incrementally, and restored stage files
 are numbered by rendered page. Recursive folder inputs preserve their nested
@@ -73,6 +78,18 @@ final export still combines the selected inputs into one document, but the
 are not present, it falls back to translated stage pieces, then restored stage
 pieces. When the original manifest is available, combine also rebuilds the run's
 selected export formats.
+
+`akv resume <run-folder>` is the friendlier recovery command for interrupted
+runs. It reads `run_state.json` when present, reports completed inputs, and then
+rebuilds completed checkpoints through the combine path.
+
+`run_state.json` may also contain a compact internal consistency guide. It is
+used only to keep formatting uniform across similar pages in a local batch or
+document and is not added to restored text outputs.
+
+`akv export` can take either a run folder or a compiled output file such as
+`.txt`, `.md`, `.html`, `.json`, `.jsonl`, `.yaml`, `.hocr`, or `.xml`. It writes
+a converted copy in the selected output format without re-running extraction.
 
 When a model returns partial text because its output limit was reached, the
 manifest marks that source or chunk as `partial` and records

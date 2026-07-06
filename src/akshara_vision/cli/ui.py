@@ -16,7 +16,7 @@ except ModuleNotFoundError:  # pragma: no cover - dependency fallback
     Console = None
 
 try:
-    from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn  # type: ignore
+    from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn, BarColumn, MofNCompleteColumn  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover - dependency fallback
     Progress = None
 
@@ -67,6 +67,26 @@ class MonoUI:
                 "Choose a workflow, inspect the plan, then run only when ready.".center(width)
             )
         self.write(line)
+
+    def status(self, level: str, message: str) -> None:
+        """Minimal monochrome status marker."""
+        marker = {
+            "success": "[*]",
+            "error": "[!]",
+            "warning": "[!]",
+            "info": "[-]",
+        }.get(level.lower(), "[-]")
+        self.write(f"{marker} {message}")
+
+    def bullet_list(self, items: Iterable[str]) -> None:
+        for item in items:
+            self.write(f"  - {item}")
+
+    def safe_input(self, prompt: str = "") -> str:
+        try:
+            return input(prompt).strip()
+        except (KeyboardInterrupt, EOFError):
+            return ""
 
     def section(self, title: str) -> None:
         self.write("")
@@ -145,16 +165,22 @@ class MonoUI:
         if not choices:
             raise ValueError("choose requires at least one choice")
         if inquirer and self.interactive():
-            return str(
-                inquirer.select(
-                    message=message, choices=choices, default=default or choices[0]
-                ).execute()
-            )
+            try:
+                return str(
+                    inquirer.select(
+                        message=message,
+                        choices=choices,
+                        default=default or choices[0],
+                        qmark="›",
+                    ).execute()
+                )
+            except KeyboardInterrupt:
+                return default or choices[0]
         self.write(message)
         for index, choice in enumerate(choices, start=1):
             marker = "default" if choice == default else ""
             self.write(f"  {index}. {choice} {marker}".rstrip())
-        raw = input("> ").strip()
+        raw = self.safe_input("› ")
         if not raw:
             return default or choices[0]
         if raw.isdigit() and 1 <= int(raw) <= len(choices):
@@ -166,15 +192,23 @@ class MonoUI:
     ) -> List[str]:
         default = default or []
         if inquirer and self.interactive():
-            return list(
-                inquirer.checkbox(message=message, choices=choices, default=default).execute()
-            )
+            try:
+                return list(
+                    inquirer.checkbox(
+                        message=message,
+                        choices=choices,
+                        default=default,
+                        qmark="›",
+                    ).execute()
+                )
+            except KeyboardInterrupt:
+                return default or [choices[0]]
         self.write(message)
         self.write("Choose comma-separated numbers, or press Enter for default.")
         for index, choice in enumerate(choices, start=1):
             marker = "default" if choice in default else ""
             self.write(f"  {index}. {choice} {marker}".rstrip())
-        raw = input("> ").strip()
+        raw = self.safe_input("› ")
         if not raw:
             return default or [choices[0]]
         selected = []
@@ -188,34 +222,41 @@ class MonoUI:
 
     def text(self, message: str, default: str = "") -> str:
         if inquirer and self.interactive():
-            return str(inquirer.text(message=message, default=default).execute())
+            try:
+                return str(inquirer.text(message=message, default=default, qmark="›").execute())
+            except KeyboardInterrupt:
+                return default
         suffix = f" [{default}]" if default else ""
-        raw = input(f"{message}{suffix}: ").strip()
+        raw = self.safe_input(f"{message}{suffix}: ")
         return raw or default
 
     def confirm(self, message: str, default: bool = True) -> bool:
         if inquirer and self.interactive():
-            return bool(inquirer.confirm(message=message, default=default).execute())
+            try:
+                return bool(inquirer.confirm(message=message, default=default, qmark="›").execute())
+            except KeyboardInterrupt:
+                return default
         suffix = "Y/n" if default else "y/N"
         if not self.interactive():
             self.write(f"{message} ({suffix}): {'yes' if default else 'no'}")
             return default
-        raw = input(f"{message} ({suffix}): ").strip().lower()
+        raw = self.safe_input(f"{message} ({suffix}): ").lower()
         if not raw:
             return default
         return raw in {"y", "yes", "true", "1"}
 
     def progress(self, title: str, total: int = 0):
-        return ProgressReporter(self, title)
+        return ProgressReporter(self, title, total)
 
 
 ui = MonoUI()
 
 
 class ProgressReporter:
-    def __init__(self, ui_instance: MonoUI, title: str) -> None:
+    def __init__(self, ui_instance: MonoUI, title: str, total: int = 0) -> None:
         self.ui = ui_instance
         self.title = title
+        self.total = total
         self._progress = None
         self._task = None
         self._started_at = 0.0
@@ -223,26 +264,33 @@ class ProgressReporter:
     def __enter__(self):
         self._started_at = time.monotonic()
         if Progress and self.ui.console:
+            columns = [SpinnerColumn(), TextColumn("{task.description}")]
+            if self.total > 0:
+                columns.extend([BarColumn(), MofNCompleteColumn()])
+            columns.append(TimeElapsedColumn())
             self._progress = Progress(
-                SpinnerColumn(),
-                TextColumn("{task.description}"),
-                TimeElapsedColumn(),
+                *columns,
                 console=self.ui.console,
                 transient=False,
             )
             self._progress.__enter__()
-            self._task = self._progress.add_task(self.title)
+            self._task = self._progress.add_task(self.title, total=self.total or None)
         else:
             self.ui.section(self.title)
         return self
 
     def update(self, message: str, advance: int = 1) -> None:
-        del advance
         if self._progress is not None and self._task is not None:
-            self._progress.update(self._task, description=message)
+            if self.total > 0:
+                self._progress.update(self._task, description=message, advance=advance)
+            else:
+                self._progress.update(self._task, description=message)
         else:
             elapsed = max(time.monotonic() - self._started_at, 0.0)
-            self.ui.write(f"[{elapsed:0.1f}s] {message}")
+            if self.total > 0:
+                self.ui.write(f"[{elapsed:0.1f}s] {message} (+{advance})")
+            else:
+                self.ui.write(f"[{elapsed:0.1f}s] {message}")
 
     def finish(self, message: str = "Complete") -> None:
         self.update(message)

@@ -1,3 +1,4 @@
+import gc
 import json
 import os
 import platform
@@ -222,12 +223,26 @@ def run_pipeline(
     raw_parts: List[str] = []
     restored_sources: List[Dict[str, object]] = []
     restoration_records: List[Dict[str, object]] = []
+    consistency_state = _new_consistency_state(profile)
     total_usage = {
         "prompt_tokens": 0,
         "completion_tokens": 0,
         "total_tokens": 0,
         "truncated": False,
     }
+    _write_run_state(
+        run_dir,
+        {
+            "status": "running",
+            "profile": profile.to_dict(),
+            "created_at": timestamp,
+            "total_inputs": len(request.inputs.files),
+            "input_files": [str(p.resolve()) for p in request.inputs.files],
+            "completed_inputs": [],
+            "consistency": consistency_state,
+            "next_action": "Run can be recovered with `akv resume <run-folder>` or `akv combine <run-folder>`.",
+        },
+    )
 
     def _add_usage(u: dict):
         if not u:
@@ -259,6 +274,7 @@ def run_pipeline(
                     artifacts,
                     index,
                     source_label=source_label,
+                    consistency_state=consistency_state,
                 )
             elif suffix == ".zip":
                 cleaned, restoration_record, usage = _restore_multimodal_zip(
@@ -270,6 +286,7 @@ def run_pipeline(
                     artifacts,
                     index,
                     source_label=source_label,
+                    consistency_state=consistency_state,
                 )
             else:
                 cleaned, restoration_record, usage = _restore_multimodal_image(
@@ -280,6 +297,7 @@ def run_pipeline(
                     artifacts,
                     index,
                     source_label=source_label,
+                    consistency_state=consistency_state,
                 )
             raw_text = f"[Multimodal Input: {source_label}]"
             _add_usage(usage)
@@ -296,6 +314,7 @@ def run_pipeline(
                 index,
                 path,
                 source_label=source_label,
+                consistency_state=consistency_state,
             )
             _add_usage(usage)
 
@@ -319,9 +338,24 @@ def run_pipeline(
                 "failure_reason": restoration_record.get("failure_reason", ""),
             }
         )
+        _write_run_state(
+            run_dir,
+            {
+                "completed_inputs": [
+                    {
+                        "index": item["index"],
+                        "name": item["name"],
+                        "path": str(Path(item["path"]).resolve()),
+                    }
+                    for item in restored_sources
+                ],
+                "consistency": consistency_state,
+            },
+        )
         cleaned_parts.append(f"===== {source_label} =====\n{cleaned}".strip())
         _notify(progress, "source", f"Bundling source {source_label}", advance=1)
         _copy_source(path, run_dir / "sources", index=index, label=source_label)
+        gc.collect()
 
     raw_text = "\n\n".join(raw_parts).strip() + "\n"
     cleaned_text = "\n\n".join(cleaned_parts).strip() + "\n"
@@ -364,6 +398,7 @@ def run_pipeline(
         "missing": request.inputs.missing,
         "unsupported": [_safe_path(path) for path in request.inputs.unsupported],
         "usage": total_usage,
+        "consistency": consistency_state,
     }
 
     destination = run_dir / "akshara_output"
@@ -407,6 +442,22 @@ def run_pipeline(
     if translation_metadata.get("status") != "skipped":
         artifacts.write_combined_translated(final_text)
     _notify(progress, "complete", "Run complete", advance=1)
+    _write_run_state(
+        run_dir,
+        {
+            "status": "complete",
+            "completed_inputs": [
+                {
+                    "index": item["index"],
+                    "name": item["name"],
+                    "path": str(Path(item["path"]).resolve()),
+                }
+                for item in restored_sources
+            ],
+            "consistency": consistency_state,
+            "next_action": "Run complete.",
+        },
+    )
     return {"run_dir": run_dir, "exports": exports, "manifest": manifest}
 
 
@@ -615,6 +666,36 @@ def _write_recombined_manifest(
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def _write_run_state(run_dir: Path, state: Dict[str, object]) -> Path:
+    path = run_dir / "run_state.json"
+    existing = {}
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+    merged = {**existing, **state}
+    path.write_text(json.dumps(merged, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def _write_consistency_checkpoint(
+    run_dir: Path,
+    profile: WorkflowProfile,
+    consistency_state: Optional[Dict[str, object]],
+    active_source: str,
+) -> None:
+    if not consistency_state:
+        return
+    _write_run_state(
+        run_dir,
+        {
+            "active_source": active_source,
+            "consistency": consistency_state,
+        },
+    )
+
+
 def estimate_progress_units(request: RunRequest) -> int:
     total = 6 + len(request.profile.output_formats)
     for path in request.inputs.files:
@@ -633,6 +714,7 @@ def _restore_text(
     source_path: Path,
     media_path: Optional[Path] = None,
     source_label: Optional[str] = None,
+    consistency_state: Optional[Dict[str, object]] = None,
 ) -> tuple:
     chunks = _split_text_chunks(raw_text)
     restored_chunks: List[str] = []
@@ -644,7 +726,7 @@ def _restore_text(
         "truncated": False,
     }
     for index, chunk in enumerate(chunks, start=1):
-        prompt = _task_text(chunk, profile)
+        prompt = _task_text(chunk, profile, consistency_state)
         result, usage = _restore_with_retry(
             provider, prompt, instruction, profile.model, media_path=media_path
         )
@@ -664,6 +746,7 @@ def _restore_text(
             parsed["failure_reason"] = "model context or output limit reached"
             parsed["status"] = "partial"
         restored_chunks.append(restored_text)
+        _update_consistency_state(consistency_state, restored_text)
         artifacts.write_restored_piece(
             source_index, source_label or source_path.name, index, restored_text + "\n"
         )
@@ -1102,7 +1185,119 @@ def _estimate_input_words(path: Path) -> int:
     return max(size // 24, 40)
 
 
-def _task_text(raw_text: str, profile: WorkflowProfile) -> str:
+def _new_consistency_state(profile: WorkflowProfile) -> Dict[str, object]:
+    return {
+        "document_type": profile.document_type,
+        "observed_pages": 0,
+        "paragraph_style": "",
+        "heading_style": "",
+        "page_marker_style": "",
+        "layout_notes": [],
+    }
+
+
+def _consistency_prompt(state: Optional[Dict[str, object]]) -> str:
+    if not state:
+        return ""
+    notes = [
+        str(item).strip()
+        for item in state.get("layout_notes", [])
+        if str(item).strip()
+    ][:4]
+    values = {
+        "document_type": state.get("document_type") or "",
+        "observed_pages": state.get("observed_pages") or 0,
+        "paragraph_style": state.get("paragraph_style") or "",
+        "heading_style": state.get("heading_style") or "",
+        "page_marker_style": state.get("page_marker_style") or "",
+        "layout_notes": notes,
+    }
+    if not any(values[key] for key in ("paragraph_style", "heading_style", "page_marker_style", "layout_notes")):
+        return (
+            "Local consistency guide: observe this document's recurring layout, paragraph spacing, "
+            "heading treatment, page markers, footnotes, and tables. Apply only clear recurring "
+            "patterns to later pages. Do not add, remove, summarize, translate, or modernize content. "
+            "Do not mention this guide in the output.\n\n"
+        )
+    return (
+        "Local consistency guide for this run, used only for uniform formatting:\n"
+        + json.dumps(values, ensure_ascii=False)
+        + "\nApply only clear recurring patterns. Do not override the main restoration rules. "
+        "Do not add content, remove uncertain text, or mention this guide in the output.\n\n"
+    )
+
+
+def _update_consistency_state(state: Optional[Dict[str, object]], text: str) -> None:
+    if not state:
+        return
+    sample = text.strip()
+    if not sample or _is_blank_or_missing_text(sample):
+        return
+    observed = int(state.get("observed_pages") or 0) + 1
+    state["observed_pages"] = min(observed, 9999)
+    lines = [line.strip() for line in sample.splitlines() if line.strip()]
+    if not lines:
+        return
+    if not state.get("paragraph_style"):
+        state["paragraph_style"] = _detect_paragraph_style(sample)
+    if not state.get("heading_style"):
+        heading_style = _detect_heading_style(lines)
+        if heading_style:
+            state["heading_style"] = heading_style
+    if not state.get("page_marker_style"):
+        marker_style = _detect_page_marker_style(lines)
+        if marker_style:
+            state["page_marker_style"] = marker_style
+    notes = list(state.get("layout_notes") or [])
+    for note in _detect_layout_notes(lines):
+        if note not in notes:
+            notes.append(note)
+    state["layout_notes"] = notes[:6]
+
+
+def _detect_paragraph_style(text: str) -> str:
+    if "\n\n" in text:
+        return "blank line between paragraphs"
+    return "single line breaks preserved"
+
+
+def _detect_heading_style(lines: List[str]) -> str:
+    for line in lines[:8]:
+        words = [word for word in re.split(r"\s+", line) if word]
+        if 1 <= len(words) <= 10 and line == line.upper() and any(char.isalpha() for char in line):
+            return "short uppercase headings preserved"
+        if re.match(r"^(chapter|section|part|book|canto|mandala)\b", line, flags=re.IGNORECASE):
+            return "explicit chapter/section headings preserved"
+    return ""
+
+
+def _detect_page_marker_style(lines: List[str]) -> str:
+    candidates = lines[:4] + lines[-4:]
+    for line in candidates:
+        if re.fullmatch(r"(?:page\s*)?[ivxlcdm\d]+", line.strip(), flags=re.IGNORECASE):
+            return "standalone page markers preserved"
+        if re.search(r"\bpage\s+\d+\b", line, flags=re.IGNORECASE):
+            return "page labels preserved"
+    return ""
+
+
+def _detect_layout_notes(lines: List[str]) -> List[str]:
+    joined = "\n".join(lines[:80])
+    notes = []
+    if re.search(r"\s{3,}", joined):
+        notes.append("preserve visible table or column spacing when clear")
+    if any(line.startswith(("*", "-")) for line in lines[:80]):
+        notes.append("preserve list item breaks")
+    if re.search(r"\[\d+\]|\(\d+\)|\b\d+\.", joined):
+        notes.append("preserve numbered references and footnote markers")
+    return notes
+
+
+def _task_text(
+    raw_text: str,
+    profile: WorkflowProfile,
+    consistency_state: Optional[Dict[str, object]] = None,
+) -> str:
     """Build the user-facing prompt for the LLM.
 
     For text-chunk restoration (raw text input), we demand strict JSON
@@ -1114,12 +1309,14 @@ def _task_text(raw_text: str, profile: WorkflowProfile) -> str:
     it can focus entirely on reading the document.
     """
     execution_mode = _execution_mode(profile)
+    consistency_context = _consistency_prompt(consistency_state)
     context = (
         f"Document type: {profile.document_type}\n"
         f"Source language: {profile.source_language}\n"
         f"Output language: {profile.output_language}\n"
         f"Translation mode: {profile.normalized_translation_mode()}\n"
         f"Execution mode: {execution_mode}\n\n"
+        + consistency_context
     )
 
     if execution_mode == "quality":
@@ -1186,6 +1383,7 @@ def _restore_multimodal_image(
     artifacts: StageWriter,
     source_index: int,
     source_label: Optional[str] = None,
+    consistency_state: Optional[Dict[str, object]] = None,
 ) -> tuple:
     """Send an image directly to the vision model and use its raw text output.
 
@@ -1194,7 +1392,7 @@ def _restore_multimodal_image(
     bonus — if the model happens to return JSON, we use the structured data;
     otherwise, we take the full response as restored text.
     """
-    prompt = _task_text("", profile)
+    prompt = _task_text("", profile, consistency_state)
     result, usage = _restore_with_retry(
         provider, prompt, instruction, profile.model, media_path=path
     )
@@ -1208,6 +1406,7 @@ def _restore_multimodal_image(
         failure_reason = BLANK_PAGE_REASON
     elif usage and usage.get("truncated"):
         failure_reason = "model context or output limit reached"
+    _update_consistency_state(consistency_state, restored_text)
     label = source_label or path.name
     artifacts.write_restored_piece(source_index, label, 1, restored_text + "\n")
 
@@ -1610,6 +1809,7 @@ def _restore_multimodal_pdf(
     artifacts: StageWriter,
     source_index: int,
     source_label: Optional[str] = None,
+    consistency_state: Optional[Dict[str, object]] = None,
 ) -> tuple:
     pdftoppm_exe = find_executable("pdftoppm")
     if not pdftoppm_exe:
@@ -1660,7 +1860,7 @@ def _restore_multimodal_pdf(
                 f"Restoring text from {label} page {idx}/{total_label}",
                 advance=1,
             )
-            prompt = _task_text("", profile)
+            prompt = _task_text("", profile, consistency_state)
             result, usage = _restore_with_retry(
                 provider, prompt, instruction, profile.model, media_path=page_img
             )
@@ -1677,6 +1877,10 @@ def _restore_multimodal_pdf(
                 failure_reason = BLANK_PAGE_REASON
             elif usage and usage.get("truncated"):
                 failure_reason = "model context or output limit reached"
+            _update_consistency_state(consistency_state, restored_text)
+            _write_consistency_checkpoint(
+                artifacts.run_dir, profile, consistency_state, f"{label} page {idx}"
+            )
             restored_pages.append(restored_text)
             artifacts.write_restored_piece(source_index, label, idx, restored_text + "\n")
             chunks_record.append(
@@ -1694,6 +1898,8 @@ def _restore_multimodal_pdf(
                 page_img.unlink()
             except OSError:
                 pass
+            del result, restored_text
+            gc.collect()
 
         combined = "\n\n".join(restored_pages) + "\n"
         file_failure_reason = next(
@@ -1722,7 +1928,6 @@ def _pdf_page_count(path: Path) -> Optional[int]:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=30,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -1789,6 +1994,7 @@ def _restore_multimodal_zip(
     artifacts: StageWriter,
     source_index: int,
     source_label: Optional[str] = None,
+    consistency_state: Optional[Dict[str, object]] = None,
 ) -> tuple:
     temp_dir = tempfile.TemporaryDirectory(prefix="akshara-multimodal-zip-")
     try:
@@ -1824,7 +2030,7 @@ def _restore_multimodal_zip(
                 text_content = ext_file.read_text(encoding="utf-8", errors="replace")
                 sub_chunks = _split_text_chunks(text_content)
                 for sub_chunk in sub_chunks:
-                    prompt = _task_text(sub_chunk, profile)
+                    prompt = _task_text(sub_chunk, profile, consistency_state)
                     result, usage = _restore_with_retry(
                         provider, prompt, instruction, profile.model
                     )
@@ -1845,6 +2051,10 @@ def _restore_multimodal_zip(
                         parsed["status"] = "partial"
                     if parsed["failure_reason"] == BLANK_PAGE_REASON:
                         parsed["status"] = "blank"
+                    _update_consistency_state(consistency_state, restored_text)
+                    _write_consistency_checkpoint(
+                        artifacts.run_dir, profile, consistency_state, archive_label
+                    )
                     restored_parts.append(restored_text)
                     archive_file_parts.append(restored_text)
                     artifacts.write_restored_piece(
@@ -1877,6 +2087,7 @@ def _restore_multimodal_zip(
                     artifacts,
                     source_index,
                     source_label=f"{label}/{archive_label}",
+                    consistency_state=consistency_state,
                 )
                 if usage:
                     total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
@@ -1895,7 +2106,7 @@ def _restore_multimodal_zip(
                     chunks_record.append(ch)
                     chunk_idx += 1
             elif suffix in {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}:
-                prompt = _task_text("", profile)
+                prompt = _task_text("", profile, consistency_state)
                 result, usage = _restore_with_retry(
                     provider, prompt, instruction, profile.model, media_path=ext_file
                 )
@@ -1912,6 +2123,10 @@ def _restore_multimodal_zip(
                     failure_reason = BLANK_PAGE_REASON
                 elif usage and usage.get("truncated"):
                     failure_reason = "model context or output limit reached"
+                _update_consistency_state(consistency_state, restored_text)
+                _write_consistency_checkpoint(
+                    artifacts.run_dir, profile, consistency_state, archive_label
+                )
                 restored_parts.append(restored_text)
                 artifacts.write_archive_item_restored(
                     source_index, label, archive_label, restored_text + "\n"

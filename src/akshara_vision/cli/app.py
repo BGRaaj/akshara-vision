@@ -25,6 +25,7 @@ from akshara_vision.cli.workflows import (
     onboard,
     profile_command,
     quick_run,
+    resume_command,
     run_guided,
     show_home,
     ui_command,
@@ -46,7 +47,7 @@ if typer:
             show_home(interactive=_interactive_allowed())
 
     def _input_argument():
-        return typer.Argument(None, help="Input files, folders, globs, or manifest paths.")
+        return typer.Argument(None, help="Path(s) to input files, folders, globs, or manifests.")
 
     def _profile_option():
         return typer.Option(None, "--profile", "-p", help="Profile name.")
@@ -148,9 +149,16 @@ if typer:
     @app.command("assemble")
     @app.command("merge")
     def combine(
-        run_dir: Optional[str] = typer.Argument(None, help="Run folder with staged outputs."),
+        run_dir: Optional[str] = typer.Argument(None, help="Path to Akshara run folder with staged outputs."),
     ):
         combine_command(run_dir=run_dir)
+
+    @app.command("resume")
+    @app.command("recover")
+    def resume(
+        run_dir: Optional[str] = typer.Argument(None, help="Path to interrupted Akshara run folder."),
+    ):
+        resume_command(run_dir=run_dir)
 
     @app.command("check")
     @app.command("test")
@@ -161,7 +169,7 @@ if typer:
     @app.command("export")
     @app.command("x")
     def export(
-        run_dir: str = typer.Argument(..., help="Existing Akshara Vision run folder."),
+        run_dir: str = typer.Argument(..., help="Existing run folder or compiled output file."),
         formats: Optional[List[str]] = typer.Option(None, "--format", "-f", help="Output format."),
     ):
         export_command(run_dir=run_dir, formats=formats)
@@ -198,10 +206,14 @@ if typer:
 
 
 def main(argv: Optional[List[str]] = None) -> None:
-    if typer:
-        app(prog_name="akshara", args=argv, standalone_mode=argv is None)
-        return
-    _fallback_main(argv if argv is not None else sys.argv[1:])
+    try:
+        if typer:
+            app(prog_name="akshara", args=argv, standalone_mode=argv is None)
+            return
+        _fallback_main(argv if argv is not None else sys.argv[1:])
+    except (KeyboardInterrupt, EOFError):
+        print("\nGoodbye.")
+        sys.exit(1)
 
 
 def _interactive_allowed() -> bool:
@@ -255,11 +267,13 @@ def _fallback_main(argv: List[str]) -> None:
         doctor_command()
     elif command in {"combine", "assemble", "merge"}:
         combine_command(args.inputs[0] if args.inputs else None)
+    elif command in {"resume", "recover"}:
+        resume_command(args.inputs[0] if args.inputs else None)
     elif command in {"check", "test", "t"}:
         raise SystemExit(check_command())
     elif command in {"export", "x"}:
         if not args.inputs:
-            parser.error("export requires a run directory")
+            parser.error("export requires a run directory or output file")
         export_command(args.inputs[0], formats=args.format)
     elif command == "docs":
         docs_command()
