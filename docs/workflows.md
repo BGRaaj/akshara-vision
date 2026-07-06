@@ -18,9 +18,10 @@ Stages:
 2. Validate dependencies.
 3. Render PDF/Zip pages if media, or read raw text.
 4. Clean/Restore text with the selected model (multimodal visual transcription for images/PDFs, or prompt-based restoration for raw text).
-5. Optionally request translation through the selected model/profile.
-6. Export selected formats.
-7. Write manifest and review files.
+5. Save staged extraction checkpoints for each page or chunk.
+6. Optionally request translation through the selected model/profile.
+7. Export selected formats.
+8. Write manifest and review files.
 
 Execution modes:
 
@@ -33,6 +34,12 @@ Execution modes:
 The run uses chunked restoration for long raw text inputs, so it is processed in
 smaller model batches instead of one large prompt. Progress is timer-based and indeterminate;
 it shows the active step and elapsed time rather than a fake percentage.
+
+Interrupted runs can be rebuilt later with:
+
+```bash
+akv combine path/to/run-folder
+```
 
 ## Locked Quick Run
 

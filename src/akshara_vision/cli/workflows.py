@@ -24,7 +24,7 @@ from akshara_vision.core.models import (
     WorkflowProfile,
     effective_translation_mode,
 )
-from akshara_vision.core.pipeline import find_executable, run_pipeline
+from akshara_vision.core.pipeline import combine_stage_outputs, find_executable, run_pipeline
 from akshara_vision.instructions import (
     DEFAULT_PRESET,
     install_editable_instruction,
@@ -49,6 +49,7 @@ HOME_ACTIONS = [
     "API keys",
     "Instructions",
     "Doctor",
+    "Combine outputs",
     "Install dependencies",
     "Status",
     "Run checks",
@@ -137,6 +138,7 @@ def _menu_command() -> str:
         "API keys": "/env",
         "Instructions": "/instructions",
         "Doctor": "/doctor",
+        "Combine outputs": "/combine",
         "Install dependencies": "/install",
         "Status": "/status",
         "Run checks": "/check",
@@ -221,6 +223,8 @@ def _dispatch_session_command(raw: str) -> bool:
         instruct_command(action=args[0] if args else "view")
     elif command in {"/doctor", "/d"}:
         doctor_command()
+    elif command in {"/combine", "/assemble", "/merge"}:
+        combine_command(args[0] if args else None)
     elif command in {"/install", "/setup"}:
         install_command()
     elif command in {"/check", "/checks", "/test", "/t"}:
@@ -266,6 +270,7 @@ def _session_help() -> None:
             ["/mode", "Choose speed versus quality mode"],
             ["/ui", "Customize hero, density, prompt"],
             ["/doctor", "Check local setup"],
+            ["/combine [run-folder]", "Rebuild staged outputs into one document"],
             ["/install", "Install PDF/image system dependencies"],
             ["/check, /test", "Compile and run unit tests"],
             ["/clean", "Remove local generated outputs"],
@@ -1059,6 +1064,21 @@ def doctor_command() -> None:
     ui.table(rows)
     ui.section("Providers")
     ui.table(provider_status_rows())
+
+
+def combine_command(run_dir: Optional[str] = None) -> None:
+    ui.heading("Akshara Vision", "Combine Outputs")
+    target = run_dir or ui.text("Run folder containing staged outputs")
+    if not target:
+        ui.write("No folder selected.")
+        return
+    try:
+        result = combine_stage_outputs(Path(target).expanduser())
+    except Exception as exc:
+        ui.write(f"ERROR: {exc}")
+        return
+    ui.write(f"Combined output: {result['output_path']}")
+    ui.write(f"Language-specific alias: {result['alias_path']}")
 
 
 def check_command() -> int:

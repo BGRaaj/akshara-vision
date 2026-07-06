@@ -8,7 +8,12 @@ from akshara_vision.core.config import ConfigStore
 from akshara_vision.core.env import load_env_files
 from akshara_vision.core.input_discovery import discover_inputs
 from akshara_vision.core.models import RunRequest, WorkflowProfile
-from akshara_vision.core.pipeline import _restore_text, _split_text_chunks, run_pipeline
+from akshara_vision.core.pipeline import (
+    _restore_text,
+    _split_text_chunks,
+    combine_stage_outputs,
+    run_pipeline,
+)
 from akshara_vision.instructions import load_instruction
 from akshara_vision.registries.exporters import exporter_registry
 from akshara_vision.registries.providers import provider_registry
@@ -211,6 +216,23 @@ class CoreTests(unittest.TestCase):
             self.assertIn("नमस्ते दुनिया", output_text)
             self.assertIn('"resolved_mode": "translate"', manifest)
             self.assertIn('"translation_mode_effective": "translate"', manifest)
+            self.assertTrue((run_dir / "restored_text.txt").exists())
+            self.assertTrue((run_dir / "akshara_output__hi.txt").exists())
+
+    def test_combine_stage_outputs_rebuilds_final_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            pieces_dir = run_dir / "stages" / "restored" / "0001-source"
+            pieces_dir.mkdir(parents=True)
+            (pieces_dir / "0001-restored__english.txt").write_text("First part\n", encoding="utf-8")
+            (pieces_dir / "0002-restored__english.txt").write_text(
+                "Second part\n", encoding="utf-8"
+            )
+            result = combine_stage_outputs(run_dir)
+            self.assertTrue(result["output_path"].exists())
+            combined = result["output_path"].read_text(encoding="utf-8")
+            self.assertIn("First part", combined)
+            self.assertIn("Second part", combined)
 
     def test_failure_reason_helper_reports_blurry_or_unreadable_source(self):
         from akshara_vision.core.pipeline import _infer_failure_reason
@@ -250,7 +272,10 @@ class CoreTests(unittest.TestCase):
                 ('{"restored_text":"second chunk","uncertain":["term"],"notes":""}', {}),
             ]
             raw_text = ("first chunk line\n" * 150) + "\n\n" + ("second chunk line\n" * 150)
-            restored_text, record, usage = _restore_text(raw_text, "instruction", profile, provider)
+            artifacts = Mock()
+            restored_text, record, usage = _restore_text(
+                raw_text, "instruction", profile, provider, artifacts, 1, Path("source.txt")
+            )
             self.assertIn("first chunk", restored_text)
             self.assertIn("second chunk", restored_text)
             self.assertEqual(provider.restore_text.call_count, 2)
@@ -306,7 +331,7 @@ class CoreTests(unittest.TestCase):
                 "akshara_vision.providers.local.subprocess.run", return_value=fake_result
             ) as run_mock:
                 provider.restore_text("hello", "instruction", fast_profile.model)
-        self.assertEqual(run_mock.call_args.kwargs["timeout"], 120)
+        self.assertNotIn("timeout", run_mock.call_args.kwargs)
 
     def test_ollama_provider_handles_missing_stdout_and_uses_utf8(self):
         from unittest.mock import Mock, patch

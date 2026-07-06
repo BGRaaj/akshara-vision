@@ -52,7 +52,7 @@ class OllamaProvider:
                 instruction,
                 text,
                 media_path,
-                _provider_timeout(settings.execution_mode),
+                None,
             )
             if response:
                 return response, usage
@@ -67,7 +67,7 @@ class OllamaProvider:
                 instruction,
                 text,
                 None,
-                _provider_timeout(settings.execution_mode),
+                None,
             )
         except RuntimeError:
             response, usage = "", {}
@@ -83,7 +83,6 @@ class OllamaProvider:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=_provider_timeout(settings.execution_mode),
             )
         except Exception:
             return MockProvider().restore_text(text, instruction, settings)
@@ -174,7 +173,7 @@ def _ollama_chat_http(
     instruction: str,
     text: str,
     media_path: Optional[Path] = None,
-    timeout: int = 240,
+    timeout: Optional[float] = None,
 ) -> tuple[str, dict]:
     url = "http://localhost:11434/api/chat"
 
@@ -267,7 +266,7 @@ def openai_compatible_chat(
     instruction: str,
     text: str,
     api_key: Optional[str] = None,
-    timeout: int = 240,
+    timeout: Optional[float] = None,
     media_path: Optional[Path] = None,
 ) -> tuple[str, dict]:
     url = endpoint.rstrip("/") + "/chat/completions"

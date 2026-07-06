@@ -51,6 +51,8 @@ layout-accurate OCR exports unless a future native OCR/layout backend writes tha
 Every run also writes:
 
 - `raw_ocr.txt`
+- `restored_text.txt`
+- `stages/` with per-page and per-chunk checkpoint files
 - `run_manifest.json`
 - `sources/`
 

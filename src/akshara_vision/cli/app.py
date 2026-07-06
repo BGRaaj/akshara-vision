@@ -11,6 +11,7 @@ from akshara_vision.cli.workflows import (
     batch_run,
     check_command,
     clean_command,
+    combine_command,
     docs_command,
     env_command,
     doctor_command,
@@ -143,6 +144,14 @@ if typer:
     def doctor():
         doctor_command()
 
+    @app.command("combine")
+    @app.command("assemble")
+    @app.command("merge")
+    def combine(
+        run_dir: Optional[str] = typer.Argument(None, help="Run folder with staged outputs."),
+    ):
+        combine_command(run_dir=run_dir)
+
     @app.command("check")
     @app.command("test")
     @app.command("t")
@@ -244,6 +253,8 @@ def _fallback_main(argv: List[str]) -> None:
         instruct_command(action=action)
     elif command in {"doctor", "d"}:
         doctor_command()
+    elif command in {"combine", "assemble", "merge"}:
+        combine_command(args.inputs[0] if args.inputs else None)
     elif command in {"check", "test", "t"}:
         raise SystemExit(check_command())
     elif command in {"export", "x"}:

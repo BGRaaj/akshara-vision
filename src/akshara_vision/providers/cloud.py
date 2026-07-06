@@ -46,7 +46,7 @@ class CloudProvider:
                 instruction=instruction,
                 text=text,
                 api_key=api_key,
-                timeout=_provider_timeout(settings.execution_mode),
+                timeout=None,
                 media_path=media_path,
             )
         elif self.name == "anthropic":
@@ -55,7 +55,7 @@ class CloudProvider:
                 settings.model,
                 instruction,
                 text,
-                _provider_timeout(settings.execution_mode),
+                None,
                 _generation_limit(settings, _context_limit(settings)),
                 media_path=media_path,
             )
@@ -65,7 +65,7 @@ class CloudProvider:
                 settings.model,
                 instruction,
                 text,
-                _provider_timeout(settings.execution_mode),
+                None,
                 _generation_limit(settings, _context_limit(settings)),
                 media_path=media_path,
             )
@@ -88,7 +88,7 @@ def _anthropic_message(
     model: str,
     instruction: str,
     text: str,
-    timeout: int,
+    timeout: Optional[float],
     max_tokens: int,
     media_path: Optional[Path] = None,
 ) -> tuple[str, dict]:
@@ -196,7 +196,7 @@ def _gemini_generate(
     model: str,
     instruction: str,
     text: str,
-    timeout: int,
+    timeout: Optional[float],
     max_tokens: int,
     media_path: Optional[Path] = None,
 ) -> tuple[str, dict]:

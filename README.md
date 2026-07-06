@@ -35,7 +35,7 @@ model, provider, scan quality, script complexity, and document damage.
 | Profiles | Portable TOML profiles with defaults for workflow, languages, translation mode, model, output formats, destination, and locked quick runs |
 | Models | Ollama, LM Studio, Jan, llama.cpp/OpenAI-compatible local servers, OpenAI, Anthropic, Gemini, and mock/offline preview |
 | Exports | Text, Markdown, HTML, DOCX, EPUB, JSON, JSONL, YAML, OCR sidecars, review files, and PDF request notes |
-| Auditability | Raw OCR file, copied source inputs, structured run manifest, model usage metadata, truncation warnings, and failure reasons |
+| Auditability | Raw OCR file, restored checkpoint, staged per-page/per-chunk outputs, copied source inputs, structured run manifest, model usage metadata, truncation warnings, and failure reasons |
 
 ## Install
 
@@ -100,6 +100,7 @@ Inside the interactive shell:
 | `akshara model` | `akv m` | Detect, test, and choose local/cloud models |
 | `akshara instruct` | `akv ins` | View, edit, reset, or install editable instructions |
 | `akshara doctor` | `akv d` | Check dependencies, model providers, API keys, and export support |
+| `akshara combine` | `akv combine` | Rebuild a final document from staged outputs |
 | `akshara export` | `akv x` | Re-export an existing run |
 | `akshara check` | `akv t` | Compile and run unit tests |
 | `akshara clean` | `akv clean` | Remove generated local artifacts |
@@ -133,6 +134,9 @@ The `.txt` export is the primary default. Structured exports include metadata
 for inputs, provider, model, workflow, translation state, usage, restoration
 chunks, uncertainty notes, and failure reasons.
 
+Each run also writes staged outputs under `stages/` so interrupted runs can be
+recombined later without reprocessing completed pages or chunks.
+
 ## Translation
 
 Translation runs after extraction and restoration are complete. This keeps the
@@ -156,6 +160,9 @@ is `auto` or `off`, the CLI resolves it as `auto -> translate` before the run.
 
 Language fields accept full names or local labels such as `English`,
 `Hindi`, or `Kannada`, and the match is case-insensitive.
+
+If a long run is interrupted, use `akv combine <run-folder>` to rebuild the
+final document from the staged files on disk.
 
 ## Models And API Keys
 

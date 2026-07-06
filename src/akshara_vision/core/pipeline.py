@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import zipfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -36,11 +37,88 @@ EXECUTION_MODE_IMAGE_PSM = {
     "quality": "1",
 }
 
-EXECUTION_MODE_TIMEOUTS = {
-    "fast": 120,
-    "balanced": 240,
-    "quality": 480,
-}
+@dataclass
+class StageWriter:
+    run_dir: Path
+    source_language: str
+    output_language: str
+
+    def __post_init__(self) -> None:
+        self.stages_dir = self.run_dir / "stages"
+        self.restored_dir = self.stages_dir / "restored"
+        self.translated_dir = self.stages_dir / "translated"
+        self.combined_dir = self.stages_dir / "combined"
+        self.restored_dir.mkdir(parents=True, exist_ok=True)
+        self.translated_dir.mkdir(parents=True, exist_ok=True)
+        self.combined_dir.mkdir(parents=True, exist_ok=True)
+
+    def write_raw_checkpoint(self, text: str) -> Path:
+        path = self.run_dir / "restored_text.txt"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def write_raw_ocr(self, text: str) -> Path:
+        path = self.run_dir / "raw_ocr.txt"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def write_restored_piece(
+        self, source_index: int, source_name: str, piece_index: int, text: str
+    ) -> Path:
+        return self._write_piece(
+            self.restored_dir, source_index, source_name, piece_index, "restored", text
+        )
+
+    def write_translated_piece(
+        self, source_index: int, source_name: str, piece_index: int, text: str
+    ) -> Path:
+        return self._write_piece(
+            self.translated_dir, source_index, source_name, piece_index, "translated", text
+        )
+
+    def write_combined_restored(self, text: str) -> Path:
+        path = self.combined_dir / f"restored__{_language_slug(self.source_language)}.txt"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def write_combined_translated(self, text: str) -> Path:
+        path = self.combined_dir / (
+            f"translated__{_language_slug(self.source_language)}-to-{_language_slug(self.output_language)}.txt"
+        )
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def write_final_output_aliases(self, text: str) -> List[Path]:
+        aliases = [
+            self.run_dir / "akshara_output.txt",
+            self.run_dir
+            / f"akshara_output__{_language_slug(self.output_language)}.txt",
+        ]
+        written = []
+        for path in aliases:
+            path.write_text(text, encoding="utf-8")
+            written.append(path)
+        return written
+
+    def write_stage_manifest(self, manifest: Dict[str, object]) -> Path:
+        path = self.stages_dir / "stage_manifest.json"
+        path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return path
+
+    def _write_piece(
+        self,
+        stage_dir: Path,
+        source_index: int,
+        source_name: str,
+        piece_index: int,
+        stage_name: str,
+        text: str,
+    ) -> Path:
+        source_dir = stage_dir / f"{source_index:04d}-{_slugify(source_name)}"
+        source_dir.mkdir(parents=True, exist_ok=True)
+        path = source_dir / f"{piece_index:04d}-{stage_name}__{_language_slug(self.output_language if stage_name == 'translated' else self.source_language)}.txt"
+        path.write_text(text, encoding="utf-8")
+        return path
 
 
 def run_pipeline(
@@ -53,6 +131,11 @@ def run_pipeline(
     run_dir = output_root / f"{profile.name}-{timestamp}"
     _notify(progress, "prepare", "Preparing run folder")
     run_dir.mkdir(parents=True, exist_ok=True)
+    artifacts = StageWriter(
+        run_dir=run_dir,
+        source_language=profile.source_language,
+        output_language=profile.output_language,
+    )
 
     _notify(progress, "instructions", "Loading restoration instructions")
     instruction = load_instruction(profile.instruction_preset)
@@ -94,6 +177,8 @@ def run_pipeline(
                     profile,
                     provider,
                     progress,
+                    artifacts,
+                    index,
                 )
             elif suffix == ".zip":
                 cleaned, restoration_record, usage = _restore_multimodal_zip(
@@ -102,10 +187,12 @@ def run_pipeline(
                     profile,
                     provider,
                     progress,
+                    artifacts,
+                    index,
                 )
             else:
                 cleaned, restoration_record, usage = _restore_multimodal_image(
-                    path, instruction, profile, provider
+                    path, instruction, profile, provider, artifacts, index
                 )
             raw_text = f"[Multimodal Input: {path.name}]"
             _add_usage(usage)
@@ -114,7 +201,7 @@ def run_pipeline(
             raw_text = path.read_text(encoding="utf-8", errors="replace")
             _notify(progress, "clean", f"Restoring text from {path.name}", advance=1)
             cleaned, restoration_record, usage = _restore_text(
-                raw_text, instruction, profile, provider
+                raw_text, instruction, profile, provider, artifacts, index, path
             )
             _add_usage(usage)
 
@@ -134,12 +221,15 @@ def run_pipeline(
     raw_text = "\n\n".join(raw_parts).strip() + "\n"
     cleaned_text = "\n\n".join(cleaned_parts).strip() + "\n"
     _notify(progress, "write", "Writing raw OCR text", advance=1)
-    (run_dir / "raw_ocr.txt").write_text(raw_text, encoding="utf-8")
+    artifacts.write_raw_ocr(raw_text)
+    artifacts.write_raw_checkpoint(cleaned_text)
+    artifacts.write_combined_restored(cleaned_text)
 
     translation_result = _apply_translation_stage(
         cleaned_text,
         profile,
         provider,
+        artifacts,
         progress,
     )
     final_text = translation_result["text"]
@@ -197,8 +287,75 @@ def run_pipeline(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    artifacts.write_stage_manifest(
+        {
+            "run_dir": _safe_path(run_dir),
+            "source_language": profile.source_language,
+            "output_language": profile.output_language,
+            "translation_mode": profile.translation_mode,
+            "translation_mode_effective": profile.effective_translation_mode(),
+            "inputs": [_safe_path(path) for path in request.inputs.files],
+        }
+    )
+    artifacts.write_final_output_aliases(final_text)
+    if translation_metadata.get("status") != "skipped":
+        artifacts.write_combined_translated(final_text)
     _notify(progress, "complete", "Run complete", advance=1)
     return {"run_dir": run_dir, "exports": exports, "manifest": manifest}
+
+
+def combine_stage_outputs(run_dir: Path) -> Dict[str, object]:
+    run_dir = Path(run_dir)
+    stage_root = run_dir / "stages"
+    if not stage_root.exists():
+        raise RuntimeError(f"No staged outputs found in {run_dir}.")
+
+    translated_groups = sorted((stage_root / "translated").glob("*"))
+    restored_groups = sorted((stage_root / "restored").glob("*"))
+    source_groups = translated_groups if translated_groups else restored_groups
+    if not source_groups:
+        raise RuntimeError(f"No staged pieces found in {stage_root}.")
+
+    combined_parts: List[str] = []
+    for source_group in source_groups:
+        if not source_group.is_dir():
+            continue
+        piece_paths = sorted(source_group.glob("*.txt"))
+        if not piece_paths:
+            continue
+        pieces = [path.read_text(encoding="utf-8", errors="replace").strip() for path in piece_paths]
+        combined_parts.append("\n".join(part for part in pieces if part))
+
+    combined_text = "\n\n".join(part for part in combined_parts if part.strip()).strip()
+    if not combined_text:
+        combined_text = "[missing text]"
+
+    combined_dir = stage_root / "combined"
+    combined_dir.mkdir(parents=True, exist_ok=True)
+    combined_path = combined_dir / "recombined.txt"
+    combined_path.write_text(combined_text + "\n", encoding="utf-8")
+
+    run_manifest = run_dir / "run_manifest.json"
+    language_suffix = "combined"
+    if run_manifest.exists():
+        try:
+            manifest = json.loads(run_manifest.read_text(encoding="utf-8"))
+            metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+            language_suffix = _language_slug(metadata.get("output_language") or language_suffix)
+        except json.JSONDecodeError:
+            pass
+
+    output_alias = run_dir / f"akshara_output__{language_suffix}.txt"
+    output_alias.write_text(combined_text + "\n", encoding="utf-8")
+    canonical = run_dir / "akshara_output.txt"
+    canonical.write_text(combined_text + "\n", encoding="utf-8")
+
+    return {
+        "run_dir": run_dir,
+        "combined_path": combined_path,
+        "output_path": canonical,
+        "alias_path": output_alias,
+    }
 
 
 def estimate_progress_units(request: RunRequest) -> int:
@@ -214,6 +371,9 @@ def _restore_text(
     instruction: str,
     profile: WorkflowProfile,
     provider,
+    artifacts: StageWriter,
+    source_index: int,
+    source_path: Path,
     media_path: Optional[Path] = None,
 ) -> tuple:
     chunks = _split_text_chunks(raw_text)
@@ -243,6 +403,7 @@ def _restore_text(
             restored_text = chunk.strip()
             parsed["failure_reason"] = parsed["failure_reason"] or "source unreadable or too blurry"
         restored_chunks.append(restored_text)
+        artifacts.write_restored_piece(source_index, source_path.name, index, restored_text + "\n")
         structured_chunks.append(
             {
                 "index": index,
@@ -283,6 +444,18 @@ def _safe_path(path: Path) -> str:
         return str(path.resolve().relative_to(Path.cwd().resolve()))
     except ValueError:
         return path.name
+
+
+def _slugify(value: object, default: str = "item") -> str:
+    text = str(value or "").strip().lower()
+    text = "".join(char if char.isalnum() else "-" for char in text)
+    text = re.sub(r"-+", "-", text)
+    text = text.strip("-")
+    return text or default
+
+
+def _language_slug(value: object) -> str:
+    return _slugify(value, default="language")
 
 
 def _notify(
@@ -555,7 +728,12 @@ def _task_text(raw_text: str, profile: WorkflowProfile) -> str:
 
 
 def _restore_multimodal_image(
-    path: Path, instruction: str, profile: WorkflowProfile, provider
+    path: Path,
+    instruction: str,
+    profile: WorkflowProfile,
+    provider,
+    artifacts: StageWriter,
+    source_index: int,
 ) -> tuple:
     """Send an image directly to the vision model and use its raw text output.
 
@@ -574,6 +752,7 @@ def _restore_multimodal_image(
     if not restored_text:
         restored_text = "[missing text]"
         failure_reason = _infer_failure_reason(result, usage, media_path=path)
+    artifacts.write_restored_piece(source_index, path.name, 1, restored_text + "\n")
 
     record = {
         "status": "restored" if not failure_reason else "partial",
@@ -757,6 +936,7 @@ def _apply_translation_stage(
     cleaned_text: str,
     profile: WorkflowProfile,
     provider,
+    artifacts: StageWriter,
     progress: Optional[ProgressCallback] = None,
 ) -> Dict[str, object]:
     mode = effective_translation_mode(
@@ -784,7 +964,7 @@ def _apply_translation_stage(
             },
         }
 
-    chunks = _split_text_chunks(cleaned_text)
+    chunks = _split_text_chunks(cleaned_text, max_chars=8000)
     translated_parts: List[str] = []
     translation_chunks: List[Dict[str, object]] = []
     total_usage = {
@@ -812,6 +992,7 @@ def _apply_translation_stage(
             translated_text = chunk.strip()
             parsed["failure_reason"] = parsed["failure_reason"] or "model returned malformed output"
         translated_parts.append(translated_text)
+        artifacts.write_translated_piece(1, "combined", index, translated_text + "\n")
         translation_chunks.append(
             {
                 "index": index,
@@ -871,6 +1052,8 @@ def _restore_multimodal_pdf(
     profile: WorkflowProfile,
     provider,
     progress: Optional[ProgressCallback],
+    artifacts: StageWriter,
+    source_index: int,
 ) -> tuple:
     pdftoppm_exe = find_executable("pdftoppm")
     if not pdftoppm_exe:
@@ -892,7 +1075,6 @@ def _restore_multimodal_pdf(
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=EXECUTION_MODE_TIMEOUTS[execution_mode],
         )
         if render.returncode != 0:
             raise RuntimeError(
@@ -934,6 +1116,7 @@ def _restore_multimodal_pdf(
                 restored_text = "[missing text]"
                 failure_reason = _infer_failure_reason(result, usage, media_path=page_img)
             restored_pages.append(restored_text)
+            artifacts.write_restored_piece(source_index, path.name, idx, restored_text + "\n")
             chunks_record.append(
                 {
                     "index": idx,
@@ -967,6 +1150,8 @@ def _restore_multimodal_zip(
     profile: WorkflowProfile,
     provider,
     progress: Optional[ProgressCallback],
+    artifacts: StageWriter,
+    source_index: int,
 ) -> tuple:
     temp_dir = tempfile.TemporaryDirectory(prefix="akshara-multimodal-zip-")
     try:
@@ -1010,6 +1195,9 @@ def _restore_multimodal_zip(
                     parsed = _parse_restoration_result(result, sub_chunk)
                     restored_text = parsed["restored_text"].strip()
                     restored_parts.append(restored_text)
+                    artifacts.write_restored_piece(
+                        source_index, path.name, chunk_idx, restored_text + "\n"
+                    )
                     chunks_record.append(
                         {
                             "index": chunk_idx,
@@ -1054,6 +1242,9 @@ def _restore_multimodal_zip(
                     restored_text = "[missing text]"
                     failure_reason = _infer_failure_reason(result, usage, media_path=ext_file)
                 restored_parts.append(restored_text)
+                artifacts.write_restored_piece(
+                    source_index, path.name, chunk_idx, restored_text + "\n"
+                )
                 chunks_record.append(
                     {
                         "index": chunk_idx,
