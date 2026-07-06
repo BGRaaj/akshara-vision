@@ -6,6 +6,17 @@ Run:
 akv i
 ```
 
+Windows PowerShell users should activate with `.\.venv\Scripts\Activate.ps1` and
+install with `python -m pip install -e .`. Avoid `source .venv/bin/activate`
+and avoid `python3 -m pip ...` after activation.
+
+If PowerShell cannot find `akv`, run either:
+
+```powershell
+.\.venv\Scripts\akv.exe i
+python -m akshara_vision i
+```
+
 When a text prompt shows a default value, press `Enter` to accept it. Menus use
 arrow keys, search, space for checkbox selection, and `Enter` to continue.
 

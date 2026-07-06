@@ -1,4 +1,7 @@
 import io
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -12,6 +15,23 @@ from akshara_vision.core.models import WorkflowProfile
 
 
 class CliFallbackTests(unittest.TestCase):
+    def test_module_entrypoint_help_works_without_script_on_path(self):
+        root = Path(__file__).resolve().parents[1]
+        env = os.environ.copy()
+        env["PYTHONPATH"] = f"{root / 'src'}{os.pathsep}{env.get('PYTHONPATH', '')}".rstrip(os.pathsep)
+        env.setdefault("PYTHONPYCACHEPREFIX", str(Path(tempfile.gettempdir()) / "akshara-vision-pycache"))
+        result = subprocess.run(
+            [sys.executable, "-m", "akshara_vision", "--help"],
+            cwd=root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Akshara Vision", result.stdout)
+
     def test_home_screen_prints_hero(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch("akshara_vision.cli.workflows.ConfigStore", lambda: ConfigStore(Path(tmp))):

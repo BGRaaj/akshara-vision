@@ -51,16 +51,43 @@ Exports     1
 
 ## Install
 
+macOS / Linux:
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install -e .
+python -m pip install -e .
+```
+
+Windows PowerShell:
+
+```powershell
+py -3 -m venv .venv
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e .
+```
+
+After activation, use `python`, not `python3`. In PowerShell, `python3` can bypass
+the active venv and install scripts somewhere that is not on PATH.
+
+If `akv` is still not found:
+
+```powershell
+.\.venv\Scripts\akv.exe i
+python -m akshara_vision i
 ```
 
 ## Start
 
 ```bash
 akshara
+```
+
+The module entrypoint is also available anywhere the package is installed:
+
+```bash
+python -m akshara_vision
 ```
 
 Inside the interactive shell:

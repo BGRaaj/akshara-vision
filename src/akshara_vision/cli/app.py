@@ -181,7 +181,10 @@ def _interactive_allowed() -> bool:
 
 
 def _fallback_main(argv: List[str]) -> None:
-    parser = argparse.ArgumentParser(prog="akshara")
+    parser = argparse.ArgumentParser(
+        prog="akshara",
+        description="Akshara Vision: restore, read, and preserve archival books.",
+    )
     parser.add_argument("command", nargs="?", default="home")
     parser.add_argument("inputs", nargs="*")
     parser.add_argument("--profile", "-p", default=None)
