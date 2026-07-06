@@ -2,6 +2,8 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -37,6 +39,7 @@ HOME_ACTIONS = [
     "API keys",
     "Instructions",
     "Doctor",
+    "Run checks",
     "Docs",
     "Clean local outputs",
     "Exit",
@@ -66,6 +69,7 @@ def _render_home() -> None:
             ("API Keys", "/env", "Configure providers"),
             ("Profiles", "/profiles", "Defaults and locks"),
             ("Doctor", "/doctor", "System readiness"),
+            ("Checks", "/check", "Compile and test"),
             ("Customize", "/ui", "Prompt and hero design"),
         ],
         compact=prefs["density"] == "compact",
@@ -117,6 +121,7 @@ def _menu_command() -> str:
         "API keys": "/env",
         "Instructions": "/instructions",
         "Doctor": "/doctor",
+        "Run checks": "/check",
         "Docs": "/docs",
         "Clean local outputs": "/clean",
         "Exit": "/exit",
@@ -182,6 +187,8 @@ def _dispatch_session_command(raw: str) -> bool:
         instruct_command(action=args[0] if args else "view")
     elif command in {"/doctor", "/d"}:
         doctor_command()
+    elif command in {"/check", "/checks", "/test", "/t"}:
+        check_command()
     elif command in {"/docs"}:
         docs_command()
     elif command in {"/clean"}:
@@ -222,6 +229,7 @@ def _session_help() -> None:
             ["/guide", "Choose guidance level"],
             ["/ui", "Customize hero, density, prompt"],
             ["/doctor", "Check local setup"],
+            ["/check, /test", "Compile and run unit tests"],
             ["/clean", "Remove local generated outputs"],
             ["/exit", "Leave the session"],
         ]
@@ -304,8 +312,9 @@ def ui_command() -> None:
 def onboard(store: Optional[ConfigStore] = None, profile_name: Optional[str] = None) -> WorkflowProfile:
     store = store or ConfigStore()
     ui.heading("Akshara Vision", "Onboarding")
+    ui.write("Press Enter to accept the shown default. Use arrow keys for menus.")
     profile = WorkflowProfile(name=profile_name or "default")
-    profile.name = ui.text("Profile name", profile.name)
+    profile.name = ui.text("Profile name (Enter accepts default)", profile.name)
     profile.workflow = ui.choose("Workflow", WORKFLOWS, profile.workflow)
     profile.document_type = ui.choose("Document type", DOCUMENT_TYPES, profile.document_type)
     profile.source_language = ui.text("Source language", profile.source_language)
@@ -616,6 +625,33 @@ def doctor_command() -> None:
     ui.table(rows)
     ui.section("Providers")
     ui.table(provider_status_rows())
+
+
+def check_command() -> int:
+    ui.heading("Akshara Vision", "Check")
+    env = os.environ.copy()
+    env.setdefault("PYTHONPYCACHEPREFIX", str(Path(tempfile.gettempdir()) / "akshara-vision-pycache"))
+    if Path("src").exists():
+        existing_pythonpath = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = f"src{os.pathsep}{existing_pythonpath}" if existing_pythonpath else "src"
+    commands = [
+        [sys.executable, "-m", "compileall", "-q", "src", "tests"],
+        [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+    ]
+    failed = 0
+    with ui.progress("Checks", total=len(commands)) as reporter:
+        for command in commands:
+            label = " ".join(command[1:])
+            reporter.update(label)
+            result = subprocess.run(command, check=False, env=env)
+            if result.returncode != 0:
+                failed = result.returncode
+                break
+    if failed:
+        ui.write("FAILED  Checks did not pass.")
+        return failed
+    ui.write("SUCCESS  Compile and unit tests passed.")
+    return 0
 
 
 def provider_status_rows() -> List[List[str]]:

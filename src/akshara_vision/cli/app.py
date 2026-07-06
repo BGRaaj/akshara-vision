@@ -9,6 +9,7 @@ except ModuleNotFoundError:  # pragma: no cover - dependency fallback
 
 from akshara_vision.cli.workflows import (
     batch_run,
+    check_command,
     clean_command,
     docs_command,
     env_command,
@@ -128,6 +129,12 @@ if typer:
     def doctor():
         doctor_command()
 
+    @app.command("check")
+    @app.command("test")
+    @app.command("t")
+    def check():
+        raise typer.Exit(check_command())
+
     @app.command("export")
     @app.command("x")
     def export(
@@ -211,6 +218,8 @@ def _fallback_main(argv: List[str]) -> None:
         instruct_command(action=action)
     elif command in {"doctor", "d"}:
         doctor_command()
+    elif command in {"check", "test", "t"}:
+        raise SystemExit(check_command())
     elif command in {"export", "x"}:
         if not args.inputs:
             parser.error("export requires a run directory")

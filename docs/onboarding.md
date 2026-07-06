@@ -6,6 +6,9 @@ Run:
 akv i
 ```
 
+When a text prompt shows a default value, press `Enter` to accept it. Menus use
+arrow keys, search, space for checkbox selection, and `Enter` to continue.
+
 Or open the shell and choose from the board:
 
 ```bash

@@ -39,6 +39,7 @@ Core commands:
 | `akshara env` | `akshara keys` | API keys and local endpoints |
 | `akshara instruct` | `akv ins` | Instructions |
 | `akshara doctor` | `akv d` | Diagnostics |
+| `akshara check` | `akv t` | Compile and run tests |
 | `akshara export` | `akv x` | Re-export |
 | `akshara guide` | `akv g` | Choose guidance level |
 | `akshara ui` | `akshara theme` | Customize terminal display |
@@ -61,6 +62,7 @@ Interactive session commands:
 | `/guide` | Choose guidance level |
 | `/ui` | Customize hero, density, prompt |
 | `/doctor` | Check local setup |
+| `/check`, `/test` | Compile and run unit tests |
 | `/clean` | Remove generated outputs |
 | `/exit` | Leave the session |
 

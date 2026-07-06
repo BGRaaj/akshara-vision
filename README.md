@@ -105,6 +105,7 @@ Onboarding looks like this:
 | `akv m setup` | Choose and save a model |
 | `akv env` | Show API key and endpoint setup |
 | `akv d` | Check OCR tools and models |
+| `akv check` / `akv t` | Compile and run unit tests |
 | `akv clean` | Remove generated local artifacts |
 
 ## Models And API Keys
@@ -157,6 +158,9 @@ is installed. PDF/image OCR depends on local tools such as `pdftotext`, `pdftopp
 ## Test
 
 ```bash
-PYTHONPATH=src python3 -m unittest discover -s tests
+akv check
 akv q examples/sample.txt --dry-run
 ```
+
+`compileall` is a Python module, so run it directly as `python -m compileall` if
+you need the raw command. For normal project checks, use `akv check`.
