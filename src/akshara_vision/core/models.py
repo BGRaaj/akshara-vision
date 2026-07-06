@@ -78,8 +78,14 @@ class WorkflowProfile:
                 endpoint=str(model_data.get("endpoint") or "") or None,
                 temperature=float(model_data.get("temperature") or 0.1),
                 execution_mode=str(model_data.get("execution_mode") or "balanced"),
-                context_window=int(model_data.get("context_window")) if model_data.get("context_window") is not None and str(model_data.get("context_window")).strip() not in {"", "None"} else None,
-                generation_limit=int(model_data.get("generation_limit")) if model_data.get("generation_limit") is not None and str(model_data.get("generation_limit")).strip() not in {"", "None"} else None,
+                context_window=int(model_data.get("context_window"))
+                if model_data.get("context_window") is not None
+                and str(model_data.get("context_window")).strip() not in {"", "None"}
+                else None,
+                generation_limit=int(model_data.get("generation_limit"))
+                if model_data.get("generation_limit") is not None
+                and str(model_data.get("generation_limit")).strip() not in {"", "None"}
+                else None,
             ),
         )
 

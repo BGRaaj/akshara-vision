@@ -16,8 +16,7 @@ class ProviderStatus:
 class TextProvider(Protocol):
     name: str
 
-    def status(self) -> ProviderStatus:
-        ...
+    def status(self) -> ProviderStatus: ...
 
     def restore_text(
         self,
@@ -25,6 +24,4 @@ class TextProvider(Protocol):
         instruction: str,
         settings: ModelSettings,
         media_path: Optional[Path] = None,
-    ) -> tuple[str, dict]:
-        ...
-
+    ) -> tuple[str, dict]: ...

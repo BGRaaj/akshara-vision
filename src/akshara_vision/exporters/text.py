@@ -32,12 +32,14 @@ class HtmlExporter:
 
     def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
         title = html.escape(str(metadata.get("title") or "Akshara Vision Output"))
-        body = "\n".join(f"<p>{html.escape(part)}</p>" for part in text.split("\n\n") if part.strip())
+        body = "\n".join(
+            f"<p>{html.escape(part)}</p>" for part in text.split("\n\n") if part.strip()
+        )
         path = destination.with_suffix(".html")
         path.write_text(
             "<!doctype html>\n"
-            "<html lang=\"en\">\n"
-            "<head><meta charset=\"utf-8\"><title>"
+            '<html lang="en">\n'
+            '<head><meta charset="utf-8"><title>'
             f"{title}</title></head>\n<body>\n{body}\n</body>\n</html>\n",
             encoding="utf-8",
         )
@@ -61,7 +63,9 @@ class JsonlExporter:
         del metadata
         path = destination.with_suffix(".jsonl")
         lines = []
-        for index, paragraph in enumerate([part for part in text.split("\n\n") if part.strip()], start=1):
+        for index, paragraph in enumerate(
+            [part for part in text.split("\n\n") if part.strip()], start=1
+        ):
             lines.append(json.dumps({"index": index, "text": paragraph}, ensure_ascii=False))
         path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
         return ExportResult(self.name, path)
@@ -101,7 +105,9 @@ class EpubExporter:
     def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
         title = str(metadata.get("title") or "Akshara Vision Output")
         path = destination.with_suffix(".epub")
-        body = "\n".join(f"<p>{html.escape(part)}</p>" for part in text.split("\n\n") if part.strip())
+        body = "\n".join(
+            f"<p>{html.escape(part)}</p>" for part in text.split("\n\n") if part.strip()
+        )
         with zipfile.ZipFile(path, "w") as archive:
             archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
             archive.writestr("META-INF/container.xml", _epub_container())
@@ -165,9 +171,8 @@ def _epub_package(title: str) -> str:
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="3.0">'
-        "<metadata><dc:title xmlns:dc=\"http://purl.org/dc/elements/1.1/\">"
+        '<metadata><dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">'
         f"{html.escape(title)}</dc:title></metadata>"
         '<manifest><item id="content" href="content.xhtml" media-type="application/xhtml+xml"/></manifest>'
         '<spine><itemref idref="content"/></spine></package>'
     )
-

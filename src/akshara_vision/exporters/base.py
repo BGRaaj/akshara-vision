@@ -14,6 +14,4 @@ class ExportResult:
 class Exporter(Protocol):
     name: str
 
-    def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
-        ...
-
+    def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult: ...

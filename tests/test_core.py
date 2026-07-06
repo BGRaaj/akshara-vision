@@ -23,7 +23,9 @@ class CoreTests(unittest.TestCase):
     def test_profile_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = ConfigStore(Path(tmp))
-            profile = WorkflowProfile(name="book-cleanup", output_formats=["txt", "md"], locked=True)
+            profile = WorkflowProfile(
+                name="book-cleanup", output_formats=["txt", "md"], locked=True
+            )
             profile.model.execution_mode = "quality"
             profile.model.generation_limit = 16384
             store.save_profile(profile)
@@ -42,6 +44,15 @@ class CoreTests(unittest.TestCase):
             self.assertTrue(store.delete_profile("second"))
             self.assertEqual(store.default_profile_name(), "first")
             self.assertFalse(store.profile_exists("second"))
+
+    def test_profile_names_are_filesystem_safe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ConfigStore(Path(tmp))
+            profile = WorkflowProfile(name="../kannada books")
+            path = store.save_profile(profile)
+            self.assertEqual(profile.name, "kannada-books")
+            self.assertEqual(path.name, "kannada-books.toml")
+            self.assertTrue(path.exists())
 
     def test_execution_mode_round_trips_inside_model_block(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -95,7 +106,9 @@ class CoreTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / ".env"
-            path.write_text("AKSHARA_OPENAI_COMPATIBLE_BASE_URL=http://localhost:9999/v1\n", encoding="utf-8")
+            path.write_text(
+                "AKSHARA_OPENAI_COMPATIBLE_BASE_URL=http://localhost:9999/v1\n", encoding="utf-8"
+            )
             old_value = os.environ.get("AKSHARA_OPENAI_COMPATIBLE_BASE_URL")
             os.environ["AKSHARA_OPENAI_COMPATIBLE_BASE_URL"] = "http://localhost:1234/v1"
             try:
@@ -145,7 +158,9 @@ class CoreTests(unittest.TestCase):
             tmp_path = Path(tmp)
             source = tmp_path / "source.txt"
             source.write_text("hello", encoding="utf-8")
-            profile = WorkflowProfile(name="progress", output_formats=["txt"], output_dir=str(tmp_path / "out"))
+            profile = WorkflowProfile(
+                name="progress", output_formats=["txt"], output_dir=str(tmp_path / "out")
+            )
             selection = discover_inputs([str(source)])
             events = []
             run_pipeline(
@@ -178,32 +193,27 @@ class CoreTests(unittest.TestCase):
 
     def test_json_and_multimodal_extraction_with_thinking_tokens(self):
         from akshara_vision.core.pipeline import _extract_json_object, _extract_multimodal_text
-        
+
         # Test case 1: Closed think block and valid JSON with inner braces in restored_text
         input_1 = (
             "<think>\nI should output JSON with key {restored_text}\n</think>\n"
-            "{\n  \"restored_text\": \"This has {inner braces}\",\n  \"uncertain\": []\n}"
+            '{\n  "restored_text": "This has {inner braces}",\n  "uncertain": []\n}'
         )
         json_obj = _extract_json_object(input_1)
         self.assertIn("This has {inner braces}", json_obj)
         self.assertNotIn("<think>", json_obj)
-        
+
         # Test case 2: Unclosed think block (truncated response)
-        input_2 = (
-            "<think>\nI am thinking... and got cut off"
-        )
+        input_2 = "<think>\nI am thinking... and got cut off"
         json_obj_empty = _extract_json_object(input_2)
         self.assertEqual(json_obj_empty, "")
-        
+
         # Test case 3: Unclosed think block followed by nothing (truncated raw response)
         text_out = _extract_multimodal_text(input_2)
         self.assertEqual(text_out, "")
-        
+
         # Test case 4: Closed think block followed by raw text (non-JSON vision model output)
-        input_4 = (
-            "<think>\nThinking about the image...\n</think>\n"
-            "ಕನ್ನಡ ಪಠ್ಯ\n"
-        )
+        input_4 = "<think>\nThinking about the image...\n</think>\nಕನ್ನಡ ಪಠ್ಯ\n"
         text_out_raw = _extract_multimodal_text(input_4)
         self.assertEqual(text_out_raw.strip(), "ಕನ್ನಡ ಪಠ್ಯ")
 
@@ -225,7 +235,9 @@ class CoreTests(unittest.TestCase):
         provider = OllamaProvider()
         fake_result = Mock(returncode=0, stdout="restored\n")
         with patch("akshara_vision.providers.local._ollama_chat_http", return_value=("", {})):
-            with patch("akshara_vision.providers.local.subprocess.run", return_value=fake_result) as run_mock:
+            with patch(
+                "akshara_vision.providers.local.subprocess.run", return_value=fake_result
+            ) as run_mock:
                 provider.restore_text("hello", "instruction", fast_profile.model)
         self.assertEqual(run_mock.call_args.kwargs["timeout"], 120)
 
@@ -237,9 +249,16 @@ class CoreTests(unittest.TestCase):
         provider = OllamaProvider()
         fake_result = Mock(returncode=0, stdout=None)
         with patch("akshara_vision.providers.local._ollama_chat_http", return_value=("", {})):
-            with patch("akshara_vision.providers.local.subprocess.run", return_value=fake_result) as run_mock:
-                with patch("akshara_vision.providers.local.MockProvider.restore_text", return_value=("fallback\n", {})) as fallback_mock:
-                    output, usage = provider.restore_text("hello", "instruction", WorkflowProfile().model)
+            with patch(
+                "akshara_vision.providers.local.subprocess.run", return_value=fake_result
+            ) as run_mock:
+                with patch(
+                    "akshara_vision.providers.local.MockProvider.restore_text",
+                    return_value=("fallback\n", {}),
+                ) as fallback_mock:
+                    output, usage = provider.restore_text(
+                        "hello", "instruction", WorkflowProfile().model
+                    )
         self.assertEqual(output, "fallback\n")
         self.assertTrue(run_mock.called)
         self.assertEqual(run_mock.call_args.kwargs["encoding"], "utf-8")
@@ -248,6 +267,7 @@ class CoreTests(unittest.TestCase):
 
     def test_multimodal_ocr_pipeline_image(self):
         from akshara_vision.providers.mock import MockProvider
+
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             source = tmp_path / "scan.png"
@@ -265,23 +285,30 @@ class CoreTests(unittest.TestCase):
                 run_dir = Path(result["run_dir"])
                 output_txt = run_dir / "akshara_output.txt"
                 self.assertTrue(output_txt.exists())
-                self.assertIn("[Mock restored text from multimodal file scan.png]", output_txt.read_text())
+                self.assertIn(
+                    "[Mock restored text from multimodal file scan.png]", output_txt.read_text()
+                )
 
     def test_multimodal_unsupported_model_raises_professional_error(self):
         from akshara_vision.core.models import ModelSettings
         from akshara_vision.providers.local import OpenAICompatibleLocalProvider
+
         provider = OpenAICompatibleLocalProvider()
         settings = ModelSettings(provider="openai-compatible-local", model="text-only-model")
         with tempfile.TemporaryDirectory() as tmp:
             media_path = Path(tmp) / "scan.png"
             media_path.write_bytes(b"bytes")
-            
+
             from urllib.error import HTTPError
             from io import BytesIO
-            
-            fp = BytesIO(b'{"error": {"message": "Model text-only-model does not support vision inputs."}}')
-            mock_err = HTTPError("http://localhost:1234/v1/chat/completions", 400, "Bad Request", {}, fp)
-            
+
+            fp = BytesIO(
+                b'{"error": {"message": "Model text-only-model does not support vision inputs."}}'
+            )
+            mock_err = HTTPError(
+                "http://localhost:1234/v1/chat/completions", 400, "Bad Request", {}, fp
+            )
+
             with patch("urllib.request.urlopen", side_effect=mock_err):
                 with self.assertRaises(RuntimeError) as context:
                     provider.restore_text("hello", "instruction", settings, media_path=media_path)
@@ -289,7 +316,7 @@ class CoreTests(unittest.TestCase):
 
     def test_install_command_platform_dispatching(self):
         from akshara_vision.cli.workflows import install_command
-        
+
         with patch("akshara_vision.cli.workflows.find_executable", return_value=None):
             # Test macOS path with Homebrew
             with patch("platform.system", return_value="Darwin"):
@@ -301,27 +328,36 @@ class CoreTests(unittest.TestCase):
 
             # Test Linux path with apt
             with patch("platform.system", return_value="Linux"):
-                with patch("shutil.which", side_effect=lambda cmd: "/usr/bin/apt-get" if cmd == "apt-get" else None):
+                with patch(
+                    "shutil.which",
+                    side_effect=lambda cmd: "/usr/bin/apt-get" if cmd == "apt-get" else None,
+                ):
                     with patch("subprocess.run") as run_mock:
                         with patch("sys.stdout", new_callable=lambda: io.StringIO()):
                             install_command()
-                        run_mock.assert_any_call(["sudo", "apt-get", "install", "-y", "poppler-utils"], check=True)
+                        run_mock.assert_any_call(
+                            ["sudo", "apt-get", "install", "-y", "poppler-utils"], check=True
+                        )
 
     def test_cloud_provider_anthropic_usage_parsing(self):
         import json
         from akshara_vision.providers.cloud import CloudProvider
         from akshara_vision.core.models import ModelSettings
         from io import BytesIO
-        
+
         provider = CloudProvider("anthropic", "ANTHROPIC_API_KEY", ["claude-3-5-sonnet"])
         settings = ModelSettings(provider="anthropic", model="claude-3-5-sonnet")
-        
+
         # Mock API response with usage
-        mock_response = BytesIO(json.dumps({
-            "content": [{"type": "text", "text": "Restored text"}],
-            "usage": {"input_tokens": 100, "output_tokens": 50}
-        }).encode("utf-8"))
-        
+        mock_response = BytesIO(
+            json.dumps(
+                {
+                    "content": [{"type": "text", "text": "Restored text"}],
+                    "usage": {"input_tokens": 100, "output_tokens": 50},
+                }
+            ).encode("utf-8")
+        )
+
         with patch("os.environ.get", return_value="fake_key"):
             with patch("urllib.request.urlopen", return_value=mock_response):
                 text, usage = provider.restore_text("hello", "instruction", settings)
@@ -335,21 +371,23 @@ class CoreTests(unittest.TestCase):
         from akshara_vision.providers.cloud import CloudProvider
         from akshara_vision.core.models import ModelSettings
         from io import BytesIO
-        
-        provider = CloudProvider("gemini", "GEMINI_API_KEY", ["gemini-1.5-pro"])
-        settings = ModelSettings(provider="gemini", model="gemini-1.5-pro")
-        
-        mock_response = BytesIO(json.dumps({
-            "candidates": [{
-                "content": {"parts": [{"text": "Gemini text"}]}
-            }],
-            "usageMetadata": {
-                "promptTokenCount": 200,
-                "candidatesTokenCount": 80,
-                "totalTokenCount": 280
-            }
-        }).encode("utf-8"))
-        
+
+        provider = CloudProvider("gemini", "GEMINI_API_KEY", ["gemini-3.5-pro"])
+        settings = ModelSettings(provider="gemini", model="gemini-3.5-pro")
+
+        mock_response = BytesIO(
+            json.dumps(
+                {
+                    "candidates": [{"content": {"parts": [{"text": "Gemini text"}]}}],
+                    "usageMetadata": {
+                        "promptTokenCount": 200,
+                        "candidatesTokenCount": 80,
+                        "totalTokenCount": 280,
+                    },
+                }
+            ).encode("utf-8")
+        )
+
         with patch("os.environ.get", return_value="fake_key"):
             with patch("urllib.request.urlopen", return_value=mock_response):
                 text, usage = provider.restore_text("hello", "instruction", settings)

@@ -8,8 +8,8 @@ Keep changes small, readable, and respectful of archival source material.
 ## Setup
 
 ```bash
-python3 -m pip install -e ".[dev]"
-PYTHONPATH=src python3 -m unittest discover -s tests
+python -m pip install -e ".[dev]"
+akv check
 ```
 
 ## Principles
@@ -19,4 +19,3 @@ PYTHONPATH=src python3 -m unittest discover -s tests
 - Keep the CLI keyboard-first, black-and-white, responsive, and scriptable.
 - Put new providers/exporters behind registries.
 - Mark uncertain restoration instead of guessing.
-

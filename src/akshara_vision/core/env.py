@@ -35,4 +35,3 @@ def load_env_files(paths: Iterable[Path] = None) -> List[Path]:
 
 def env_status() -> Dict[str, str]:
     return {key: "set" if os.environ.get(key) else "not set" for key in ENV_KEYS}
-

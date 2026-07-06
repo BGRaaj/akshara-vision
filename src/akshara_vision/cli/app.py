@@ -106,9 +106,14 @@ if typer:
     @app.command("profile")
     @app.command("p")
     def profiles_command(
-        action: str = typer.Argument("menu", help="menu, list, show, create, modify, use, lock, duplicate, delete, edit, export, import"),
+        action: str = typer.Argument(
+            "menu",
+            help="menu, list, show, create, modify, use, lock, duplicate, delete, edit, export, import",
+        ),
         name: str = typer.Option("default", "--name", "-n", help="Profile name."),
-        source: Optional[str] = typer.Option(None, "--source", "-s", help="Profile file to import."),
+        source: Optional[str] = typer.Option(
+            None, "--source", "-s", help="Profile file to import."
+        ),
         lock: bool = typer.Option(False, "--lock", help="Lock as default."),
     ):
         profile_command(action=action, name=name, source=source, lock=lock)
@@ -127,7 +132,9 @@ if typer:
     @app.command("ins")
     def instructions_command(
         action: str = typer.Argument("view", help="view, edit, or reset"),
-        preset: str = typer.Option("book_restoration_default", "--preset", help="Instruction preset."),
+        preset: str = typer.Option(
+            "book_restoration_default", "--preset", help="Instruction preset."
+        ),
     ):
         instruct_command(action=action, preset=preset)
 
@@ -217,7 +224,9 @@ def _fallback_main(argv: List[str]) -> None:
     elif command in {"install", "setup"}:
         install_command()
     elif command in {"run", "r"}:
-        run_guided(args.inputs, profile_name=args.profile, recursive=args.recursive, dry_run=args.dry_run)
+        run_guided(
+            args.inputs, profile_name=args.profile, recursive=args.recursive, dry_run=args.dry_run
+        )
     elif command in {"quick", "q", "process"}:
         quick_run(args.inputs, recursive=args.recursive, dry_run=args.dry_run)
     elif command in {"batch", "b"}:

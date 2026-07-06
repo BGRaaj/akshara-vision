@@ -25,7 +25,12 @@ class MockProvider:
         media_path: Optional[Path] = None,
     ) -> tuple[str, dict]:
         del instruction, settings
-        usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30, "truncated": False}
+        usage = {
+            "prompt_tokens": 10,
+            "completion_tokens": 20,
+            "total_tokens": 30,
+            "truncated": False,
+        }
         if media_path:
             # Return valid JSON string representing a restored visual text for tests
             return (

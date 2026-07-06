@@ -101,6 +101,7 @@ def _anthropic_message(
             mime_type = "image/webp"
 
         import base64
+
         try:
             media_bytes = media_path.read_bytes()
             media_base64 = base64.b64encode(media_bytes).decode("utf-8")
@@ -155,7 +156,12 @@ def _anthropic_message(
             msg = exc.reason
 
         msg_lower = str(msg).lower()
-        if "image" in msg_lower or "vision" in msg_lower or "does not support" in msg_lower or exc.code == 400:
+        if (
+            "image" in msg_lower
+            or "vision" in msg_lower
+            or "does not support" in msg_lower
+            or exc.code == 400
+        ):
             raise RuntimeError(
                 f"Anthropic model '{model}' does not support vision/image inputs. "
                 "Please configure a vision model (e.g. Claude 3.5 Sonnet, Claude 3.5 Haiku) "
@@ -170,7 +176,7 @@ def _anthropic_message(
     content_parts = data.get("content") or []
     parts = [part.get("text", "") for part in content_parts if isinstance(part, dict)]
     result = "\n".join(part for part in parts if part).strip()
-    
+
     # Extract usage
     usage_data = data.get("usage") or {}
     prompt_tokens = usage_data.get("input_tokens", 0)
@@ -212,18 +218,21 @@ def _gemini_generate(
             mime_type = "application/pdf"
 
         import base64
+
         try:
             media_bytes = media_path.read_bytes()
             media_base64 = base64.b64encode(media_bytes).decode("utf-8")
         except OSError as exc:
             raise RuntimeError(f"Failed to read file: {exc}")
 
-        parts.append({
-            "inlineData": {
-                "mimeType": mime_type,
-                "data": media_base64,
+        parts.append(
+            {
+                "inlineData": {
+                    "mimeType": mime_type,
+                    "data": media_base64,
+                }
             }
-        })
+        )
 
     payload = {
         "systemInstruction": {"parts": [{"text": instruction}]},
@@ -249,7 +258,12 @@ def _gemini_generate(
             msg = exc.reason
 
         msg_lower = str(msg).lower()
-        if "image" in msg_lower or "vision" in msg_lower or "does not support" in msg_lower or exc.code == 400:
+        if (
+            "image" in msg_lower
+            or "vision" in msg_lower
+            or "does not support" in msg_lower
+            or exc.code == 400
+        ):
             raise RuntimeError(
                 f"Gemini model '{model}' does not support vision/image inputs. "
                 "Please configure a vision model (e.g. gemini-2.5-flash or gemini-2.5-pro) "
@@ -264,7 +278,7 @@ def _gemini_generate(
     candidates = data.get("candidates") or []
     if not candidates:
         return "", {}
-    parts = ((candidates[0].get("content") or {}).get("parts") or [])
+    parts = (candidates[0].get("content") or {}).get("parts") or []
     result = "\n".join(part.get("text", "") for part in parts if isinstance(part, dict)).strip()
 
     # Extract usage

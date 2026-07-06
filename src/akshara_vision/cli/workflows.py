@@ -20,7 +20,11 @@ from akshara_vision.core.env import env_status, load_env_files
 from akshara_vision.core.input_discovery import discover_inputs
 from akshara_vision.core.models import ModelSettings, RunRequest, WorkflowProfile
 from akshara_vision.core.pipeline import find_executable, run_pipeline
-from akshara_vision.instructions import DEFAULT_PRESET, install_editable_instruction, load_instruction
+from akshara_vision.instructions import (
+    DEFAULT_PRESET,
+    install_editable_instruction,
+    load_instruction,
+)
 from akshara_vision.registries.exporters import exporter_registry
 from akshara_vision.registries.providers import provider_registry
 
@@ -294,8 +298,12 @@ def mode_command() -> None:
     store = ConfigStore()
     profile = store.load_default_profile()
     ui.heading("Akshara Vision", "Execution Mode")
-    ui.write("Fast favors throughput. Balanced keeps the current defaults. Quality spends more time for harder pages.")
-    profile.model.execution_mode = ui.choose("Execution mode", EXECUTION_MODES, profile.model.execution_mode)
+    ui.write(
+        "Fast favors throughput. Balanced keeps the current defaults. Quality spends more time for harder pages."
+    )
+    profile.model.execution_mode = ui.choose(
+        "Execution mode", EXECUTION_MODES, profile.model.execution_mode
+    )
     store.save_profile(profile)
     ui.write(f"Execution mode set to: {profile.model.execution_mode}")
 
@@ -335,7 +343,9 @@ def ui_command() -> None:
     ui.write("UI preferences saved. Use /home to redraw the board.")
 
 
-def onboard(store: Optional[ConfigStore] = None, profile_name: Optional[str] = None) -> WorkflowProfile:
+def onboard(
+    store: Optional[ConfigStore] = None, profile_name: Optional[str] = None
+) -> WorkflowProfile:
     store = store or ConfigStore()
     ui.heading("Akshara Vision", "Onboarding")
     ui.write("Press Enter to accept the shown default. Use arrow keys for menus.")
@@ -347,12 +357,21 @@ def onboard(store: Optional[ConfigStore] = None, profile_name: Optional[str] = N
     profile.output_language = ui.text("Output language", profile.output_language)
     profile.translation_mode = ui.choose(
         "Translation mode",
-        ["off", "same-language-cleanup", "translate", "bilingual", "transliterate", "metadata-only"],
+        [
+            "off",
+            "same-language-cleanup",
+            "translate",
+            "bilingual",
+            "transliterate",
+            "metadata-only",
+        ],
         profile.translation_mode,
     )
 
     profile.model = choose_model(profile.model)
-    profile.model.execution_mode = ui.choose("Execution mode", EXECUTION_MODES, profile.model.execution_mode)
+    profile.model.execution_mode = ui.choose(
+        "Execution mode", EXECUTION_MODES, profile.model.execution_mode
+    )
     profile.output_formats = choose_output_formats(profile.output_formats)
     profile.instruction_preset = DEFAULT_PRESET
     profile.output_dir = ui.text("Output folder", profile.output_dir)
@@ -379,16 +398,27 @@ def choose_model(current: Optional[ModelSettings] = None) -> ModelSettings:
     selected_label = ui.choose("Model provider", choices, default_label)
     provider_name = selected_label.split(" ", 1)[0]
     status = statuses.get(provider_name)
-    model_choices = status.models if status and status.models else _recommended_models(provider_name)
-    model = ui.choose("Model", model_choices, current.model if current.model in model_choices else model_choices[0])
+    model_choices = (
+        status.models if status and status.models else _recommended_models(provider_name)
+    )
+    model_choices = _with_custom_model_choice(model_choices)
+    model = ui.choose(
+        "Model",
+        model_choices,
+        current.model if current.model in model_choices else model_choices[0],
+    )
+    if model == "Custom model id...":
+        model = ui.text("Model id", current.model if current.provider == provider_name else "")
     endpoint = current.endpoint or ""
     if provider_name in {"openai-compatible-local", "lm-studio", "jan", "llama-cpp"}:
         endpoint = ui.text("Local endpoint", endpoint or _default_endpoint(provider_name))
-    
+
     context_window = current.context_window
     generation_limit = current.generation_limit
     if provider_name in {"ollama", "openai-compatible-local", "lm-studio", "jan", "llama-cpp"}:
-        default_cw = str(current.context_window) if current.context_window is not None else "16384 (Default)"
+        default_cw = (
+            str(current.context_window) if current.context_window is not None else "16384 (Default)"
+        )
         cw_str = ui.text("Context size limit (tokens, e.g. 2048, 8192, 16384)", default_cw)
         if cw_str.strip() and "default" not in cw_str.lower():
             try:
@@ -397,7 +427,11 @@ def choose_model(current: Optional[ModelSettings] = None) -> ModelSettings:
                 pass
         else:
             context_window = None
-        default_gen = str(current.generation_limit) if current.generation_limit is not None else "16384 (Default)"
+        default_gen = (
+            str(current.generation_limit)
+            if current.generation_limit is not None
+            else "16384 (Default)"
+        )
         gen_str = ui.text("Generation limit (output tokens, max 16384)", default_gen)
         if gen_str.strip() and "default" not in gen_str.lower():
             try:
@@ -438,19 +472,27 @@ def run_guided(
         profile.document_type = ui.choose("Document type", DOCUMENT_TYPES, profile.document_type)
 
         profile.model = choose_model(profile.model)
-        profile.model.execution_mode = ui.choose("Execution mode", EXECUTION_MODES, profile.model.execution_mode)
+        profile.model.execution_mode = ui.choose(
+            "Execution mode", EXECUTION_MODES, profile.model.execution_mode
+        )
         profile.output_formats = choose_output_formats(profile.output_formats)
     return execute_run(profile, inputs=inputs, recursive=recursive, dry_run=dry_run)
 
 
-def quick_run(inputs: Optional[Iterable[str]] = None, recursive: bool = False, dry_run: bool = False):
+def quick_run(
+    inputs: Optional[Iterable[str]] = None, recursive: bool = False, dry_run: bool = False
+):
     store = ConfigStore()
     profile = store.load_default_profile()
     ui.heading("Akshara Vision", "Quick Run")
     return execute_run(profile, inputs=inputs, recursive=recursive, dry_run=dry_run)
 
 
-def batch_run(inputs: Optional[Iterable[str]] = None, profile_name: Optional[str] = None, dry_run: bool = False):
+def batch_run(
+    inputs: Optional[Iterable[str]] = None,
+    profile_name: Optional[str] = None,
+    dry_run: bool = False,
+):
     store = ConfigStore()
     profile = store.load_profile(profile_name) if profile_name else store.load_default_profile()
     ui.heading("Akshara Vision", "Batch Run")
@@ -494,7 +536,6 @@ def review_run(profile: WorkflowProfile, selection) -> None:
     rows = [
         ["Workflow", profile.workflow],
         ["Document type", profile.document_type],
-
         ["Source language", profile.source_language],
         ["Output language", profile.output_language],
         ["Provider", profile.model.provider],
@@ -519,6 +560,7 @@ def review_run(profile: WorkflowProfile, selection) -> None:
 def _run_with_progress(request: RunRequest):
     ui.section("Working")
     with ui.progress("Processing") as reporter:
+
         def progress(_event: str, message: str, advance: int = 1) -> None:
             reporter.update(message, advance=advance)
 
@@ -528,11 +570,12 @@ def _run_with_progress(request: RunRequest):
 def _finished_screen(result) -> None:
     exports = result["exports"]
     run_dir = Path(result["run_dir"])
-    
+
     metadata = {}
     manifest_path = run_dir / "run_manifest.json"
     if manifest_path.exists():
         import json
+
         try:
             metadata = json.loads(manifest_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
@@ -543,23 +586,25 @@ def _finished_screen(result) -> None:
 
     if truncated:
         ui.heading("Akshara Vision", "Finished (Truncated)")
-        ui.write("WARNING  Run completed with truncated output. One or more page chunks hit the token context/generation limit.")
+        ui.write(
+            "WARNING  Run completed with truncated output. One or more page chunks hit the token context/generation limit."
+        )
     else:
         ui.heading("Akshara Vision", "Finished")
         ui.write("SUCCESS  Run completed.")
     ui.section("Output")
-    
+
     rows = [
         ["Run folder", str(run_dir)],
         ["Manifest", str(manifest_path)],
         ["Exports", str(len(exports))],
     ]
-    
+
     if usage and (usage.get("prompt_tokens") or usage.get("completion_tokens")):
         rows.append(["Input tokens", str(usage.get("prompt_tokens", 0))])
         rows.append(["Output tokens", str(usage.get("completion_tokens", 0))])
         rows.append(["Total tokens", str(usage.get("total_tokens", 0))])
-        
+
     ui.table(rows)
     if exports:
         ui.section("Files")
@@ -608,9 +653,13 @@ def profile_command(
         _list_profiles(store)
         return
     if action == "show":
+        if not _require_profile(store, name):
+            return
         _show_profile(store.load_profile(name))
         return
     if action in {"use", "switch", "default", "lock"}:
+        if not _require_profile(store, name):
+            return
         profile = store.load_profile(name)
         profile.locked = action == "lock" or lock or profile.locked
         store.save_profile(profile)
@@ -618,12 +667,16 @@ def profile_command(
         ui.write(f"Default profile set to: {profile.name}")
         return
     if action in {"modify", "update"}:
+        if not _require_profile(store, name):
+            return
         _edit_profile_interactive(store, name)
         return
     if action == "delete":
         _delete_profile(store, name)
         return
     if action in {"copy", "duplicate", "clone"}:
+        if not _require_profile(store, name):
+            return
         _duplicate_profile(store, name)
         return
     if action == "import" and source:
@@ -638,7 +691,9 @@ def profile_command(
         _open_editor(store.profile_path(name))
         return
     ui.write(f"Unknown profile action: {action}")
-    ui.write("Try: akv p list, akv p create --name NAME, akv p modify --name NAME, akv p delete --name NAME")
+    ui.write(
+        "Try: akv p list, akv p create --name NAME, akv p modify --name NAME, akv p delete --name NAME"
+    )
 
 
 def _profile_menu(store: ConfigStore) -> None:
@@ -704,6 +759,14 @@ def _profile_menu(store: ConfigStore) -> None:
             selected = _choose_profile(store)
             if selected:
                 _open_editor(store.profile_path(selected))
+
+
+def _require_profile(store: ConfigStore, name: str) -> bool:
+    if store.profile_exists(name):
+        return True
+    ui.write(f"Profile not found: {name}")
+    ui.write("Run `akv p list` to see profiles, or `akv p create --name NAME` to create one.")
+    return False
 
 
 def _list_profiles(store: ConfigStore, show_heading: bool = True) -> None:
@@ -789,18 +852,29 @@ def _edit_profile_interactive(store: ConfigStore, name: str) -> None:
         profile.output_language = ui.text("Output language", profile.output_language)
         profile.translation_mode = ui.choose(
             "Translation mode",
-            ["off", "same-language-cleanup", "translate", "bilingual", "transliterate", "metadata-only"],
+            [
+                "off",
+                "same-language-cleanup",
+                "translate",
+                "bilingual",
+                "transliterate",
+                "metadata-only",
+            ],
             profile.translation_mode,
         )
     if section in {"Model and limits", "Everything"}:
         profile.model = choose_model(profile.model)
-        profile.model.execution_mode = ui.choose("Execution mode", EXECUTION_MODES, profile.model.execution_mode)
+        profile.model.execution_mode = ui.choose(
+            "Execution mode", EXECUTION_MODES, profile.model.execution_mode
+        )
     if section in {"Outputs", "Everything"}:
         profile.output_formats = choose_output_formats(profile.output_formats)
     if section in {"Output folder", "Everything"}:
         profile.output_dir = ui.text("Output folder", profile.output_dir)
     if section in {"Lock/default", "Everything"}:
-        profile.locked = ui.confirm("Lock this profile as the default quick-run workflow?", profile.locked)
+        profile.locked = ui.confirm(
+            "Lock this profile as the default quick-run workflow?", profile.locked
+        )
     saved = store.save_profile(profile)
     if profile.locked:
         store.set_default_profile(profile.name)
@@ -828,7 +902,9 @@ def _duplicate_profile(store: ConfigStore, name: str) -> None:
     if not target_name:
         ui.write("Duplicate cancelled.")
         return
-    if store.profile_exists(target_name) and not ui.confirm(f"Overwrite profile '{target_name}'?", False):
+    if store.profile_exists(target_name) and not ui.confirm(
+        f"Overwrite profile '{target_name}'?", False
+    ):
         ui.write("Duplicate cancelled.")
         return
     duplicate = WorkflowProfile.from_dict(source.to_dict())
@@ -845,7 +921,13 @@ def model_command(action: str = "status") -> None:
         store = ConfigStore()
         profile = store.load_default_profile()
         profile.model = settings
-        ui.table([["Provider", settings.provider], ["Model", settings.model], ["Endpoint", settings.endpoint or ""]])
+        ui.table(
+            [
+                ["Provider", settings.provider],
+                ["Model", settings.model],
+                ["Endpoint", settings.endpoint or ""],
+            ]
+        )
         if ui.confirm("Save this model to the default profile?", True):
             store.save_profile(profile)
             ui.write(f"Saved model to profile: {profile.name}")
@@ -915,10 +997,14 @@ def doctor_command() -> None:
 def check_command() -> int:
     ui.heading("Akshara Vision", "Check")
     env = os.environ.copy()
-    env.setdefault("PYTHONPYCACHEPREFIX", str(Path(tempfile.gettempdir()) / "akshara-vision-pycache"))
+    env.setdefault(
+        "PYTHONPYCACHEPREFIX", str(Path(tempfile.gettempdir()) / "akshara-vision-pycache")
+    )
     if Path("src").exists():
         existing_pythonpath = env.get("PYTHONPATH")
-        env["PYTHONPATH"] = f"src{os.pathsep}{existing_pythonpath}" if existing_pythonpath else "src"
+        env["PYTHONPATH"] = (
+            f"src{os.pathsep}{existing_pythonpath}" if existing_pythonpath else "src"
+        )
     commands = [
         [sys.executable, "-m", "compileall", "-q", "src", "tests"],
         [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
@@ -943,7 +1029,9 @@ def provider_status_rows() -> List[List[str]]:
     rows = [["Provider", "State", "Models / setup"]]
     for name, provider in provider_registry().items():
         status = provider.status()
-        models_or_setup = ", ".join(status.models[:3]) if status.models else _short_detail(status.detail)
+        models_or_setup = (
+            ", ".join(status.models[:3]) if status.models else _short_detail(status.detail)
+        )
         rows.append(
             [
                 name,
@@ -1041,6 +1129,11 @@ def _recommended_models(provider_name: str) -> List[str]:
     return ["offline-restoration-preview"]
 
 
+def _with_custom_model_choice(models: List[str]) -> List[str]:
+    cleaned = [model for model in models if model and model != "Custom model id..."]
+    return cleaned + ["Custom model id..."]
+
+
 def _default_endpoint(provider_name: str) -> str:
     return {
         "openai-compatible-local": "http://localhost:1234/v1",
@@ -1098,6 +1191,7 @@ def install_command() -> None:
     ui.write("Detecting operating system and package managers...")
 
     import platform
+
     system = platform.system().lower()
 
     if system == "darwin":
@@ -1106,7 +1200,9 @@ def install_command() -> None:
             ui.write("Found Homebrew. Installing poppler (pdftoppm)...")
             try:
                 subprocess.run(["brew", "install", "poppler"], check=True)
-                ui.write("SUCCESS: Homebrew completed. Run `akv doctor` to confirm pdftoppm is on PATH.")
+                ui.write(
+                    "SUCCESS: Homebrew completed. Run `akv doctor` to confirm pdftoppm is on PATH."
+                )
             except subprocess.CalledProcessError as exc:
                 ui.write(f"FAILED: Homebrew installation failed: {exc}")
         else:
@@ -1128,11 +1224,15 @@ def install_command() -> None:
             ui.write("Found pacman package manager. Installing poppler...")
             try:
                 subprocess.run(["sudo", "pacman", "-S", "--noconfirm", "poppler"], check=True)
-                ui.write("SUCCESS: pacman completed. Run `akv doctor` to confirm pdftoppm is on PATH.")
+                ui.write(
+                    "SUCCESS: pacman completed. Run `akv doctor` to confirm pdftoppm is on PATH."
+                )
             except subprocess.CalledProcessError as exc:
                 ui.write(f"FAILED: pacman installation failed: {exc}")
         else:
-            ui.write("Could not identify a supported package manager. Please install poppler-utils manually.")
+            ui.write(
+                "Could not identify a supported package manager. Please install poppler-utils manually."
+            )
 
     elif system == "windows":
         ui.write("Detected Windows.")
@@ -1146,23 +1246,33 @@ def install_command() -> None:
         elif shutil.which("winget"):
             ui.write("Found winget. Attempting to install Poppler...")
             try:
-                subprocess.run(["winget", "install", "--id", "oschwartz10612.Poppler", "--silent"], check=True)
-                ui.write("SUCCESS: Poppler installer completed. Restart PowerShell, then run `akv doctor`.")
+                subprocess.run(
+                    ["winget", "install", "--id", "oschwartz10612.Poppler", "--silent"], check=True
+                )
+                ui.write(
+                    "SUCCESS: Poppler installer completed. Restart PowerShell, then run `akv doctor`."
+                )
             except subprocess.CalledProcessError as exc:
                 if exc.returncode == 2316632107:
                     ui.write("SUCCESS: System dependencies are already installed.")
-                    ui.write("Note: If the application cannot find Poppler, please add its installation 'bin' folder to your environment PATH.")
+                    ui.write(
+                        "Note: If the application cannot find Poppler, please add its installation 'bin' folder to your environment PATH."
+                    )
                 else:
                     ui.write(f"winget Poppler installation returned/failed: {exc}")
                     ui.write("\nTo install Poppler manually:")
                     ui.write("1. Install via scoop: `scoop install poppler`")
-                    ui.write("2. Or download Poppler binaries from: https://github.com/oschwartz10612/poppler-windows/releases")
+                    ui.write(
+                        "2. Or download Poppler binaries from: https://github.com/oschwartz10612/poppler-windows/releases"
+                    )
                     ui.write("3. Extract and add the 'bin' folder to your environment PATH.")
         elif shutil.which("choco"):
             ui.write("Found Chocolatey. Installing poppler...")
             try:
                 subprocess.run(["choco", "install", "poppler", "-y"], check=True)
-                ui.write("SUCCESS: Chocolatey completed. Restart PowerShell, then run `akv doctor`.")
+                ui.write(
+                    "SUCCESS: Chocolatey completed. Restart PowerShell, then run `akv doctor`."
+                )
             except subprocess.CalledProcessError as exc:
                 ui.write(f"FAILED: Chocolatey installation failed: {exc}")
         else:

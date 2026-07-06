@@ -62,7 +62,9 @@ class MonoUI:
             self.write("AKSHARA VISION".center(width))
         self.write("Restore. Read. Preserve.".center(width))
         if guide == "full":
-            self.write("Choose a workflow, inspect the plan, then run only when ready.".center(width))
+            self.write(
+                "Choose a workflow, inspect the plan, then run only when ready.".center(width)
+            )
         self.write(line)
 
     def section(self, title: str) -> None:
@@ -79,11 +81,16 @@ class MonoUI:
             return
         column_count = len(materialized[0])
         available = max(self.width() - (2 * (column_count - 1)), column_count * 8)
-        natural = [max(len(str(row[index])) for row in materialized) for index in range(column_count)]
+        natural = [
+            max(len(str(row[index])) for row in materialized) for index in range(column_count)
+        ]
         if sum(natural) <= available:
             widths = natural
         elif column_count == 2:
-            widths = [min(max(natural[0], 14), 24), max(24, available - min(max(natural[0], 14), 24))]
+            widths = [
+                min(max(natural[0], 14), 24),
+                max(24, available - min(max(natural[0], 14), 24)),
+            ]
         elif column_count == 3:
             widths = [min(max(natural[0], 10), 24), min(max(natural[1], 8), 14)]
             widths.append(max(20, available - widths[0] - widths[1]))
@@ -134,7 +141,11 @@ class MonoUI:
         if not choices:
             raise ValueError("choose requires at least one choice")
         if inquirer:
-            return str(inquirer.select(message=message, choices=choices, default=default or choices[0]).execute())
+            return str(
+                inquirer.select(
+                    message=message, choices=choices, default=default or choices[0]
+                ).execute()
+            )
         self.write(message)
         for index, choice in enumerate(choices, start=1):
             marker = "default" if choice == default else ""
@@ -146,10 +157,14 @@ class MonoUI:
             return choices[int(raw) - 1]
         return raw
 
-    def checkbox(self, message: str, choices: List[str], default: Optional[List[str]] = None) -> List[str]:
+    def checkbox(
+        self, message: str, choices: List[str], default: Optional[List[str]] = None
+    ) -> List[str]:
         default = default or []
         if inquirer:
-            return list(inquirer.checkbox(message=message, choices=choices, default=default).execute())
+            return list(
+                inquirer.checkbox(message=message, choices=choices, default=default).execute()
+            )
         self.write(message)
         self.write("Choose comma-separated numbers, or press Enter for default.")
         for index, choice in enumerate(choices, start=1):

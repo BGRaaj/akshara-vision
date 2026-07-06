@@ -39,4 +39,3 @@ def exporter_registry() -> Dict[str, object]:
         ),
         "review": ReviewExporter(),
     }
-

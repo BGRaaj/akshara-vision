@@ -44,7 +44,7 @@ class OllamaProvider:
         media_path: Optional[Path] = None,
     ) -> tuple[str, dict]:
         prompt = f"{instruction}\n\nSOURCE TEXT:\n{text}" if text else instruction
-        
+
         # If media_path is provided, we MUST use HTTP API because CLI cannot handle images.
         if media_path:
             response, usage = _ollama_chat_http(
@@ -184,6 +184,7 @@ def _ollama_chat_http(
 
     if media_path:
         import base64
+
         try:
             media_bytes = media_path.read_bytes()
             media_base64 = base64.b64encode(media_bytes).decode("utf-8")
@@ -223,7 +224,7 @@ def _ollama_chat_http(
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.loads(response.read().decode("utf-8"))
-        
+
         done_reason = data.get("done_reason")
         usage = {
             "prompt_tokens": data.get("prompt_eval_count", 0),
@@ -247,7 +248,7 @@ def _ollama_chat_http(
         if "does not support" in msg.lower() or "image" in msg.lower() or exc.code == 400:
             raise RuntimeError(
                 f"Local model '{model}' does not support vision/multimodal inputs. "
-                "Please configure a vision model (e.g., 'llama3.2-vision' or 'qwen2.5-vl') "
+                "Please configure a vision model (e.g. 'gemma4:12b', 'qwen3.6:27b', or 'llama3.2-vision:11b') "
                 "or switch the OCR/decode mode to a text-based/OCR mode."
             )
         raise RuntimeError(f"Ollama local API error (HTTP {exc.code}): {msg}")
@@ -284,6 +285,7 @@ def openai_compatible_chat(
             mime_type = "image/webp"
 
         import base64
+
         try:
             media_bytes = media_path.read_bytes()
             media_base64 = base64.b64encode(media_bytes).decode("utf-8")
@@ -348,10 +350,15 @@ def openai_compatible_chat(
             msg = exc.reason
 
         msg_lower = msg.lower()
-        if "vision" in msg_lower or "image" in msg_lower or "does not support" in msg_lower or exc.code == 400:
+        if (
+            "vision" in msg_lower
+            or "image" in msg_lower
+            or "does not support" in msg_lower
+            or exc.code == 400
+        ):
             raise RuntimeError(
                 f"Model '{model}' at endpoint '{endpoint}' does not support multimodal/vision inputs. "
-                "Please configure a vision-capable model (e.g. gpt-4o, Claude 3.5 Sonnet, Llama 3.2 Vision, Qwen 2.5 VL) "
+                "Please configure a vision-capable model (e.g. gpt-5.5, claude-sonnet-5, gemma4:12b, or qwen3.6:27b) "
                 "or switch the OCR/decode mode."
             )
         raise RuntimeError(f"OpenAI-compatible API error (HTTP {exc.code}): {msg}")
@@ -366,7 +373,7 @@ def openai_compatible_chat(
         return "", usage_data
     message = choices[0].get("message") or {}
     content = message.get("content") or choices[0].get("text") or ""
-    
+
     finish_reason = choices[0].get("finish_reason")
     usage = {
         "prompt_tokens": usage_data.get("prompt_tokens", 0),
@@ -388,7 +395,9 @@ def _provider_timeout(execution_mode: str) -> int:
 
 
 def _context_limit(settings: object) -> int:
-    value = getattr(settings, "context_window", None) if hasattr(settings, "context_window") else None
+    value = (
+        getattr(settings, "context_window", None) if hasattr(settings, "context_window") else None
+    )
     if value is None:
         return 16384
     try:
@@ -398,7 +407,11 @@ def _context_limit(settings: object) -> int:
 
 
 def _generation_limit(settings: object, context_limit: int) -> int:
-    value = getattr(settings, "generation_limit", None) if hasattr(settings, "generation_limit") else None
+    value = (
+        getattr(settings, "generation_limit", None)
+        if hasattr(settings, "generation_limit")
+        else None
+    )
     if value is None:
         value = context_limit
     try:

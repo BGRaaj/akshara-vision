@@ -57,7 +57,7 @@ Exports     1
    ```bash
    python3 -m venv .venv
    source .venv/bin/activate
-   pip install -e .
+   python -m pip install -e .
    ```
 
    **Windows PowerShell**:
@@ -65,7 +65,7 @@ Exports     1
    python -m venv .venv
    Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
    .\.venv\Scripts\Activate.ps1
-   pip install -e .
+   python -m pip install -e .
    ```
 
 2. **Install System Dependencies (Poppler)**:
@@ -199,12 +199,18 @@ akv install
 
 Recommended vision-capable models include:
 - **Ollama / Local**: `gemma4:12b`, `qwen3.6:27b`, `qwen3.5:4b`, `llama3.2-vision:11b`
-- **LM Studio / Jan**: Any GGUF variants of Llama 3.2 Vision, Qwen 3.6, or Gemma 4
+- **LM Studio / Jan**: GGUF variants of Llama 3.2 Vision, Qwen 3.6, Qwen 3.5, or Gemma 4
 - **Gemini (Cloud)**: `gemini-3.5-flash`, `gemini-3.5-pro`, `gemini-3.1-flash-lite`
 - **OpenAI (Cloud)**: `gpt-5.5`, `gpt-5.4`
 - **Anthropic (Cloud)**: `claude-sonnet-5`, `claude-fable-5`
 
+The CLI detects local models where possible and also lets you enter a custom model id.
+
 If a selected model does not support image or PDF vision inputs, the pipeline will immediately fail-safe with a clear explanation, avoiding corrupted or silently failed output text.
+
+Accuracy still depends on the selected model, scan quality, script complexity, and
+page damage. Akshara Vision preserves the workflow, prompts, manifests, and exports;
+it does not guarantee that a model transcription is correct.
 
 ### Context Window & Token Limits
 

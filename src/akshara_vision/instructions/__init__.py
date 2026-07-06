@@ -21,4 +21,3 @@ def install_editable_instruction(name: str = DEFAULT_PRESET, store: ConfigStore 
     if not target.exists():
         target.write_text(load_instruction(name, store), encoding="utf-8")
     return target
-

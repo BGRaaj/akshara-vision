@@ -76,19 +76,31 @@ The Akshara Vision pipeline takes one of two strategies based on the input file 
    - *Requirements*: Requires system dependencies (Poppler/pdftoppm), which can be installed automatically via `akv install`.
    - *Supported Models*: Multimodal/vision-capable models only.
 
-### Recommended Vision Models (2026)
+### Recommended Vision Models
 
-| Runtime / Provider | Recommended Model | Description / Size |
+Use a model that explicitly supports image or PDF inputs for scanned pages.
+
+| Runtime / Provider | Recommended Model | Notes |
 | --- | --- | --- |
-| **Ollama** | `gemma4:12b` | Outstanding multi-lingual and high-fidelity Indic script vision model |
-| **Ollama** | `llama3.2-vision:11b` | Light and fast local vision model |
-| **Ollama** | `qwen3.6:27b` / `qwen3.5:4b` | State-of-the-art document visual parsing |
-| **Gemini** | `gemini-3.5-flash` / `gemini-3.5-pro` | Best-in-class multi-modal context window and PDF document parsing |
-| **OpenAI** | `gpt-5.5` / `gpt-5.4` | Extremely robust and fast general vision performance |
-| **Anthropic** | `claude-sonnet-5` / `claude-fable-5` | Unrivaled reasoning, layout understanding, and transcription accuracy |
+| **Ollama / Local** | `gemma4:12b` | High-fidelity multilingual and Indic script vision work |
+| **Ollama / Local** | `qwen3.6:27b` / `qwen3.5:4b` | Strong document visual parsing options |
+| **Ollama / Local** | `llama3.2-vision:11b` | Useful lighter local vision baseline |
+| **LM Studio / Jan** | GGUF variants of Gemma 4, Qwen 3.6, Qwen 3.5, or Llama 3.2 Vision | Depends on your local runtime and hardware |
+| **Gemini** | `gemini-3.5-flash`, `gemini-3.5-pro`, `gemini-3.1-flash-lite` | Cloud multimodal document workflows |
+| **OpenAI** | `gpt-5.5`, `gpt-5.4` | Cloud vision workflows |
+| **Anthropic** | `claude-sonnet-5`, `claude-fable-5` | Cloud vision and reasoning workflows |
+
+Akshara Vision detects local models where a runtime exposes them and also offers
+a custom model-id entry so profiles can track the model names used by your local
+server or cloud account.
 
 ### Safe Handling of Incompatible Models
-If you point it at a text-only model (like `gpt-5.5`'s text-only variants or other non-multimodal local models) while trying to process an image or PDF, the provider client will catch the model incompatibility error and fail-safe immediately with a professional message. This prevents silent failures or corrupted outputs.
+If you point it at a text-only model while trying to process an image or PDF, the
+provider client will catch common incompatibility errors and fail-safe with a clear
+message. This prevents silent failures or corrupted outputs.
+
+Model predictions are still model predictions: review output before publishing,
+especially for damaged pages, rare scripts, tables, and handwritten material.
 
 ### Context Window & Token Limits
 

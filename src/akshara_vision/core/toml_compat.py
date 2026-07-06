@@ -82,4 +82,3 @@ def _parse_value(raw: str) -> Any:
         return int(raw)
     except ValueError:
         return raw
-

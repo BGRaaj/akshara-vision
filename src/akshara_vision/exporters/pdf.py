@@ -26,4 +26,3 @@ class PdfNoteExporter:
             available=False,
             detail="PDF export needs optional system dependencies.",
         )
-

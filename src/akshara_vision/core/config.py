@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 from typing import Dict, List, Optional
 
 from akshara_vision.core.constants import default_config_dir
@@ -35,11 +36,12 @@ class ConfigStore:
         return sorted(path.stem for path in self.profiles_dir.glob("*.toml"))
 
     def profile_path(self, name: str) -> Path:
-        safe = name.strip().replace("/", "-") or "default"
+        safe = _safe_profile_name(name)
         return self.profiles_dir / f"{safe}.toml"
 
     def save_profile(self, profile: WorkflowProfile) -> Path:
         self.ensure()
+        profile.name = _safe_profile_name(profile.name)
         path = self.profile_path(profile.name)
         path.write_text(dump_toml(profile.to_dict()), encoding="utf-8")
         if profile.locked:
@@ -109,3 +111,9 @@ class ConfigStore:
         current.update(preferences)
         settings["ui"] = current
         self.save_settings(settings)
+
+
+def _safe_profile_name(name: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", name.strip())
+    cleaned = cleaned.strip(".-")
+    return cleaned or "default"

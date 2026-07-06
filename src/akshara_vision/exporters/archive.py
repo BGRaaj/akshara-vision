@@ -22,7 +22,9 @@ class SidecarExporter:
         if self.suffix.endswith(".xml") or self.name in {"hocr", "alto", "pagexml"}:
             path.write_text(_xml_payload(self.label, text), encoding="utf-8")
         else:
-            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
         return ExportResult(self.name, path)
 
 
@@ -52,15 +54,11 @@ class ReviewExporter:
 
 def _xml_payload(label: str, text: str) -> str:
     escaped = (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
+        text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
     )
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
-        f"<akshara-sidecar format=\"{label}\">\n"
+        f'<akshara-sidecar format="{label}">\n'
         f"  <text>{escaped}</text>\n"
         "</akshara-sidecar>\n"
     )
-

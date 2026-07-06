@@ -18,8 +18,12 @@ class CliFallbackTests(unittest.TestCase):
     def test_module_entrypoint_help_works_without_script_on_path(self):
         root = Path(__file__).resolve().parents[1]
         env = os.environ.copy()
-        env["PYTHONPATH"] = f"{root / 'src'}{os.pathsep}{env.get('PYTHONPATH', '')}".rstrip(os.pathsep)
-        env.setdefault("PYTHONPYCACHEPREFIX", str(Path(tempfile.gettempdir()) / "akshara-vision-pycache"))
+        env["PYTHONPATH"] = f"{root / 'src'}{os.pathsep}{env.get('PYTHONPATH', '')}".rstrip(
+            os.pathsep
+        )
+        env.setdefault(
+            "PYTHONPYCACHEPREFIX", str(Path(tempfile.gettempdir()) / "akshara-vision-pycache")
+        )
         result = subprocess.run(
             [sys.executable, "-m", "akshara_vision", "--help"],
             cwd=root,
@@ -47,7 +51,9 @@ class CliFallbackTests(unittest.TestCase):
             source = tmp_path / "source.txt"
             source.write_text("hello", encoding="utf-8")
             store = ConfigStore(tmp_path / "config")
-            store.save_profile(WorkflowProfile(name="default", locked=True, output_dir=str(tmp_path / "out")))
+            store.save_profile(
+                WorkflowProfile(name="default", locked=True, output_dir=str(tmp_path / "out"))
+            )
             with patch("akshara_vision.cli.workflows.ConfigStore", lambda: store):
                 with patch("builtins.input", return_value="n"):
                     output = io.StringIO()
