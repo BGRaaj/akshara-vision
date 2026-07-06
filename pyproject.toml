@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "akshara-vision"
+version = "0.1.0"
+description = "A local-first terminal tool for restoring, OCR-cleaning, translating, and exporting archival books."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+authors = [
+  { name = "Akshara Vision contributors" }
+]
+keywords = ["ocr", "book-restoration", "archives", "cli", "llm", "translation"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Text Processing",
+  "Topic :: Utilities"
+]
+dependencies = [
+  "typer>=0.12.0",
+  "rich>=13.0.0",
+  "InquirerPy>=0.3.4"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+  "pytest-cov>=5.0.0",
+  "ruff>=0.5.0"
+]
+
+[project.urls]
+Homepage = "https://akshara.ink"
+Repository = "https://github.com/akshara-vision/akshara-vision"
+Issues = "https://github.com/akshara-vision/akshara-vision/issues"
+
+[project.scripts]
+akshara = "akshara_vision.cli.app:main"
+akv = "akshara_vision.cli.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+akshara_vision = ["instructions/*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"

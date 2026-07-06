@@ -1,0 +1,5 @@
+This is a scan-
+ning sample from a historical page.
+
+The text contains extra   spaces and line breaks for cleanup.
+
