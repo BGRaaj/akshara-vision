@@ -2,6 +2,7 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+import zipfile
 from unittest.mock import Mock, patch
 
 from akshara_vision.core.config import ConfigStore
@@ -87,6 +88,17 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(prefs["density"], "compact")
             self.assertEqual(prefs["prompt"], "short")
 
+    def test_output_directory_validator_accepts_folders_and_rejects_files(self):
+        from akshara_vision.cli.workflows import _validate_output_dir
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / "outputs"
+            file_path = root / "outputs.txt"
+            file_path.write_text("x", encoding="utf-8")
+            self.assertIsNone(_validate_output_dir(str(file_path)))
+            self.assertEqual(_validate_output_dir(str(folder)), folder)
+
     def test_confirm_uses_default_without_terminal(self):
         from akshara_vision.cli.ui import MonoUI
 
@@ -100,6 +112,14 @@ class CoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "sample.txt"
             path.write_text("A scan-\nning test.", encoding="utf-8")
+            selection = discover_inputs([str(path)])
+            self.assertEqual(selection.supported_count, 1)
+            self.assertEqual(selection.files[0], path.resolve())
+
+    def test_input_discovery_supports_webp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sample.webp"
+            path.write_bytes(b"fake webp bytes")
             selection = discover_inputs([str(path)])
             self.assertEqual(selection.supported_count, 1)
             self.assertEqual(selection.files[0], path.resolve())
@@ -218,6 +238,73 @@ class CoreTests(unittest.TestCase):
             self.assertIn('"translation_mode_effective": "translate"', manifest)
             self.assertTrue((run_dir / "restored_text.txt").exists())
             self.assertTrue((run_dir / "akshara_output__hi.txt").exists())
+
+    def test_batch_image_translation_preserves_each_input_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            kannada = tmp_path / "kannada-page.png"
+            english = tmp_path / "english-page.png"
+            kannada.write_bytes(b"kannada image")
+            english.write_bytes(b"english image")
+            profile = WorkflowProfile(
+                name="mixed-batch",
+                output_formats=["txt"],
+                output_dir=str(tmp_path / "out"),
+            )
+            profile.source_language = "English"
+            profile.output_language = "Kannada"
+            profile.translation_mode = "auto"
+            profile.model.model = "gemma4:12b"
+            selection = discover_inputs([str(kannada), str(english)])
+
+            class MixedVisionProvider:
+                name = "mock"
+
+                def restore_text(self, text, instruction, settings, media_path=None):
+                    del text, settings
+                    usage = {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                        "truncated": False,
+                    }
+                    if media_path and media_path.name == "kannada-page.png":
+                        return "ಕನ್ನಡ ಮೂಲ ಪಠ್ಯ\n", usage
+                    if media_path and media_path.name == "english-page.png":
+                        return "English source text\n", usage
+                    if "final translation stage" in instruction:
+                        return (
+                            '{"translated_text":"ಕನ್ನಡ ಅನುವಾದಿತ ಪಠ್ಯ","notes":"","status":"translated"}',
+                            usage,
+                        )
+                    return (
+                        '{"restored_text":"fallback","uncertain":[],"notes":"","status":"restored","failure_reason":""}',
+                        usage,
+                    )
+
+            with patch("akshara_vision.core.pipeline.get_provider", return_value=MixedVisionProvider()):
+                result = run_pipeline(RunRequest(profile=profile, inputs=selection))
+
+            run_dir = Path(result["run_dir"])
+            item_dirs = sorted(path.name for path in (run_dir / "items").iterdir())
+            self.assertEqual(item_dirs, ["0001-kannada-page-png", "0002-english-page-png"])
+            self.assertTrue(
+                (run_dir / "items" / "0001-kannada-page-png" / "restored__english.txt").exists()
+            )
+            self.assertTrue(
+                (
+                    run_dir
+                    / "items"
+                    / "0001-kannada-page-png"
+                    / "translated__english-to-kannada.txt"
+                ).exists()
+            )
+            self.assertTrue(
+                (run_dir / "items" / "0002-english-page-png" / "final__kannada.txt").exists()
+            )
+            output_text = (run_dir / "akshara_output.txt").read_text(encoding="utf-8")
+            self.assertIn("===== kannada-page.png =====", output_text)
+            self.assertIn("===== english-page.png =====", output_text)
 
     def test_combine_stage_outputs_rebuilds_final_text(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -380,6 +467,60 @@ class CoreTests(unittest.TestCase):
                 self.assertIn(
                     "[Mock restored text from multimodal file scan.png]", output_txt.read_text()
                 )
+
+    def test_multimodal_ocr_pipeline_webp(self):
+        from akshara_vision.providers.mock import MockProvider
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "scan.webp"
+            source.write_bytes(b"fake webp bytes")
+            profile = WorkflowProfile(
+                name="multimodal-webp",
+                output_formats=["txt"],
+                output_dir=str(tmp_path / "out"),
+            )
+            profile.model.model = "gemma4:12b"
+            selection = discover_inputs([str(source)])
+            provider = MockProvider()
+            with patch("akshara_vision.core.pipeline.get_provider", return_value=provider):
+                result = run_pipeline(RunRequest(profile=profile, inputs=selection))
+                run_dir = Path(result["run_dir"])
+                output_txt = run_dir / "akshara_output.txt"
+                self.assertTrue(output_txt.exists())
+                self.assertIn(
+                    "[Mock restored text from multimodal file scan.webp]",
+                    output_txt.read_text(),
+                )
+
+    def test_zip_archive_preserves_same_named_files(self):
+        from akshara_vision.providers.mock import MockProvider
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            archive_path = tmp_path / "bundle.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("page-a/sample.txt", "First file")
+                archive.writestr("page-b/sample.txt", "Second file")
+            profile = WorkflowProfile(
+                name="archive",
+                output_formats=["txt"],
+                output_dir=str(tmp_path / "out"),
+            )
+            profile.source_language = "en"
+            profile.output_language = "en"
+            profile.model.model = "gemma4:12b"
+            provider = MockProvider()
+            selection = discover_inputs([str(archive_path)])
+            with patch("akshara_vision.core.pipeline.get_provider", return_value=provider):
+                result = run_pipeline(RunRequest(profile=profile, inputs=selection))
+            run_dir = Path(result["run_dir"])
+            restored_group = run_dir / "stages" / "restored" / "0001-bundle-zip"
+            restored_pieces = sorted(p.name for p in restored_group.glob("*.txt"))
+            self.assertEqual(restored_pieces, ["0001-restored__en.txt", "0002-restored__en.txt"])
+            output_txt = (run_dir / "akshara_output.txt").read_text(encoding="utf-8")
+            self.assertIn("First file", output_txt)
+            self.assertIn("Second file", output_txt)
 
     def test_multimodal_unsupported_model_raises_professional_error(self):
         from akshara_vision.core.models import ModelSettings

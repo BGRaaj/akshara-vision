@@ -52,9 +52,18 @@ Every run also writes:
 
 - `raw_ocr.txt`
 - `restored_text.txt`
+- `items/` with one numbered folder per input, such as `0001-page-one-png`
+- `items/<input>/restored__LANG.txt`
+- `items/<input>/translated__SOURCE-to-TARGET.txt` when translation runs
+- `items/<input>/final__LANG.txt`
 - `stages/` with per-page and per-chunk checkpoint files
 - `run_manifest.json`
 - `sources/`
+
+For PDFs, restored stage files are numbered by rendered page. For zip archives,
+inner files are processed in sorted order and kept under the archive's numbered
+run item. The final export still combines the selected inputs into one document,
+but the `items/` folder keeps each input easy to inspect separately.
 
 Run manifests store project-relative paths when possible so local user directories are
 not leaked by default.

@@ -143,6 +143,19 @@ class OpenAICompatibleLocalProvider:
         return MockProvider().restore_text(text, instruction, ModelSettings())
 
 
+def _media_mime_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if suffix == ".webp":
+        return "image/webp"
+    if suffix in {".tif", ".tiff"}:
+        return "image/tiff"
+    if suffix == ".bmp":
+        return "image/bmp"
+    return "image/png"
+
+
 def _parse_ollama_models(output: str) -> List[str]:
     models = []
     for line in output.splitlines()[1:]:
@@ -276,12 +289,7 @@ def openai_compatible_chat(
     max_tokens = _generation_limit(settings, ctx_limit)
 
     if media_path:
-        suffix = media_path.suffix.lower()
-        mime_type = "image/png"
-        if suffix in {".jpg", ".jpeg"}:
-            mime_type = "image/jpeg"
-        elif suffix == ".webp":
-            mime_type = "image/webp"
+        mime_type = _media_mime_type(media_path)
 
         import base64
 

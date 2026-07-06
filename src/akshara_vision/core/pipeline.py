@@ -48,9 +48,11 @@ class StageWriter:
         self.restored_dir = self.stages_dir / "restored"
         self.translated_dir = self.stages_dir / "translated"
         self.combined_dir = self.stages_dir / "combined"
+        self.items_dir = self.run_dir / "items"
         self.restored_dir.mkdir(parents=True, exist_ok=True)
         self.translated_dir.mkdir(parents=True, exist_ok=True)
         self.combined_dir.mkdir(parents=True, exist_ok=True)
+        self.items_dir.mkdir(parents=True, exist_ok=True)
 
     def write_raw_checkpoint(self, text: str) -> Path:
         path = self.run_dir / "restored_text.txt"
@@ -88,6 +90,26 @@ class StageWriter:
         path.write_text(text, encoding="utf-8")
         return path
 
+    def write_item_restored(self, source_index: int, source_name: str, text: str) -> Path:
+        item_dir = self._item_dir(source_index, source_name)
+        path = item_dir / f"restored__{_language_slug(self.source_language)}.txt"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def write_item_translated(self, source_index: int, source_name: str, text: str) -> Path:
+        item_dir = self._item_dir(source_index, source_name)
+        source = _language_slug(self.source_language)
+        target = _language_slug(self.output_language)
+        path = item_dir / f"translated__{source}-to-{target}.txt"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def write_item_final(self, source_index: int, source_name: str, text: str) -> Path:
+        item_dir = self._item_dir(source_index, source_name)
+        path = item_dir / f"final__{_language_slug(self.output_language)}.txt"
+        path.write_text(text, encoding="utf-8")
+        return path
+
     def write_final_output_aliases(self, text: str) -> List[Path]:
         aliases = [
             self.run_dir / "akshara_output.txt",
@@ -104,6 +126,11 @@ class StageWriter:
         path = self.stages_dir / "stage_manifest.json"
         path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return path
+
+    def _item_dir(self, source_index: int, source_name: str) -> Path:
+        item_dir = self.items_dir / f"{source_index:04d}-{_slugify(source_name)}"
+        item_dir.mkdir(parents=True, exist_ok=True)
+        return item_dir
 
     def _write_piece(
         self,
@@ -143,6 +170,7 @@ def run_pipeline(
     provider = get_provider(profile.model.provider)
     cleaned_parts: List[str] = []
     raw_parts: List[str] = []
+    restored_sources: List[Dict[str, object]] = []
     restoration_records: List[Dict[str, object]] = []
     total_usage = {
         "prompt_tokens": 0,
@@ -206,6 +234,16 @@ def run_pipeline(
             _add_usage(usage)
 
         raw_parts.append(f"===== {path.name} =====\n{raw_text}".strip())
+        source_text = cleaned.strip() + "\n"
+        artifacts.write_item_restored(index, path.name, source_text)
+        restored_sources.append(
+            {
+                "index": index,
+                "name": path.name,
+                "path": _safe_path(path),
+                "text": source_text,
+            }
+        )
         restoration_records.append(
             {
                 "source": _safe_path(path),
@@ -231,6 +269,7 @@ def run_pipeline(
         provider,
         artifacts,
         progress,
+        restored_sources=restored_sources,
     )
     final_text = translation_result["text"]
     translation_metadata = translation_result["metadata"]
@@ -864,6 +903,8 @@ def _translation_instruction(profile: WorkflowProfile) -> str:
         "Preserve names, dates, citations, paragraph breaks, headings, and page order.\n"
         "Do not add commentary, explanations, summaries, or markdown fences.\n"
         "Preserve [unclear] markers exactly as written.\n"
+        "For mixed-language batches, translate only the text that is not already in the target language.\n"
+        "If a passage is already in the target language, keep it unchanged and include it in the output.\n"
         "Return only the translated text.\n"
         "If the source and target languages are the same, return the cleaned text unchanged.\n"
     )
@@ -938,6 +979,7 @@ def _apply_translation_stage(
     provider,
     artifacts: StageWriter,
     progress: Optional[ProgressCallback] = None,
+    restored_sources: Optional[List[Dict[str, object]]] = None,
 ) -> Dict[str, object]:
     mode = effective_translation_mode(
         profile.source_language,
@@ -945,6 +987,11 @@ def _apply_translation_stage(
         profile.translation_mode,
     )
     if mode in {"off", "same-language-cleanup", "metadata-only"}:
+        for source in restored_sources or []:
+            source_index = int(source.get("index") or 1)
+            source_name = str(source.get("name") or "source")
+            source_text = str(source.get("text") or "").strip() + "\n"
+            artifacts.write_item_final(source_index, source_name, source_text)
         return {
             "text": cleaned_text,
             "metadata": {
@@ -964,7 +1011,6 @@ def _apply_translation_stage(
             },
         }
 
-    chunks = _split_text_chunks(cleaned_text, max_chars=8000)
     translated_parts: List[str] = []
     translation_chunks: List[Dict[str, object]] = []
     total_usage = {
@@ -975,46 +1021,87 @@ def _apply_translation_stage(
     }
     translation_instruction = _translation_instruction(profile)
 
-    for index, chunk in enumerate(chunks, start=1):
-        _notify(progress, "translate", f"Translating text chunk {index}/{len(chunks)}", advance=1)
-        prompt = _translation_prompt(chunk, profile)
-        result, usage = provider.restore_text(prompt, translation_instruction, profile.model)
-        if usage:
-            total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
-            total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
-            total_usage["total_tokens"] += usage.get("total_tokens", 0)
-            if usage.get("truncated"):
-                total_usage["truncated"] = True
+    sources = restored_sources or [
+        {"index": 1, "name": "combined", "path": "combined", "text": cleaned_text}
+    ]
+    total_source_count = len(sources)
 
-        parsed = _parse_translation_result(result, chunk)
-        translated_text = parsed["translated_text"].strip()
-        if not translated_text:
-            translated_text = chunk.strip()
-            parsed["failure_reason"] = parsed["failure_reason"] or "model returned malformed output"
-        translated_parts.append(translated_text)
-        artifacts.write_translated_piece(1, "combined", index, translated_text + "\n")
-        translation_chunks.append(
-            {
-                "index": index,
-                "input": _short_excerpt(chunk),
-                "translated_text": translated_text,
-                "notes": parsed["notes"],
-                "status": parsed["status"],
-                "failure_reason": parsed["failure_reason"],
-            }
-        )
+    for source_number, source in enumerate(sources, start=1):
+        source_index = int(source.get("index") or source_number)
+        source_name = str(source.get("name") or f"source-{source_index}")
+        source_text = str(source.get("text") or "").strip()
+        chunks = _split_text_chunks(source_text, max_chars=8000)
+        source_translated_parts: List[str] = []
+        if not chunks:
+            chunks = ["[missing text]"]
+        for chunk_index, chunk in enumerate(chunks, start=1):
+            _notify(
+                progress,
+                "translate",
+                (
+                    f"Translating {source_name} "
+                    f"({source_number}/{total_source_count}, chunk {chunk_index}/{len(chunks)})"
+                ),
+                advance=1,
+            )
+            prompt = _translation_prompt(chunk, profile)
+            result, usage = provider.restore_text(prompt, translation_instruction, profile.model)
+            if usage:
+                total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
+                total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
+                total_usage["total_tokens"] += usage.get("total_tokens", 0)
+                if usage.get("truncated"):
+                    total_usage["truncated"] = True
+
+            parsed = _parse_translation_result(result, chunk)
+            translated_text = parsed["translated_text"].strip()
+            if not translated_text:
+                translated_text = chunk.strip()
+                parsed["failure_reason"] = (
+                    parsed["failure_reason"] or "model returned malformed output"
+                )
+            source_translated_parts.append(translated_text)
+            artifacts.write_translated_piece(
+                source_index, source_name, chunk_index, translated_text + "\n"
+            )
+            translation_chunks.append(
+                {
+                    "source_index": source_index,
+                    "source": source.get("path") or source_name,
+                    "index": chunk_index,
+                    "input": _short_excerpt(chunk),
+                    "translated_text": translated_text,
+                    "notes": parsed["notes"],
+                    "status": parsed["status"],
+                    "failure_reason": parsed["failure_reason"],
+                }
+            )
+
+        source_translated_text = "\n\n".join(
+            part for part in source_translated_parts if part.strip()
+        ).strip()
+        if not source_translated_text:
+            source_translated_text = source_text
+        artifacts.write_item_translated(source_index, source_name, source_translated_text + "\n")
+
+        if mode == "bilingual":
+            source_final_text = (
+                "RESTORED SOURCE\n"
+                f"{source_text.strip()}\n\n"
+                "TRANSLATION\n"
+                f"{source_translated_text}"
+            ).strip()
+        else:
+            source_final_text = source_translated_text
+        artifacts.write_item_final(source_index, source_name, source_final_text + "\n")
+        translated_parts.append(f"===== {source_name} =====\n{source_final_text}".strip())
 
     translated_text = "\n\n".join(part for part in translated_parts if part.strip()).strip()
     if not translated_text:
         translated_text = cleaned_text.strip()
 
     if mode == "bilingual":
-        final_text = (
-            "RESTORED SOURCE\n"
-            f"{cleaned_text.strip()}\n\n"
-            "TRANSLATION\n"
-            f"{translated_text}"
-        ).strip()
+        final_text = translated_text
     else:
         final_text = translated_text
 
@@ -1161,10 +1248,9 @@ def _restore_multimodal_zip(
             for member in archive.infolist():
                 if member.is_dir():
                     continue
-                source_name = Path(member.filename).name
-                if not source_name:
+                target = _safe_archive_target(root, member.filename)
+                if target is None:
                     continue
-                target = root / source_name
                 with archive.open(member) as source, target.open("wb") as destination:
                     shutil.copyfileobj(source, destination)
                 extracted_files.append(target)
@@ -1211,7 +1297,7 @@ def _restore_multimodal_zip(
                     chunk_idx += 1
             elif suffix == ".pdf":
                 pdf_clean, pdf_rec, usage = _restore_multimodal_pdf(
-                    ext_file, instruction, profile, provider, progress
+                    ext_file, instruction, profile, provider, progress, artifacts, source_index
                 )
                 if usage:
                     total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
@@ -1271,3 +1357,19 @@ def _restore_multimodal_zip(
         )
     finally:
         temp_dir.cleanup()
+
+
+def _safe_archive_target(root: Path, member_name: str) -> Optional[Path]:
+    candidate = Path(member_name)
+    parts = []
+    for part in candidate.parts:
+        if part in {"", ".", ".."}:
+            continue
+        if part.endswith(":"):
+            continue
+        parts.append(part)
+    if not parts:
+        return None
+    target = root.joinpath(*parts)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return target

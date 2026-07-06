@@ -9,7 +9,12 @@ from typing import Optional
 from akshara_vision.core.constants import EXECUTION_MODES
 from akshara_vision.core.models import ModelSettings
 from akshara_vision.providers.base import ProviderStatus
-from akshara_vision.providers.local import _context_limit, _generation_limit, openai_compatible_chat
+from akshara_vision.providers.local import (
+    _context_limit,
+    _generation_limit,
+    _media_mime_type,
+    openai_compatible_chat,
+)
 from akshara_vision.providers.mock import MockProvider
 
 
@@ -93,12 +98,7 @@ def _anthropic_message(
     media_path: Optional[Path] = None,
 ) -> tuple[str, dict]:
     if media_path:
-        suffix = media_path.suffix.lower()
-        mime_type = "image/png"
-        if suffix in {".jpg", ".jpeg"}:
-            mime_type = "image/jpeg"
-        elif suffix == ".webp":
-            mime_type = "image/webp"
+        mime_type = _media_mime_type(media_path)
 
         import base64
 
@@ -209,12 +209,8 @@ def _gemini_generate(
 
     if media_path:
         suffix = media_path.suffix.lower()
-        mime_type = "image/png"
-        if suffix in {".jpg", ".jpeg"}:
-            mime_type = "image/jpeg"
-        elif suffix == ".webp":
-            mime_type = "image/webp"
-        elif suffix == ".pdf":
+        mime_type = _media_mime_type(media_path)
+        if suffix == ".pdf":
             mime_type = "application/pdf"
 
         import base64

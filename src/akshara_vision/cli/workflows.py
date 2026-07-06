@@ -1,4 +1,5 @@
 import os
+import copy
 import shlex
 import shutil
 import subprocess
@@ -13,7 +14,6 @@ from akshara_vision.core.constants import (
     DOCUMENT_TYPES,
     EXECUTION_MODES,
     OUTPUT_FORMATS,
-    PROVIDER_TYPES,
     WORKFLOWS,
 )
 from akshara_vision.core.env import env_status, load_env_files
@@ -407,7 +407,7 @@ def onboard(
     )
     profile.output_formats = choose_output_formats(profile.output_formats)
     profile.instruction_preset = DEFAULT_PRESET
-    profile.output_dir = ui.text("Output folder", profile.output_dir)
+    profile.output_dir = choose_output_folder(profile.output_dir)
     profile.locked = ui.confirm("Lock this profile as the default quick-run workflow?", True)
     saved = store.save_profile(profile)
     if profile.locked:
@@ -419,29 +419,38 @@ def onboard(
 def choose_model(current: Optional[ModelSettings] = None) -> ModelSettings:
     current = current or ModelSettings()
     statuses = {name: provider.status() for name, provider in provider_registry().items()}
+    source = ui.choose("Model source", ["local", "cloud"], _provider_source(current.provider))
+    if source == "cloud":
+        provider_names = ["openai", "anthropic", "gemini"]
+        default_provider = current.provider if current.provider in provider_names else "openai"
+    else:
+        provider_names = ["ollama", "openai-compatible-local", "lm-studio", "jan", "llama-cpp"]
+        default_provider = current.provider if current.provider in provider_names else "ollama"
     choices = []
-    for provider_name in PROVIDER_TYPES:
+    for provider_name in provider_names:
         status = statuses.get(provider_name)
-        suffix = "available" if status and status.available else "setup needed"
+        if status and status.available:
+            suffix = "available"
+        elif source == "cloud":
+            suffix = "api key needed"
+        else:
+            suffix = "setup needed"
         choices.append(f"{provider_name} ({suffix})")
     default_label = next(
-        (choice for choice in choices if choice.startswith(f"{current.provider} ")),
+        (choice for choice in choices if choice.startswith(f"{default_provider} ")),
         choices[0],
     )
     selected_label = ui.choose("Model provider", choices, default_label)
     provider_name = selected_label.split(" ", 1)[0]
     status = statuses.get(provider_name)
-    model_choices = (
-        status.models if status and status.models else _recommended_models(provider_name)
-    )
-    model_choices = _with_custom_model_choice(model_choices)
+    model_choices = status.models if status and status.models else _recommended_models(provider_name)
+    if not model_choices:
+        model_choices = ["offline-restoration-preview"]
     model = ui.choose(
         "Model",
         model_choices,
         current.model if current.model in model_choices else model_choices[0],
     )
-    if model == "Custom model id...":
-        model = ui.text("Model id", current.model if current.provider == provider_name else "")
     endpoint = current.endpoint or ""
     if provider_name in {"openai-compatible-local", "lm-studio", "jan", "llama-cpp"}:
         endpoint = ui.text("Local endpoint", endpoint or _default_endpoint(provider_name))
@@ -491,6 +500,15 @@ def choose_output_formats(defaults: Optional[List[str]] = None) -> List[str]:
     return selected or ["txt"]
 
 
+def choose_output_folder(default: str = "akshara-output") -> str:
+    while True:
+        entered = ui.text("Output folder", default)
+        validated = _validate_output_dir(entered)
+        if validated is not None:
+            return str(validated)
+        ui.write("Enter a folder path, not a file path. The parent folder must already exist.")
+
+
 def run_guided(
     inputs: Optional[Iterable[str]] = None,
     profile_name: Optional[str] = None,
@@ -538,12 +556,16 @@ def execute_run(
     recursive: bool = False,
     dry_run: bool = False,
 ):
+    profile = copy.deepcopy(profile)
     profile.sync_translation_defaults()
     input_values = list(inputs or [])
     if not input_values:
         entered = ui.text("Input files, folders, globs, or manifest paths")
         input_values = [item.strip() for item in entered.split(",") if item.strip()]
     selection = discover_inputs(input_values, recursive=recursive)
+    if ui.interactive():
+        ui.section("Destination")
+        profile.output_dir = choose_output_folder(profile.output_dir)
     review_run(profile, selection)
     if dry_run:
         ui.write("Dry run complete. No outputs were written.")
@@ -942,7 +964,7 @@ def _edit_profile_interactive(store: ConfigStore, name: str) -> None:
     if section in {"Outputs", "Everything"}:
         profile.output_formats = choose_output_formats(profile.output_formats)
     if section in {"Output folder", "Everything"}:
-        profile.output_dir = ui.text("Output folder", profile.output_dir)
+        profile.output_dir = choose_output_folder(profile.output_dir)
     if section in {"Lock/default", "Everything"}:
         profile.locked = ui.confirm(
             "Lock this profile as the default quick-run workflow?", profile.locked
@@ -984,6 +1006,28 @@ def _duplicate_profile(store: ConfigStore, name: str) -> None:
     duplicate.locked = False
     saved = store.save_profile(duplicate)
     ui.write(f"Duplicated profile: {saved}")
+
+
+def _provider_source(provider_name: str) -> str:
+    if provider_name in {"openai", "anthropic", "gemini"}:
+        return "cloud"
+    return "local"
+
+
+def _validate_output_dir(value: str) -> Optional[Path]:
+    path = Path(value).expanduser()
+    if not str(value).strip():
+        return None
+    if path.exists():
+        return path if path.is_dir() else None
+    parent = path.parent
+    if not parent.exists() or not parent.is_dir():
+        return None
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    return path
 
 
 def model_command(action: str = "status") -> None:

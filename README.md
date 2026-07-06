@@ -117,7 +117,9 @@ Inside the interactive shell:
 | Selection | Single files, multiple paths, folders, recursive folders, and glob patterns |
 
 Mixed batches are supported. Akshara Vision detects each file type and records
-missing or unsupported inputs in the run manifest.
+missing or unsupported inputs in the run manifest. Batch outputs are numbered
+and grouped by original input name so images, PDFs, archive members, and text
+files remain easy to inspect after a run.
 
 ## Supported Outputs
 
@@ -134,8 +136,9 @@ The `.txt` export is the primary default. Structured exports include metadata
 for inputs, provider, model, workflow, translation state, usage, restoration
 chunks, uncertainty notes, and failure reasons.
 
-Each run also writes staged outputs under `stages/` so interrupted runs can be
-recombined later without reprocessing completed pages or chunks.
+Each run also writes `items/` for human-friendly per-input outputs and `stages/`
+for recoverable page/chunk checkpoints. Interrupted runs can be recombined later
+without reprocessing completed pages or chunks.
 
 ## Translation
 
