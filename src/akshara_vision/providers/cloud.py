@@ -52,7 +52,7 @@ class CloudProvider:
                 instruction=instruction,
                 text=text,
                 api_key=api_key,
-                timeout=None,
+                timeout=_provider_timeout(settings.execution_mode),
                 media_path=media_path,
             )
         elif self.name == "anthropic":

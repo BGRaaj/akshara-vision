@@ -1827,6 +1827,7 @@ def _restore_multimodal_pdf(
     try:
         restored_pages = []
         chunks_record = []
+        failed_pages = []
         total_usage = {
             "prompt_tokens": 0,
             "completion_tokens": 0,
@@ -1861,22 +1862,29 @@ def _restore_multimodal_pdf(
                 advance=1,
             )
             prompt = _task_text("", profile, consistency_state)
-            result, usage = _restore_with_retry(
-                provider, prompt, instruction, profile.model, media_path=page_img
-            )
-            if usage:
-                total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
-                total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
-                total_usage["total_tokens"] += usage.get("total_tokens", 0)
-                if usage.get("truncated"):
-                    total_usage["truncated"] = True
-            restored_text = _extract_multimodal_text(result)
-            failure_reason = ""
-            if not restored_text:
+            try:
+                result, usage = _restore_with_retry(
+                    provider, prompt, instruction, profile.model, media_path=page_img
+                )
+                if usage:
+                    total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
+                    total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
+                    total_usage["total_tokens"] += usage.get("total_tokens", 0)
+                    if usage.get("truncated"):
+                        total_usage["truncated"] = True
+                restored_text = _extract_multimodal_text(result)
+                failure_reason = ""
+                if not restored_text:
+                    restored_text = ""
+                    failure_reason = BLANK_PAGE_REASON
+                elif usage and usage.get("truncated"):
+                    failure_reason = "model context or output limit reached"
+                del result
+            except Exception as exc:
+                failed_pages.append((idx, page_img, prompt))
                 restored_text = ""
-                failure_reason = BLANK_PAGE_REASON
-            elif usage and usage.get("truncated"):
-                failure_reason = "model context or output limit reached"
+                failure_reason = f"model generation failed: {exc}"
+
             _update_consistency_state(consistency_state, restored_text)
             _write_consistency_checkpoint(
                 artifacts.run_dir, profile, consistency_state, f"{label} page {idx}"
@@ -1894,12 +1902,65 @@ def _restore_multimodal_pdf(
                     "failure_reason": failure_reason,
                 }
             )
-            try:
-                page_img.unlink()
-            except OSError:
-                pass
-            del result, restored_text
+            if idx not in [f[0] for f in failed_pages]:
+                try:
+                    page_img.unlink()
+                except OSError:
+                    pass
+            del restored_text
             gc.collect()
+
+        # Retry failed pages at the end before combining
+        if failed_pages:
+            _notify(
+                progress,
+                "clean",
+                f"Retrying {len(failed_pages)} failed/stuck pages for {label}...",
+                advance=0,
+            )
+            for idx, page_img, prompt in failed_pages:
+                _notify(
+                    progress,
+                    "clean",
+                    f"Retrying restoration for {label} page {idx}...",
+                    advance=0,
+                )
+                try:
+                    result, usage = _restore_with_retry(
+                        provider, prompt, instruction, profile.model, media_path=page_img
+                    )
+                    if usage:
+                        total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
+                        total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
+                        total_usage["total_tokens"] += usage.get("total_tokens", 0)
+                        if usage.get("truncated"):
+                            total_usage["truncated"] = True
+                    restored_text = _extract_multimodal_text(result)
+                    failure_reason = ""
+                    if not restored_text:
+                        restored_text = ""
+                        failure_reason = BLANK_PAGE_REASON
+                    elif usage and usage.get("truncated"):
+                        failure_reason = "model context or output limit reached"
+
+                    restored_pages[idx - 1] = restored_text
+                    for chunk in chunks_record:
+                        if chunk["index"] == idx:
+                            chunk["restored_text"] = restored_text
+                            chunk["status"] = _restoration_status(failure_reason)
+                            chunk["failure_reason"] = failure_reason
+                            break
+                    artifacts.write_restored_piece(source_index, label, idx, restored_text + "\n")
+                    del result, restored_text
+                except Exception:
+                    pass
+
+            # Clean up remaining temp images
+            for idx, page_img, prompt in failed_pages:
+                try:
+                    page_img.unlink()
+                except OSError:
+                    pass
 
         combined = "\n\n".join(restored_pages) + "\n"
         file_failure_reason = next(

@@ -53,7 +53,7 @@ class OllamaProvider:
                 instruction,
                 text,
                 media_path,
-                None,
+                _provider_timeout(settings.execution_mode),
             )
             if response:
                 return response, usage
@@ -61,14 +61,13 @@ class OllamaProvider:
                 f"Failed to obtain vision response from Ollama using model '{settings.model}'."
             )
 
-        # Fallback for text-only: try HTTP first, then CLI
         try:
             response, usage = _ollama_chat_http(
                 settings,
                 instruction,
                 text,
                 None,
-                None,
+                _provider_timeout(settings.execution_mode),
             )
         except RuntimeError:
             response, usage = "", {}
@@ -136,6 +135,7 @@ class OpenAICompatibleLocalProvider:
             instruction=instruction,
             text=text,
             api_key=os.environ.get("AKSHARA_OPENAI_COMPATIBLE_API_KEY"),
+            timeout=_provider_timeout(settings.execution_mode),
             media_path=media_path,
         )
         if result:

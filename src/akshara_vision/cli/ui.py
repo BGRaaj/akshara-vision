@@ -85,8 +85,8 @@ class MonoUI:
     def safe_input(self, prompt: str = "") -> str:
         try:
             return input(prompt).strip()
-        except (KeyboardInterrupt, EOFError):
-            return ""
+        except EOFError:
+            raise KeyboardInterrupt()
 
     def section(self, title: str) -> None:
         self.write("")
@@ -165,17 +165,14 @@ class MonoUI:
         if not choices:
             raise ValueError("choose requires at least one choice")
         if inquirer and self.interactive():
-            try:
-                return str(
-                    inquirer.select(
-                        message=message,
-                        choices=choices,
-                        default=default or choices[0],
-                        qmark="›",
-                    ).execute()
-                )
-            except KeyboardInterrupt:
-                return default or choices[0]
+            return str(
+                inquirer.select(
+                    message=message,
+                    choices=choices,
+                    default=default or choices[0],
+                    qmark="›",
+                ).execute()
+            )
         self.write(message)
         for index, choice in enumerate(choices, start=1):
             marker = "default" if choice == default else ""
@@ -192,17 +189,14 @@ class MonoUI:
     ) -> List[str]:
         default = default or []
         if inquirer and self.interactive():
-            try:
-                return list(
-                    inquirer.checkbox(
-                        message=message,
-                        choices=choices,
-                        default=default,
-                        qmark="›",
-                    ).execute()
-                )
-            except KeyboardInterrupt:
-                return default or [choices[0]]
+            return list(
+                inquirer.checkbox(
+                    message=message,
+                    choices=choices,
+                    default=default,
+                    qmark="›",
+                ).execute()
+            )
         self.write(message)
         self.write("Choose comma-separated numbers, or press Enter for default.")
         for index, choice in enumerate(choices, start=1):
@@ -222,20 +216,14 @@ class MonoUI:
 
     def text(self, message: str, default: str = "") -> str:
         if inquirer and self.interactive():
-            try:
-                return str(inquirer.text(message=message, default=default, qmark="›").execute())
-            except KeyboardInterrupt:
-                return default
+            return str(inquirer.text(message=message, default=default, qmark="›").execute())
         suffix = f" [{default}]" if default else ""
         raw = self.safe_input(f"{message}{suffix}: ")
         return raw or default
 
     def confirm(self, message: str, default: bool = True) -> bool:
         if inquirer and self.interactive():
-            try:
-                return bool(inquirer.confirm(message=message, default=default, qmark="›").execute())
-            except KeyboardInterrupt:
-                return default
+            return bool(inquirer.confirm(message=message, default=default, qmark="›").execute())
         suffix = "Y/n" if default else "y/N"
         if not self.interactive():
             self.write(f"{message} ({suffix}): {'yes' if default else 'no'}")
@@ -279,7 +267,7 @@ class ProgressReporter:
             self.ui.section(self.title)
         return self
 
-    def update(self, message: str, advance: int = 1) -> None:
+    def update(self, message: str, advance: int = 0) -> None:
         if self._progress is not None and self._task is not None:
             if self.total > 0:
                 self._progress.update(self._task, description=message, advance=advance)
@@ -293,7 +281,7 @@ class ProgressReporter:
                 self.ui.write(f"[{elapsed:0.1f}s] {message}")
 
     def finish(self, message: str = "Complete") -> None:
-        self.update(message)
+        self.update(message, advance=0)
 
     def __exit__(self, exc_type, exc, tb):
         if exc_type is None:
@@ -325,13 +313,13 @@ def _inscription_hero(width: int) -> List[str]:
             "                    V I S I O N",
         ]
     return [
-        "        _        _  __  _____  _   _       _       ____        _        ",
-        "       / \\      | |/ / / ___/ | | | |     / \\     |  _ \\      / \\       ",
-        "      / _ \\     | ' /  \\___ \\ | |_| |    / _ \\    | |_) |    / _ \\      ",
-        "     / ___ \\    | . \\   ___) ||  _  |   / ___ \\   |  _ <    / ___ \\     ",
-        "    /_/   \\_\\   |_|\\_\\ |____/ |_| |_|  /_/   \\_\\  |_| \\_\\  /_/   \\_\\    ",
-        "                              V I S I O N",
-    ]
+            "     _    _  __ ____  _   _    _    ____      _    ",
+            "    / \\  | |/ // ___|| | | |  / \\  |  _ \\    / \\   ",
+            "   / _ \\ | ' / \\___ \\| |_| | / _ \\ | |_) |  / _ \\  ",
+            "  / ___ \\| . \\  ___) |  _  |/ ___ \\|  _ <  / ___ \\ ",
+            " /_/   \\_\\_|\\_\\|____/|_| |_/_/   \\_\\_| \\_\\/_/   \\_\\",
+            "                    V I S I O N",
+        ]
 
 
 def _render_card(card: tuple, width: int) -> List[str]:

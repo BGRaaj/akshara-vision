@@ -591,6 +591,13 @@ def execute_run(
         ui.status("info", "Run cancelled.")
         return None
     try:
+        pid = os.getpid()
+        if sys.platform == "win32":
+            ui.status("info", f"Press Ctrl+C to interrupt safely and preserve progress. (PID: {pid})")
+            ui.write(f"  Fallback force-kill: Stop-Process -Id {pid} -Force")
+        else:
+            ui.status("info", f"Press Ctrl+C to interrupt safely and preserve progress. (PID: {pid})")
+            ui.write(f"  Fallback force-kill: kill -9 {pid}")
         result = _run_with_progress(RunRequest(profile=profile, inputs=selection, dry_run=False))
     except KeyboardInterrupt:
         ui.section("Interrupted")
@@ -1221,22 +1228,37 @@ def check_command() -> int:
             f"src{os.pathsep}{existing_pythonpath}" if existing_pythonpath else "src"
         )
     commands = [
-        [sys.executable, "-m", "compileall", "-q", "src", "tests"],
-        [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+        ("Compilation", [sys.executable, "-m", "compileall", "-q", "src", "tests"]),
+        ("Unit Tests", [sys.executable, "-m", "unittest", "discover", "-s", "tests"]),
     ]
     failed = 0
+    failed_label = ""
+    failed_output = ""
     with ui.progress("Checks", total=len(commands)) as reporter:
-        for command in commands:
-            label = " ".join(command[1:])
-            reporter.update(label)
-            result = subprocess.run(command, check=False, env=env)
+        for label, command in commands:
+            reporter.update(label, advance=0)
+            result = subprocess.run(
+                command,
+                check=False,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
             if result.returncode != 0:
                 failed = result.returncode
+                failed_label = label
+                failed_output = (result.stdout or "") + "\n" + (result.stderr or "")
                 break
+            reporter.update(label, advance=1)
     if failed:
-        ui.write("FAILED  Checks did not pass.")
+        ui.section(f"Failure in {failed_label}")
+        ui.write(failed_output.strip())
+        ui.status("error", "Checks did not pass.")
         return failed
-    ui.write("SUCCESS  Compile and unit tests passed.")
+    ui.status("success", "Compile and unit tests passed.")
     return 0
 
 
