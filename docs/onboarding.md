@@ -78,3 +78,7 @@ confirm the output folder for that run.
 
 Use `/mode` later if you want to switch between faster prompting execution,
 balanced defaults, or the slower quality-focused analysis path.
+
+For dense pages, damaged scans, or non-English scripts, prefer `quality` mode
+and a stronger vision model. The tool saves extraction before translation, but
+recognition quality and language coverage still depend on the selected model.

@@ -36,6 +36,16 @@ The run uses chunked restoration for long raw text inputs, so it is processed in
 smaller model batches instead of one large prompt. Progress is timer-based and indeterminate;
 it shows the active step and elapsed time rather than a fake percentage.
 
+For image and PDF vision runs, each image or rendered page is sent as its own
+model request. Restored text is written before translation starts. Translation is
+then performed as separate text-only requests over smaller restored chunks, which
+keeps the translation prompt free from the original image context.
+
+Dense pages and non-English scripts still depend heavily on the chosen vision
+model. Quality mode gives the model stronger page-order, region-by-region, and
+Indic-script instructions. If a model hits its output limit, the run is marked
+partial with `model context or output limit reached`.
+
 Interrupted runs can be rebuilt later with:
 
 ```bash

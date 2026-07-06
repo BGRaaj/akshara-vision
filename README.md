@@ -6,9 +6,7 @@
                   / ___ \| . \  ___) |  _  |/ ___ \|  _ <  / ___ \
                  /_/   \_\_|\_\|____/|_| |_/_/   \_\_| \_\/_/   \_\
                                               V I S I O N
-                                   AKSHARA VISION
                               Restore. Read. Preserve.
-             Choose a workflow, inspect the plan, then run only when ready.
 =================================================================================
 ```
 
@@ -29,7 +27,7 @@ model, provider, scan quality, script complexity, and document damage.
 | --- | --- |
 | Interactive CLI | Monochrome terminal UI, home board, dropdowns, checkboxes, confirmations, profile manager, model setup, doctor checks |
 | Restoration | Text cleanup, OCR error correction, uncertainty markers, chunked long-text processing, raw OCR preservation |
-| Vision input | Direct multimodal processing for scanned images and rendered PDF pages with vision-capable models |
+| Vision input | Direct multimodal processing for scanned images and rendered PDF pages with dense-page and Indic-script extraction guidance |
 | Translation | Automatic final-pass translation when output language differs from source language; manual modes for translate, bilingual, transliterate, and metadata-only workflows |
 | Batch processing | Files, folders, recursive folders, globs, ZIP archives, CSV manifests, and JSON manifests |
 | Profiles | Portable TOML profiles with defaults for workflow, languages, translation mode, model, output formats, destination, and locked quick runs |
@@ -145,6 +143,11 @@ without reprocessing completed pages or chunks.
 Translation runs after extraction and restoration are complete. This keeps the
 first pass focused on faithfully reading the source and uses the model only once
 the cleaned text is available.
+
+Extraction is saved before translation begins. Translation is then sent as fresh,
+smaller text-only model calls, so image context does not consume the translation
+budget. Dense scans can still hit a model's output limit; when that happens,
+Akshara Vision marks the source as partial and records the reason in the manifest.
 
 Translation modes:
 

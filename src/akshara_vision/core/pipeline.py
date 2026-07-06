@@ -24,6 +24,8 @@ from akshara_vision.registries.providers import get_provider
 
 TEXT_EXTENSIONS = {".txt", ".md", ".html", ".hocr", ".xml", ".json"}
 ProgressCallback = Callable[[str, str, int], None]
+RESTORATION_CHUNK_CHARS = 5000
+TRANSLATION_CHUNK_CHARS = 5000
 
 EXECUTION_MODE_PDF_DPI = {
     "fast": 200,
@@ -441,6 +443,9 @@ def _restore_text(
         if not restored_text:
             restored_text = chunk.strip()
             parsed["failure_reason"] = parsed["failure_reason"] or "source unreadable or too blurry"
+        if usage and usage.get("truncated"):
+            parsed["failure_reason"] = "model context or output limit reached"
+            parsed["status"] = "partial"
         restored_chunks.append(restored_text)
         artifacts.write_restored_piece(source_index, source_path.name, index, restored_text + "\n")
         structured_chunks.append(
@@ -504,7 +509,7 @@ def _notify(
         progress(event, message, advance)
 
 
-def _split_text_chunks(text: str, max_chars: int = 5000) -> List[str]:
+def _split_text_chunks(text: str, max_chars: int = RESTORATION_CHUNK_CHARS) -> List[str]:
     stripped = text.strip()
     if not stripped:
         return []
@@ -724,13 +729,21 @@ def _task_text(raw_text: str, profile: WorkflowProfile) -> str:
 
     if execution_mode == "quality":
         depth_instruction = (
-            "Perform a deep, rigorous analysis of the image. Take your time to carefully parse "
-            "faded, complex, or degraded characters before extracting the text.\n"
+            "Perform a deep, rigorous analysis of the whole page before writing. Work through "
+            "dense pages region by region, including margins, footnotes, headings, captions, "
+            "columns, and small text. Take your time to parse faded, complex, or degraded "
+            "characters before extracting the text.\n"
         )
     elif execution_mode == "balanced":
-        depth_instruction = "Perform a careful and thorough extraction of the text in the image.\n"
+        depth_instruction = (
+            "Perform a careful and thorough extraction of the whole page. Work top-to-bottom "
+            "and left-to-right unless the page layout clearly uses another reading order.\n"
+        )
     else:  # fast
-        depth_instruction = "Quickly extract the text from the image, focusing on speed and the most legible characters.\n"
+        depth_instruction = (
+            "Quickly extract the text from the image while still preserving every clearly "
+            "visible line. Focus on legibility and page order.\n"
+        )
 
     if not raw_text:
         # Multimodal vision prompt — keep it simple and direct.
@@ -739,7 +752,10 @@ def _task_text(raw_text: str, profile: WorkflowProfile) -> str:
             + "Look at the attached image carefully.\n"
             + depth_instruction
             + "Restoration stage only: extract ALL text visible in the image exactly as written.\n"
-            "Preserve the original language, script, spelling, line breaks, and formatting.\n"
+            "Preserve the original language, script, spelling, line breaks, page order, and formatting.\n"
+            "Do not skip non-English, Indic, Sanskrit, Kannada, Hindi, Tamil, Telugu, Malayalam, "
+            "Bengali, Marathi, Urdu, or mixed-script text.\n"
+            "If the page is dense, prioritize complete extraction over perfect cleanup.\n"
             "If any words are unclear, mark them as [unclear].\n"
             "Do not translate yet. Translation happens as a final stage after extraction.\n"
             "Return ONLY the extracted text. Do not add explanations, commentary, "
@@ -791,6 +807,8 @@ def _restore_multimodal_image(
     if not restored_text:
         restored_text = "[missing text]"
         failure_reason = _infer_failure_reason(result, usage, media_path=path)
+    elif usage and usage.get("truncated"):
+        failure_reason = "model context or output limit reached"
     artifacts.write_restored_piece(source_index, path.name, 1, restored_text + "\n")
 
     record = {
@@ -899,7 +917,8 @@ def _translation_instruction(profile: WorkflowProfile) -> str:
         f"Source language: {profile.source_language}\n"
         f"Target language: {profile.output_language}\n"
         f"Requested mode: {mode}\n"
-        "Translate only after restoration is complete.\n"
+        "Translate only after restoration is complete. The extraction stage has already been saved; "
+        "use only the supplied restored text as your source.\n"
         "Preserve names, dates, citations, paragraph breaks, headings, and page order.\n"
         "Do not add commentary, explanations, summaries, or markdown fences.\n"
         "Preserve [unclear] markers exactly as written.\n"
@@ -1030,7 +1049,7 @@ def _apply_translation_stage(
         source_index = int(source.get("index") or source_number)
         source_name = str(source.get("name") or f"source-{source_index}")
         source_text = str(source.get("text") or "").strip()
-        chunks = _split_text_chunks(source_text, max_chars=8000)
+        chunks = _split_text_chunks(source_text, max_chars=TRANSLATION_CHUNK_CHARS)
         source_translated_parts: List[str] = []
         if not chunks:
             chunks = ["[missing text]"]
@@ -1060,6 +1079,9 @@ def _apply_translation_stage(
                 parsed["failure_reason"] = (
                     parsed["failure_reason"] or "model returned malformed output"
                 )
+            if usage and usage.get("truncated"):
+                parsed["failure_reason"] = "model context or output limit reached"
+                parsed["status"] = "partial"
             source_translated_parts.append(translated_text)
             artifacts.write_translated_piece(
                 source_index, source_name, chunk_index, translated_text + "\n"
@@ -1202,6 +1224,8 @@ def _restore_multimodal_pdf(
             if not restored_text:
                 restored_text = "[missing text]"
                 failure_reason = _infer_failure_reason(result, usage, media_path=page_img)
+            elif usage and usage.get("truncated"):
+                failure_reason = "model context or output limit reached"
             restored_pages.append(restored_text)
             artifacts.write_restored_piece(source_index, path.name, idx, restored_text + "\n")
             chunks_record.append(
@@ -1327,6 +1351,8 @@ def _restore_multimodal_zip(
                 if not restored_text:
                     restored_text = "[missing text]"
                     failure_reason = _infer_failure_reason(result, usage, media_path=ext_file)
+                elif usage and usage.get("truncated"):
+                    failure_reason = "model context or output limit reached"
                 restored_parts.append(restored_text)
                 artifacts.write_restored_piece(
                     source_index, path.name, chunk_idx, restored_text + "\n"

@@ -409,6 +409,8 @@ class CoreTests(unittest.TestCase):
         self.assertIn('"restored_text"', _task_text("source", fast_profile))
         self.assertIn("Execution mode: fast", _task_text("source", fast_profile))
         self.assertIn("Execution mode: quality", _task_text("source", quality_profile))
+        self.assertIn("Do not skip non-English", _task_text("", quality_profile))
+        self.assertIn("dense", _task_text("", quality_profile))
         self.assertEqual(_generation_limit(fast_profile.model, 32768), 16384)
 
         provider = OllamaProvider()
@@ -467,6 +469,43 @@ class CoreTests(unittest.TestCase):
                 self.assertIn(
                     "[Mock restored text from multimodal file scan.png]", output_txt.read_text()
                 )
+
+    def test_multimodal_truncation_marks_partial_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "dense.png"
+            source.write_bytes(b"fake image bytes")
+            profile = WorkflowProfile(
+                name="dense-page",
+                output_formats=["txt"],
+                output_dir=str(tmp_path / "out"),
+            )
+            profile.model.model = "gemma4:12b"
+            selection = discover_inputs([str(source)])
+
+            class TruncatedProvider:
+                name = "mock"
+
+                def restore_text(self, text, instruction, settings, media_path=None):
+                    del text, instruction, settings, media_path
+                    return (
+                        "Partial extracted text\n",
+                        {
+                            "prompt_tokens": 10,
+                            "completion_tokens": 16384,
+                            "total_tokens": 16394,
+                            "truncated": True,
+                        },
+                    )
+
+            with patch("akshara_vision.core.pipeline.get_provider", return_value=TruncatedProvider()):
+                result = run_pipeline(RunRequest(profile=profile, inputs=selection))
+            manifest = result["manifest"]
+            restoration = manifest["metadata"]["restoration"][0]
+            self.assertEqual(restoration["status"], "partial")
+            self.assertEqual(
+                restoration["failure_reason"], "model context or output limit reached"
+            )
 
     def test_multimodal_ocr_pipeline_webp(self):
         from akshara_vision.providers.mock import MockProvider

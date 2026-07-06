@@ -65,5 +65,10 @@ inner files are processed in sorted order and kept under the archive's numbered
 run item. The final export still combines the selected inputs into one document,
 but the `items/` folder keeps each input easy to inspect separately.
 
+When a model returns partial text because its output limit was reached, the
+manifest marks that source or chunk as `partial` and records
+`model context or output limit reached`. The text already returned by the model
+is still saved in `items/` and `stages/`.
+
 Run manifests store project-relative paths when possible so local user directories are
 not leaked by default.
