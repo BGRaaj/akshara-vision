@@ -37,9 +37,11 @@ smaller model batches instead of one large prompt. Progress is timer-based and i
 it shows the active step and elapsed time rather than a fake percentage.
 
 For image and PDF vision runs, each image or rendered page is sent as its own
-model request. Restored text is written before translation starts. Translation is
-then performed as separate text-only requests over smaller restored chunks, which
-keeps the translation prompt free from the original image context.
+model request. PDFs are rendered one page at a time, so large books start
+producing page checkpoints without waiting for every page to be converted first.
+Restored text is written before translation starts. Translation is then performed
+as separate text-only requests over smaller restored chunks, which keeps the
+translation prompt free from the original image context.
 
 Dense pages and non-English scripts still depend heavily on the chosen vision
 model. Quality mode gives the model stronger page-order, region-by-region, and
@@ -51,6 +53,10 @@ Interrupted runs can be rebuilt later with:
 ```bash
 akv combine path/to/run-folder
 ```
+
+Combine prefers the human-facing `items/*/final__*.txt` files. If a run stopped
+before final item files were written, it falls back to translated stage chunks
+and then restored stage chunks.
 
 ## Locked Quick Run
 
@@ -67,8 +73,9 @@ akv b scans/
 ```
 
 Batch mode discovers supported files recursively. Each input is saved under a
-numbered `items/` folder using the original filename, so mixed images, PDFs,
-archives, and text files remain easy to identify after restoration or translation.
+numbered `items/` folder using the original filename. Nested folders are mirrored
+under `items/` and `sources/`, so mixed images, PDFs, archives, and text files
+remain easy to identify after restoration or translation.
 
 ## Cleanup
 

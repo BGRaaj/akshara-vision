@@ -425,4 +425,4 @@ def _generation_limit(settings: object, context_limit: int) -> int:
         requested = int(value)
     except (TypeError, ValueError):
         requested = context_limit
-    return min(16384, max(1024, requested))
+    return max(1024, requested)

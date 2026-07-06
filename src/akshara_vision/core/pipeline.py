@@ -26,6 +26,8 @@ TEXT_EXTENSIONS = {".txt", ".md", ".html", ".hocr", ".xml", ".json"}
 ProgressCallback = Callable[[str, str, int], None]
 RESTORATION_CHUNK_CHARS = 5000
 TRANSLATION_CHUNK_CHARS = 5000
+BLANK_PAGE_REASON = "blank page or no readable text"
+MAX_PROVIDER_RETRIES = 1
 
 EXECUTION_MODE_PDF_DPI = {
     "fast": 200,
@@ -112,6 +114,30 @@ class StageWriter:
         path.write_text(text, encoding="utf-8")
         return path
 
+    def write_archive_item_restored(
+        self, source_index: int, source_name: str, archive_label: str, text: str
+    ) -> Path:
+        item_dir = self._archive_item_dir(source_index, source_name, archive_label)
+        path = item_dir / f"restored__{_language_slug(self.source_language)}.txt"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def write_archive_item_final(
+        self, source_index: int, source_name: str, archive_label: str, text: str
+    ) -> Path:
+        item_dir = self._archive_item_dir(source_index, source_name, archive_label)
+        path = item_dir / f"final__{_language_slug(self.output_language)}.txt"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def write_archive_folder_combined(
+        self, source_index: int, source_name: str, folder_label: str, text: str
+    ) -> Path:
+        folder_dir = self._archive_folder_dir(source_index, source_name, folder_label)
+        path = folder_dir / f"combined__{_language_slug(self.output_language)}.txt"
+        path.write_text(text, encoding="utf-8")
+        return path
+
     def write_final_output_aliases(self, text: str) -> List[Path]:
         aliases = [
             self.run_dir / "akshara_output.txt",
@@ -130,7 +156,29 @@ class StageWriter:
         return path
 
     def _item_dir(self, source_index: int, source_name: str) -> Path:
-        item_dir = self.items_dir / f"{source_index:04d}-{_slugify(source_name)}"
+        parts = _archive_label_parts(source_name)
+        if len(parts) == 1:
+            item_dir = self.items_dir / f"{source_index:04d}-{_slugify(parts[0])}"
+        else:
+            item_dir = self.items_dir / _slugify(parts[0])
+            for part in parts[1:-1]:
+                item_dir = item_dir / _slugify(part)
+            item_dir = item_dir / f"{source_index:04d}-{_slugify(parts[-1])}"
+        item_dir.mkdir(parents=True, exist_ok=True)
+        return item_dir
+
+    def _archive_item_dir(self, source_index: int, source_name: str, archive_label: str) -> Path:
+        parts = _archive_label_parts(archive_label)
+        item_dir = self._item_dir(source_index, source_name) / "archive"
+        for part in parts:
+            item_dir = item_dir / _slugify(part)
+        item_dir.mkdir(parents=True, exist_ok=True)
+        return item_dir
+
+    def _archive_folder_dir(self, source_index: int, source_name: str, folder_label: str) -> Path:
+        item_dir = self._item_dir(source_index, source_name) / "archive"
+        for part in _archive_label_parts(folder_label):
+            item_dir = item_dir / _slugify(part)
         item_dir.mkdir(parents=True, exist_ok=True)
         return item_dir
 
@@ -143,7 +191,7 @@ class StageWriter:
         stage_name: str,
         text: str,
     ) -> Path:
-        source_dir = stage_dir / f"{source_index:04d}-{_slugify(source_name)}"
+        source_dir = _numbered_label_dir(stage_dir, source_index, source_name)
         source_dir.mkdir(parents=True, exist_ok=True)
         path = source_dir / f"{piece_index:04d}-{stage_name}__{_language_slug(self.output_language if stage_name == 'translated' else self.source_language)}.txt"
         path.write_text(text, encoding="utf-8")
@@ -192,14 +240,15 @@ def run_pipeline(
 
     for index, path in enumerate(request.inputs.files, start=1):
         suffix = path.suffix.lower()
+        source_label = request.inputs.label_for(path)
 
         if suffix not in TEXT_EXTENSIONS:
             if not _is_vision_model(profile.model.model):
                 raise RuntimeError(
-                    f"Processing {path.name} requires a multimodal vision model. "
+                    f"Processing {source_label} requires a multimodal vision model. "
                     f"The selected model '{profile.model.model}' is text-only."
                 )
-            _notify(progress, "decode", f"Preparing multimodal {path.name}", advance=1)
+            _notify(progress, "decode", f"Preparing multimodal {source_label}", advance=1)
             if suffix == ".pdf":
                 cleaned, restoration_record, usage = _restore_multimodal_pdf(
                     path,
@@ -209,6 +258,7 @@ def run_pipeline(
                     progress,
                     artifacts,
                     index,
+                    source_label=source_label,
                 )
             elif suffix == ".zip":
                 cleaned, restoration_record, usage = _restore_multimodal_zip(
@@ -219,29 +269,43 @@ def run_pipeline(
                     progress,
                     artifacts,
                     index,
+                    source_label=source_label,
                 )
             else:
                 cleaned, restoration_record, usage = _restore_multimodal_image(
-                    path, instruction, profile, provider, artifacts, index
+                    path,
+                    instruction,
+                    profile,
+                    provider,
+                    artifacts,
+                    index,
+                    source_label=source_label,
                 )
-            raw_text = f"[Multimodal Input: {path.name}]"
+            raw_text = f"[Multimodal Input: {source_label}]"
             _add_usage(usage)
         else:
-            _notify(progress, "decode", f"Reading text from {path.name}", advance=1)
+            _notify(progress, "decode", f"Reading text from {source_label}", advance=1)
             raw_text = path.read_text(encoding="utf-8", errors="replace")
-            _notify(progress, "clean", f"Restoring text from {path.name}", advance=1)
+            _notify(progress, "clean", f"Restoring text from {source_label}", advance=1)
             cleaned, restoration_record, usage = _restore_text(
-                raw_text, instruction, profile, provider, artifacts, index, path
+                raw_text,
+                instruction,
+                profile,
+                provider,
+                artifacts,
+                index,
+                path,
+                source_label=source_label,
             )
             _add_usage(usage)
 
-        raw_parts.append(f"===== {path.name} =====\n{raw_text}".strip())
+        raw_parts.append(f"===== {source_label} =====\n{raw_text}".strip())
         source_text = cleaned.strip() + "\n"
-        artifacts.write_item_restored(index, path.name, source_text)
+        artifacts.write_item_restored(index, source_label, source_text)
         restored_sources.append(
             {
                 "index": index,
-                "name": path.name,
+                "name": source_label,
                 "path": _safe_path(path),
                 "text": source_text,
             }
@@ -249,14 +313,15 @@ def run_pipeline(
         restoration_records.append(
             {
                 "source": _safe_path(path),
+                "label": source_label,
                 "status": restoration_record["status"],
                 "chunks": restoration_record["chunks"],
                 "failure_reason": restoration_record.get("failure_reason", ""),
             }
         )
-        cleaned_parts.append(f"===== {path.name} =====\n{cleaned}".strip())
-        _notify(progress, "source", f"Bundling source {path.name}", advance=1)
-        _copy_source(path, run_dir / "sources", index=index)
+        cleaned_parts.append(f"===== {source_label} =====\n{cleaned}".strip())
+        _notify(progress, "source", f"Bundling source {source_label}", advance=1)
+        _copy_source(path, run_dir / "sources", index=index, label=source_label)
 
     raw_text = "\n\n".join(raw_parts).strip() + "\n"
     cleaned_text = "\n\n".join(cleaned_parts).strip() + "\n"
@@ -292,23 +357,20 @@ def run_pipeline(
         "instruction_preset": profile.instruction_preset,
         "restoration": restoration_records,
         "translation": translation_metadata,
-        "inputs": [_safe_path(path) for path in request.inputs.files],
+        "inputs": [
+            {"path": _safe_path(path), "label": request.inputs.label_for(path)}
+            for path in request.inputs.files
+        ],
         "missing": request.inputs.missing,
         "unsupported": [_safe_path(path) for path in request.inputs.unsupported],
         "usage": total_usage,
     }
 
-    exports: List[ExportResult] = []
     destination = run_dir / "akshara_output"
-    registry = exporter_registry()
-    for output_format in profile.output_formats:
-        exporter = registry.get(output_format)
-        if exporter is None:
-            continue
-        _notify(progress, "export", f"Exporting {output_format}", advance=1)
-        exports.append(exporter.export(final_text, destination, metadata))
+    exports = _export_text(final_text, destination, metadata, profile.output_formats, progress)
 
     _notify(progress, "manifest", "Writing run manifest", advance=1)
+    _write_nested_folder_combines(artifacts.items_dir, profile.output_language)
     profile_manifest = profile.to_dict()
     profile_manifest["output_dir"] = _safe_path(Path(profile.output_dir).expanduser())
     manifest = {
@@ -335,7 +397,10 @@ def run_pipeline(
             "output_language": profile.output_language,
             "translation_mode": profile.translation_mode,
             "translation_mode_effective": profile.effective_translation_mode(),
-            "inputs": [_safe_path(path) for path in request.inputs.files],
+            "inputs": [
+                {"path": _safe_path(path), "label": request.inputs.label_for(path)}
+                for path in request.inputs.files
+            ],
         }
     )
     artifacts.write_final_output_aliases(final_text)
@@ -348,24 +413,15 @@ def run_pipeline(
 def combine_stage_outputs(run_dir: Path) -> Dict[str, object]:
     run_dir = Path(run_dir)
     stage_root = run_dir / "stages"
-    if not stage_root.exists():
+    items_root = run_dir / "items"
+    if not stage_root.exists() and not items_root.exists():
         raise RuntimeError(f"No staged outputs found in {run_dir}.")
 
-    translated_groups = sorted((stage_root / "translated").glob("*"))
-    restored_groups = sorted((stage_root / "restored").glob("*"))
-    source_groups = translated_groups if translated_groups else restored_groups
-    if not source_groups:
+    combined_parts = _combined_parts_from_items(items_root)
+    if not combined_parts and stage_root.exists():
+        combined_parts = _combined_parts_from_stages(stage_root)
+    if not combined_parts:
         raise RuntimeError(f"No staged pieces found in {stage_root}.")
-
-    combined_parts: List[str] = []
-    for source_group in source_groups:
-        if not source_group.is_dir():
-            continue
-        piece_paths = sorted(source_group.glob("*.txt"))
-        if not piece_paths:
-            continue
-        pieces = [path.read_text(encoding="utf-8", errors="replace").strip() for path in piece_paths]
-        combined_parts.append("\n".join(part for part in pieces if part))
 
     combined_text = "\n\n".join(part for part in combined_parts if part.strip()).strip()
     if not combined_text:
@@ -377,6 +433,109 @@ def combine_stage_outputs(run_dir: Path) -> Dict[str, object]:
     combined_path.write_text(combined_text + "\n", encoding="utf-8")
 
     run_manifest = run_dir / "run_manifest.json"
+    language_suffix = _combine_language_suffix(run_manifest)
+
+    output_alias = run_dir / f"akshara_output__{language_suffix}.txt"
+    output_alias.write_text(combined_text + "\n", encoding="utf-8")
+    canonical = run_dir / "akshara_output.txt"
+    canonical.write_text(combined_text + "\n", encoding="utf-8")
+    _write_nested_folder_combines(items_root, language_suffix)
+
+    manifest = _load_manifest(run_manifest)
+    metadata = _combine_metadata(manifest, run_dir, language_suffix)
+    output_formats = _output_formats_from_manifest(manifest)
+    exports = _export_text(
+        combined_text + "\n",
+        run_dir / "akshara_output",
+        metadata,
+        output_formats,
+    )
+    _write_recombined_manifest(run_manifest, manifest, exports)
+
+    return {
+        "run_dir": run_dir,
+        "combined_path": combined_path,
+        "output_path": canonical,
+        "alias_path": output_alias,
+        "exports": exports,
+    }
+
+
+def _combined_parts_from_items(items_root: Path) -> List[str]:
+    if not items_root.exists():
+        return []
+    combined_parts: List[str] = []
+    for output_path in _preferred_item_outputs(items_root):
+        text = output_path.read_text(encoding="utf-8", errors="replace").strip()
+        if text:
+            label = str(output_path.parent.relative_to(items_root)).replace("\\", "/")
+            combined_parts.append(f"===== {label} =====\n{text}")
+    return combined_parts
+
+
+def _preferred_item_outputs(items_root: Path) -> List[Path]:
+    for pattern in ("final__*.txt", "translated__*.txt", "restored__*.txt"):
+        paths = sorted(path for path in items_root.rglob(pattern) if path.is_file())
+        if paths:
+            return paths
+    return []
+
+
+def _write_nested_folder_combines(items_root: Path, language_suffix: str) -> List[Path]:
+    if not items_root.exists():
+        return []
+    output_paths = _preferred_item_outputs(items_root)
+    if not output_paths:
+        return []
+
+    folder_parts: Dict[Path, List[tuple[str, str]]] = {}
+    for output_path in output_paths:
+        text = output_path.read_text(encoding="utf-8", errors="replace").strip()
+        if not text:
+            continue
+        label = str(output_path.parent.relative_to(items_root)).replace("\\", "/")
+        for folder in _ancestor_output_folders(items_root, output_path.parent):
+            folder_parts.setdefault(folder, []).append((label, text))
+
+    written = []
+    for folder, parts in sorted(folder_parts.items(), key=lambda item: str(item[0])):
+        combined = "\n\n".join(f"===== {label} =====\n{text}" for label, text in parts).strip()
+        if not combined:
+            continue
+        path = folder / f"combined__{_language_slug(language_suffix)}.txt"
+        path.write_text(combined + "\n", encoding="utf-8")
+        written.append(path)
+    return written
+
+
+def _ancestor_output_folders(items_root: Path, leaf_item_dir: Path) -> List[Path]:
+    folders = []
+    current = leaf_item_dir.parent
+    while current != items_root and items_root in current.parents:
+        folders.append(current)
+        current = current.parent
+    return folders
+
+
+def _combined_parts_from_stages(stage_root: Path) -> List[str]:
+    translated_groups = sorted((stage_root / "translated").glob("*"))
+    restored_groups = sorted((stage_root / "restored").glob("*"))
+    source_groups = translated_groups if translated_groups else restored_groups
+    combined_parts: List[str] = []
+    for source_group in source_groups:
+        if not source_group.is_dir():
+            continue
+        piece_paths = sorted(source_group.glob("*.txt"))
+        if not piece_paths:
+            continue
+        pieces = [path.read_text(encoding="utf-8", errors="replace").strip() for path in piece_paths]
+        text = "\n".join(part for part in pieces if part).strip()
+        if text:
+            combined_parts.append(f"===== {source_group.name} =====\n{text}")
+    return combined_parts
+
+
+def _combine_language_suffix(run_manifest: Path) -> str:
     language_suffix = "combined"
     if run_manifest.exists():
         try:
@@ -385,18 +544,75 @@ def combine_stage_outputs(run_dir: Path) -> Dict[str, object]:
             language_suffix = _language_slug(metadata.get("output_language") or language_suffix)
         except json.JSONDecodeError:
             pass
+    return language_suffix
 
-    output_alias = run_dir / f"akshara_output__{language_suffix}.txt"
-    output_alias.write_text(combined_text + "\n", encoding="utf-8")
-    canonical = run_dir / "akshara_output.txt"
-    canonical.write_text(combined_text + "\n", encoding="utf-8")
 
-    return {
-        "run_dir": run_dir,
-        "combined_path": combined_path,
-        "output_path": canonical,
-        "alias_path": output_alias,
-    }
+def _load_manifest(path: Path) -> Dict[str, object]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _combine_metadata(
+    manifest: Dict[str, object], run_dir: Path, language_suffix: str
+) -> Dict[str, object]:
+    metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+    combined = dict(metadata)
+    combined.setdefault("title", f"Akshara Vision - {run_dir.name}")
+    combined["recombined"] = True
+    combined["output_language"] = metadata.get("output_language") or language_suffix
+    return combined
+
+
+def _output_formats_from_manifest(manifest: Dict[str, object]) -> List[str]:
+    profile = manifest.get("profile") if isinstance(manifest.get("profile"), dict) else {}
+    formats = profile.get("output_formats") if isinstance(profile, dict) else None
+    if isinstance(formats, list):
+        cleaned = [str(item) for item in formats if str(item).strip()]
+        return cleaned or ["txt"]
+    if isinstance(formats, str):
+        cleaned = [item.strip() for item in formats.split(",") if item.strip()]
+        return cleaned or ["txt"]
+    return ["txt"]
+
+
+def _export_text(
+    text: str,
+    destination: Path,
+    metadata: Dict[str, object],
+    output_formats: List[str],
+    progress: Optional[ProgressCallback] = None,
+) -> List[ExportResult]:
+    exports: List[ExportResult] = []
+    registry = exporter_registry()
+    for output_format in output_formats:
+        exporter = registry.get(output_format)
+        if exporter is None:
+            continue
+        _notify(progress, "export", f"Exporting {output_format}", advance=1)
+        exports.append(exporter.export(text, destination, metadata))
+    return exports
+
+
+def _write_recombined_manifest(
+    path: Path, manifest: Dict[str, object], exports: List[ExportResult]
+) -> None:
+    if not manifest:
+        return
+    manifest["recombined_exports"] = [
+        {
+            "format": item.format,
+            "path": _safe_path(item.path),
+            "available": item.available,
+            "detail": item.detail,
+        }
+        for item in exports
+    ]
+    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def estimate_progress_units(request: RunRequest) -> int:
@@ -416,6 +632,7 @@ def _restore_text(
     source_index: int,
     source_path: Path,
     media_path: Optional[Path] = None,
+    source_label: Optional[str] = None,
 ) -> tuple:
     chunks = _split_text_chunks(raw_text)
     restored_chunks: List[str] = []
@@ -428,8 +645,8 @@ def _restore_text(
     }
     for index, chunk in enumerate(chunks, start=1):
         prompt = _task_text(chunk, profile)
-        result, usage = provider.restore_text(
-            prompt, instruction, profile.model, media_path=media_path
+        result, usage = _restore_with_retry(
+            provider, prompt, instruction, profile.model, media_path=media_path
         )
         if usage:
             total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
@@ -447,7 +664,9 @@ def _restore_text(
             parsed["failure_reason"] = "model context or output limit reached"
             parsed["status"] = "partial"
         restored_chunks.append(restored_text)
-        artifacts.write_restored_piece(source_index, source_path.name, index, restored_text + "\n")
+        artifacts.write_restored_piece(
+            source_index, source_label or source_path.name, index, restored_text + "\n"
+        )
         structured_chunks.append(
             {
                 "index": index,
@@ -474,9 +693,17 @@ def _restore_text(
     )
 
 
-def _copy_source(path: Path, destination: Path, index: int) -> None:
+def _copy_source(path: Path, destination: Path, index: int, label: Optional[str] = None) -> None:
     destination.mkdir(parents=True, exist_ok=True)
-    target = destination / f"{index:04d}-{path.name}"
+    parts = _archive_label_parts(label or path.name)
+    if len(parts) == 1:
+        target = destination / f"{index:04d}-{path.name}"
+    else:
+        target_dir = destination
+        for part in parts[:-1]:
+            target_dir = target_dir / _slugify(part)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"{index:04d}-{path.name}"
     try:
         shutil.copy2(path, target)
     except OSError:
@@ -502,11 +729,98 @@ def _language_slug(value: object) -> str:
     return _slugify(value, default="language")
 
 
+def _archive_label_parts(label: str) -> List[str]:
+    parts = []
+    for part in str(label or "").replace("\\", "/").split("/"):
+        part = part.strip()
+        if part and part not in {".", ".."}:
+            parts.append(part)
+    return parts or ["root"]
+
+
+def _numbered_label_dir(root: Path, source_index: int, source_name: str) -> Path:
+    parts = _archive_label_parts(source_name)
+    if len(parts) == 1:
+        return root / f"{source_index:04d}-{_slugify(parts[0])}"
+    current = root / _slugify(parts[0])
+    for part in parts[1:-1]:
+        current = current / _slugify(part)
+    return current / f"{source_index:04d}-{_slugify(parts[-1])}"
+
+
+def _archive_folder_label(label: str) -> str:
+    parts = _archive_label_parts(label)
+    if len(parts) <= 1:
+        return "root"
+    return "/".join(parts[:-1])
+
+
 def _notify(
     progress: Optional[ProgressCallback], event: str, message: str, advance: int = 1
 ) -> None:
     if progress:
         progress(event, message, advance)
+
+
+def _restore_with_retry(
+    provider,
+    prompt: str,
+    instruction: str,
+    settings,
+    media_path: Optional[Path] = None,
+) -> tuple[str, dict]:
+    last_response = ""
+    last_usage: dict = {}
+    last_error: Optional[Exception] = None
+    for attempt in range(MAX_PROVIDER_RETRIES + 1):
+        retry_prompt = prompt
+        if attempt:
+            retry_prompt = (
+                prompt
+                + "\n\nRetry because the previous response was malformed or unusable. "
+                "Return only the requested output. Do not include commentary, code fences, "
+                "or wrapper JSON unless the prompt explicitly asks for JSON."
+            )
+        try:
+            response, usage = provider.restore_text(
+                retry_prompt, instruction, settings, media_path=media_path
+            )
+        except Exception as exc:
+            last_error = exc
+            if attempt < MAX_PROVIDER_RETRIES:
+                continue
+            raise
+        last_response = response
+        last_usage = usage or {}
+        if not _response_needs_retry(response):
+            return response, last_usage
+    if last_error:
+        raise last_error
+    return last_response, last_usage
+
+
+def _response_needs_retry(response: str) -> bool:
+    candidate = (response or "").strip()
+    if not candidate:
+        return False
+    if _looks_like_meta_response(candidate):
+        return True
+    json_candidate = _extract_json_object(candidate)
+    if not json_candidate:
+        if candidate.startswith("{") and any(
+            f'"{key}"' in candidate for key in ("restored_text", "translated_text", "text", "output")
+        ):
+            return True
+        return False
+    try:
+        json.loads(json_candidate)
+        return False
+    except json.JSONDecodeError:
+        has_recoverable_text = any(
+            _extract_jsonish_string_value(json_candidate, key) is not None
+            for key in ("restored_text", "translated_text", "text", "output")
+        )
+        return not has_recoverable_text
 
 
 def _split_text_chunks(text: str, max_chars: int = RESTORATION_CHUNK_CHARS) -> List[str]:
@@ -575,16 +889,33 @@ def _parse_restoration_result(response: str, fallback_text: str) -> Dict[str, ob
             restored_text = str(
                 data.get("restored_text") or data.get("text") or data.get("output") or ""
             ).strip()
+            restored_text = _normalize_extracted_text(restored_text)
             uncertain = data.get("uncertain") if isinstance(data.get("uncertain"), list) else []
             notes = str(data.get("notes") or "")
-            status = str(data.get("status") or "restored")
+            status = "blank" if restored_text == "" else str(data.get("status") or "restored")
             failure_reason = str(data.get("failure_reason") or "").strip()
+            if restored_text == "" and not failure_reason:
+                failure_reason = BLANK_PAGE_REASON
             return {
                 "restored_text": restored_text,
                 "uncertain": [str(item) for item in uncertain],
                 "notes": notes,
                 "status": status,
                 "failure_reason": failure_reason,
+            }
+        restored_text = _extract_jsonish_string_value(json_candidate, "restored_text")
+        if restored_text is None:
+            restored_text = _extract_jsonish_string_value(json_candidate, "text")
+        if restored_text is None:
+            restored_text = _extract_jsonish_string_value(json_candidate, "output")
+        if restored_text is not None:
+            normalized = _normalize_extracted_text(restored_text)
+            return {
+                "restored_text": normalized,
+                "uncertain": [],
+                "notes": _extract_jsonish_string_value(json_candidate, "notes") or "",
+                "status": "blank" if normalized == "" else "restored",
+                "failure_reason": BLANK_PAGE_REASON if normalized == "" else "",
             }
     if _looks_like_meta_response(candidate):
         return {
@@ -616,6 +947,70 @@ def _extract_json_object(text: str) -> str:
     if start != -1 and end != -1 and end > start:
         return text_clean[start : end + 1]
     return ""
+
+
+def _extract_jsonish_string_value(text: str, key: str) -> Optional[str]:
+    match = re.search(rf'"{re.escape(key)}"\s*:\s*"', text)
+    if not match:
+        return None
+    value = []
+    escaped = False
+    for char in text[match.end() :]:
+        if escaped:
+            value.append(
+                {
+                    "n": "\n",
+                    "r": "\r",
+                    "t": "\t",
+                    '"': '"',
+                    "\\": "\\",
+                    "/": "/",
+                    "b": "\b",
+                    "f": "\f",
+                }.get(char, char)
+            )
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == '"':
+            return "".join(value)
+        value.append(char)
+    return "".join(value).strip() if value else None
+
+
+def _normalize_extracted_text(text: str) -> str:
+    candidate = text.strip()
+    if not candidate:
+        return ""
+    if _is_blank_or_missing_text(candidate):
+        return ""
+    return candidate
+
+
+def _is_blank_or_missing_text(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    normalized = normalized.strip(". ")
+    return normalized in {
+        "[missing text]",
+        "[unclear]",
+        "[blank page]",
+        "missing text",
+        "unclear",
+        "blank page",
+        "no text",
+        "no readable text",
+        "no visible text",
+    }
+
+
+def _restoration_status(failure_reason: str) -> str:
+    if not failure_reason:
+        return "restored"
+    if failure_reason == BLANK_PAGE_REASON:
+        return "blank"
+    return "partial"
 
 
 def _looks_like_meta_response(text: str) -> bool:
@@ -760,7 +1155,8 @@ def _task_text(raw_text: str, profile: WorkflowProfile) -> str:
             "Do not translate yet. Translation happens as a final stage after extraction.\n"
             "Return ONLY the extracted text. Do not add explanations, commentary, "
             "JSON formatting, code fences, or any other markup.\n"
-            "If the image is completely unreadable, return only: [missing text]"
+            "If the page is blank or has no readable text, return an empty response.\n"
+            "If the image contains text but it is completely unreadable, return an empty response."
         )
 
     # Text-chunk restoration prompt — strict JSON output.
@@ -789,6 +1185,7 @@ def _restore_multimodal_image(
     provider,
     artifacts: StageWriter,
     source_index: int,
+    source_label: Optional[str] = None,
 ) -> tuple:
     """Send an image directly to the vision model and use its raw text output.
 
@@ -798,29 +1195,32 @@ def _restore_multimodal_image(
     otherwise, we take the full response as restored text.
     """
     prompt = _task_text("", profile)
-    result, usage = provider.restore_text(prompt, instruction, profile.model, media_path=path)
+    result, usage = _restore_with_retry(
+        provider, prompt, instruction, profile.model, media_path=path
+    )
 
     # Try JSON parsing first (in case the model does return structured data).
     restored_text = _extract_multimodal_text(result)
     failure_reason = ""
 
     if not restored_text:
-        restored_text = "[missing text]"
-        failure_reason = _infer_failure_reason(result, usage, media_path=path)
+        restored_text = ""
+        failure_reason = BLANK_PAGE_REASON
     elif usage and usage.get("truncated"):
         failure_reason = "model context or output limit reached"
-    artifacts.write_restored_piece(source_index, path.name, 1, restored_text + "\n")
+    label = source_label or path.name
+    artifacts.write_restored_piece(source_index, label, 1, restored_text + "\n")
 
     record = {
-        "status": "restored" if not failure_reason else "partial",
+        "status": _restoration_status(failure_reason),
         "chunks": [
             {
                 "index": 1,
-                "input": f"[Image: {path.name}]",
+                "input": f"[Image: {label}]",
                 "restored_text": restored_text,
                 "uncertain": [],
                 "notes": "",
-                "status": "restored" if failure_reason == "" else "partial",
+                "status": _restoration_status(failure_reason),
                 "failure_reason": failure_reason,
             }
         ],
@@ -852,10 +1252,15 @@ def _extract_multimodal_text(response: str) -> str:
                 text = str(
                     data.get("restored_text") or data.get("text") or data.get("output") or ""
                 ).strip()
-                if text and text != "[missing text]":
-                    return text
+                return _normalize_extracted_text(text)
         except json.JSONDecodeError:
-            pass
+            text = _extract_jsonish_string_value(json_str, "restored_text")
+            if text is None:
+                text = _extract_jsonish_string_value(json_str, "text")
+            if text is None:
+                text = _extract_jsonish_string_value(json_str, "output")
+            if text is not None:
+                return _normalize_extracted_text(text)
 
     # Strip common thinking/reasoning wrappers that some models emit.
     cleaned = candidate
@@ -873,7 +1278,15 @@ def _extract_multimodal_text(response: str) -> str:
         flags=re.IGNORECASE,
     ).strip()
 
-    return cleaned
+    jsonish_text = _extract_jsonish_string_value(cleaned, "restored_text")
+    if jsonish_text is None:
+        jsonish_text = _extract_jsonish_string_value(cleaned, "text")
+    if jsonish_text is None:
+        jsonish_text = _extract_jsonish_string_value(cleaned, "output")
+    if jsonish_text is not None:
+        return _normalize_extracted_text(jsonish_text)
+
+    return _normalize_extracted_text(cleaned)
 
 
 def _infer_failure_reason(
@@ -966,14 +1379,30 @@ def _parse_translation_result(response: str, fallback_text: str) -> Dict[str, ob
             translated_text = str(
                 data.get("translated_text") or data.get("text") or data.get("output") or ""
             ).strip()
+            translated_text = _normalize_extracted_text(translated_text)
             notes = str(data.get("notes") or "")
-            status = str(data.get("status") or "translated")
+            status = "blank" if translated_text == "" else str(data.get("status") or "translated")
             failure_reason = str(data.get("failure_reason") or "").strip()
+            if translated_text == "" and not failure_reason:
+                failure_reason = BLANK_PAGE_REASON
             return {
                 "translated_text": translated_text,
                 "notes": notes,
                 "status": status,
                 "failure_reason": failure_reason,
+            }
+        translated_text = _extract_jsonish_string_value(json_candidate, "translated_text")
+        if translated_text is None:
+            translated_text = _extract_jsonish_string_value(json_candidate, "text")
+        if translated_text is None:
+            translated_text = _extract_jsonish_string_value(json_candidate, "output")
+        if translated_text is not None:
+            normalized = _normalize_extracted_text(translated_text)
+            return {
+                "translated_text": normalized,
+                "notes": _extract_jsonish_string_value(json_candidate, "notes") or "",
+                "status": "blank" if normalized == "" else "translated",
+                "failure_reason": BLANK_PAGE_REASON if normalized == "" else "",
             }
 
     if _looks_like_meta_response(candidate):
@@ -1052,7 +1481,22 @@ def _apply_translation_stage(
         chunks = _split_text_chunks(source_text, max_chars=TRANSLATION_CHUNK_CHARS)
         source_translated_parts: List[str] = []
         if not chunks:
-            chunks = ["[missing text]"]
+            artifacts.write_item_translated(source_index, source_name, "\n")
+            artifacts.write_item_final(source_index, source_name, "\n")
+            translated_parts.append(f"===== {source_name} =====")
+            translation_chunks.append(
+                {
+                    "source_index": source_index,
+                    "source": source.get("path") or source_name,
+                    "index": 1,
+                    "input": "",
+                    "translated_text": "",
+                    "notes": "",
+                    "status": "blank",
+                    "failure_reason": BLANK_PAGE_REASON,
+                }
+            )
+            continue
         for chunk_index, chunk in enumerate(chunks, start=1):
             _notify(
                 progress,
@@ -1064,7 +1508,9 @@ def _apply_translation_stage(
                 advance=1,
             )
             prompt = _translation_prompt(chunk, profile)
-            result, usage = provider.restore_text(prompt, translation_instruction, profile.model)
+            result, usage = _restore_with_retry(
+                provider, prompt, translation_instruction, profile.model
+            )
             if usage:
                 total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
                 total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
@@ -1163,6 +1609,7 @@ def _restore_multimodal_pdf(
     progress: Optional[ProgressCallback],
     artifacts: StageWriter,
     source_index: int,
+    source_label: Optional[str] = None,
 ) -> tuple:
     pdftoppm_exe = find_executable("pdftoppm")
     if not pdftoppm_exe:
@@ -1173,27 +1620,11 @@ def _restore_multimodal_pdf(
 
     execution_mode = _execution_mode(profile)
     dpi = EXECUTION_MODE_PDF_DPI.get(execution_mode, 300)
+    page_count = _pdf_page_count(path)
+    label = source_label or path.name
 
     temp_dir = tempfile.TemporaryDirectory(prefix="akshara-multimodal-pdf-")
     try:
-        prefix = str(Path(temp_dir.name) / "page")
-        render = subprocess.run(
-            [pdftoppm_exe, "-r", str(dpi), "-png", str(path), prefix],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        if render.returncode != 0:
-            raise RuntimeError(
-                f"pdftoppm rendering failed (exit code {render.returncode}): {render.stderr}"
-            )
-
-        page_images = sorted(Path(temp_dir.name).glob("page-*.png"))
-        if not page_images:
-            raise RuntimeError("No pages rendered from PDF.")
-
         restored_pages = []
         chunks_record = []
         total_usage = {
@@ -1202,16 +1633,36 @@ def _restore_multimodal_pdf(
             "total_tokens": 0,
             "truncated": False,
         }
-        for idx, page_img in enumerate(page_images, start=1):
+
+        page_numbers = range(1, page_count + 1) if page_count else _unknown_pdf_pages()
+        for idx in page_numbers:
+            total_label = str(page_count) if page_count else "?"
+            _notify(
+                progress,
+                "render",
+                f"Rendering {label} page {idx}/{total_label}",
+                advance=1,
+            )
+            try:
+                page_img = _render_pdf_page(pdftoppm_exe, path, Path(temp_dir.name), idx, dpi)
+            except RuntimeError:
+                if page_count or idx == 1:
+                    raise
+                break
+            if page_img is None:
+                if page_count or idx == 1:
+                    raise RuntimeError(f"No image rendered for {label} page {idx}.")
+                break
+
             _notify(
                 progress,
                 "clean",
-                f"Restoring text from {path.name} (page {idx}/{len(page_images)})",
+                f"Restoring text from {label} page {idx}/{total_label}",
                 advance=1,
             )
             prompt = _task_text("", profile)
-            result, usage = provider.restore_text(
-                prompt, instruction, profile.model, media_path=page_img
+            result, usage = _restore_with_retry(
+                provider, prompt, instruction, profile.model, media_path=page_img
             )
             if usage:
                 total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
@@ -1222,23 +1673,27 @@ def _restore_multimodal_pdf(
             restored_text = _extract_multimodal_text(result)
             failure_reason = ""
             if not restored_text:
-                restored_text = "[missing text]"
-                failure_reason = _infer_failure_reason(result, usage, media_path=page_img)
+                restored_text = ""
+                failure_reason = BLANK_PAGE_REASON
             elif usage and usage.get("truncated"):
                 failure_reason = "model context or output limit reached"
             restored_pages.append(restored_text)
-            artifacts.write_restored_piece(source_index, path.name, idx, restored_text + "\n")
+            artifacts.write_restored_piece(source_index, label, idx, restored_text + "\n")
             chunks_record.append(
                 {
                     "index": idx,
-                    "input": f"[PDF Page {idx}: {page_img.name}]",
+                    "input": f"[PDF Page {idx}: {label}]",
                     "restored_text": restored_text,
                     "uncertain": [],
                     "notes": "",
-                    "status": "restored" if failure_reason == "" else "partial",
+                    "status": _restoration_status(failure_reason),
                     "failure_reason": failure_reason,
                 }
             )
+            try:
+                page_img.unlink()
+            except OSError:
+                pass
 
         combined = "\n\n".join(restored_pages) + "\n"
         file_failure_reason = next(
@@ -1255,6 +1710,76 @@ def _restore_multimodal_pdf(
         temp_dir.cleanup()
 
 
+def _pdf_page_count(path: Path) -> Optional[int]:
+    pdfinfo_exe = find_executable("pdfinfo")
+    if not pdfinfo_exe:
+        return None
+    try:
+        result = subprocess.run(
+            [pdfinfo_exe, str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    match = re.search(r"^Pages:\s+(\d+)\s*$", result.stdout, flags=re.MULTILINE)
+    if not match:
+        return None
+    try:
+        return max(1, int(match.group(1)))
+    except ValueError:
+        return None
+
+
+def _unknown_pdf_pages():
+    page = 1
+    while True:
+        yield page
+        page += 1
+
+
+def _render_pdf_page(
+    pdftoppm_exe: str, path: Path, temp_root: Path, page_number: int, dpi: int
+) -> Optional[Path]:
+    prefix = temp_root / f"page-{page_number:04d}"
+    result = subprocess.run(
+        [
+            pdftoppm_exe,
+            "-r",
+            str(dpi),
+            "-f",
+            str(page_number),
+            "-l",
+            str(page_number),
+            "-singlefile",
+            "-png",
+            str(path),
+            str(prefix),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"pdftoppm rendering failed for page {page_number} "
+            f"(exit code {result.returncode}): {result.stderr}"
+        )
+    expected = prefix.with_suffix(".png")
+    if expected.exists():
+        return expected
+    rendered = sorted(temp_root.glob(f"{prefix.name}*.png"))
+    return rendered[0] if rendered else None
+
+
 def _restore_multimodal_zip(
     path: Path,
     instruction: str,
@@ -1263,6 +1788,7 @@ def _restore_multimodal_zip(
     progress: Optional[ProgressCallback],
     artifacts: StageWriter,
     source_index: int,
+    source_label: Optional[str] = None,
 ) -> tuple:
     temp_dir = tempfile.TemporaryDirectory(prefix="akshara-multimodal-zip-")
     try:
@@ -1287,15 +1813,21 @@ def _restore_multimodal_zip(
             "total_tokens": 0,
             "truncated": False,
         }
+        archive_folder_parts: Dict[str, List[str]] = {}
         chunk_idx = 1
+        label = source_label or path.name
         for ext_file in sorted(extracted_files):
             suffix = ext_file.suffix.lower()
+            archive_label = _safe_relative_archive_label(ext_file, root)
+            archive_file_parts: List[str] = []
             if suffix in TEXT_EXTENSIONS:
                 text_content = ext_file.read_text(encoding="utf-8", errors="replace")
                 sub_chunks = _split_text_chunks(text_content)
                 for sub_chunk in sub_chunks:
                     prompt = _task_text(sub_chunk, profile)
-                    result, usage = provider.restore_text(prompt, instruction, profile.model)
+                    result, usage = _restore_with_retry(
+                        provider, prompt, instruction, profile.model
+                    )
                     if usage:
                         total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
                         total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
@@ -1304,24 +1836,47 @@ def _restore_multimodal_zip(
                             total_usage["truncated"] = True
                     parsed = _parse_restoration_result(result, sub_chunk)
                     restored_text = parsed["restored_text"].strip()
+                    if not restored_text:
+                        restored_text = sub_chunk.strip()
+                        if not restored_text:
+                            parsed["failure_reason"] = parsed["failure_reason"] or BLANK_PAGE_REASON
+                    if usage and usage.get("truncated"):
+                        parsed["failure_reason"] = "model context or output limit reached"
+                        parsed["status"] = "partial"
+                    if parsed["failure_reason"] == BLANK_PAGE_REASON:
+                        parsed["status"] = "blank"
                     restored_parts.append(restored_text)
+                    archive_file_parts.append(restored_text)
                     artifacts.write_restored_piece(
-                        source_index, path.name, chunk_idx, restored_text + "\n"
+                        source_index, label, chunk_idx, restored_text + "\n"
                     )
                     chunks_record.append(
                         {
                             "index": chunk_idx,
-                            "input": f"[ZIP Text: {ext_file.name}] " + _short_excerpt(sub_chunk),
+                            "input": f"[ZIP Text: {archive_label}] " + _short_excerpt(sub_chunk),
                             "restored_text": restored_text,
                             "uncertain": parsed["uncertain"],
                             "notes": parsed["notes"],
                             "status": parsed["status"],
+                            "failure_reason": parsed["failure_reason"],
                         }
                     )
                     chunk_idx += 1
+                archive_file_text = "\n\n".join(part for part in archive_file_parts if part.strip())
+                artifacts.write_archive_item_restored(
+                    source_index, label, archive_label, archive_file_text + "\n"
+                )
+                _add_archive_folder_part(archive_folder_parts, archive_label, archive_file_text)
             elif suffix == ".pdf":
                 pdf_clean, pdf_rec, usage = _restore_multimodal_pdf(
-                    ext_file, instruction, profile, provider, progress, artifacts, source_index
+                    ext_file,
+                    instruction,
+                    profile,
+                    provider,
+                    progress,
+                    artifacts,
+                    source_index,
+                    source_label=f"{label}/{archive_label}",
                 )
                 if usage:
                     total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
@@ -1330,15 +1885,19 @@ def _restore_multimodal_zip(
                     if usage.get("truncated"):
                         total_usage["truncated"] = True
                 restored_parts.append(pdf_clean.strip())
+                artifacts.write_archive_item_restored(
+                    source_index, label, archive_label, pdf_clean
+                )
+                _add_archive_folder_part(archive_folder_parts, archive_label, pdf_clean)
                 for ch in pdf_rec.get("chunks", []):
                     ch["index"] = chunk_idx
-                    ch["input"] = f"[ZIP Archive -> {ext_file.name}] {ch['input']}"
+                    ch["input"] = f"[ZIP Archive -> {archive_label}] {ch['input']}"
                     chunks_record.append(ch)
                     chunk_idx += 1
             elif suffix in {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}:
                 prompt = _task_text("", profile)
-                result, usage = provider.restore_text(
-                    prompt, instruction, profile.model, media_path=ext_file
+                result, usage = _restore_with_retry(
+                    provider, prompt, instruction, profile.model, media_path=ext_file
                 )
                 if usage:
                     total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
@@ -1349,26 +1908,36 @@ def _restore_multimodal_zip(
                 restored_text = _extract_multimodal_text(result)
                 failure_reason = ""
                 if not restored_text:
-                    restored_text = "[missing text]"
-                    failure_reason = _infer_failure_reason(result, usage, media_path=ext_file)
+                    restored_text = ""
+                    failure_reason = BLANK_PAGE_REASON
                 elif usage and usage.get("truncated"):
                     failure_reason = "model context or output limit reached"
                 restored_parts.append(restored_text)
+                artifacts.write_archive_item_restored(
+                    source_index, label, archive_label, restored_text + "\n"
+                )
+                _add_archive_folder_part(archive_folder_parts, archive_label, restored_text)
                 artifacts.write_restored_piece(
-                    source_index, path.name, chunk_idx, restored_text + "\n"
+                    source_index, label, chunk_idx, restored_text + "\n"
                 )
                 chunks_record.append(
                     {
                         "index": chunk_idx,
-                        "input": f"[ZIP Image: {ext_file.name}]",
+                        "input": f"[ZIP Image: {archive_label}]",
                         "restored_text": restored_text,
                         "uncertain": [],
                         "notes": "",
-                        "status": "restored" if failure_reason == "" else "partial",
+                        "status": _restoration_status(failure_reason),
                         "failure_reason": failure_reason,
                     }
                 )
                 chunk_idx += 1
+
+        for folder_label, parts in sorted(archive_folder_parts.items()):
+            folder_text = "\n\n".join(part for part in parts if part.strip()).strip()
+            artifacts.write_archive_folder_combined(
+                source_index, label, folder_label, folder_text + "\n"
+            )
 
         combined = "\n\n".join(restored_parts) + "\n"
         file_failure_reason = next(
@@ -1399,3 +1968,17 @@ def _safe_archive_target(root: Path, member_name: str) -> Optional[Path]:
     target = root.joinpath(*parts)
     target.parent.mkdir(parents=True, exist_ok=True)
     return target
+
+
+def _safe_relative_archive_label(path: Path, root: Path) -> str:
+    try:
+        return str(path.relative_to(root)).replace("\\", "/")
+    except ValueError:
+        return path.name
+
+
+def _add_archive_folder_part(
+    archive_folder_parts: Dict[str, List[str]], archive_label: str, text: str
+) -> None:
+    folder_label = _archive_folder_label(archive_label)
+    archive_folder_parts.setdefault(folder_label, []).append(text.strip())

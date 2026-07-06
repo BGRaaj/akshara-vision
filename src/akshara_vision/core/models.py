@@ -120,6 +120,7 @@ class InputSelection:
     files: List[Path]
     missing: List[str] = field(default_factory=list)
     unsupported: List[Path] = field(default_factory=list)
+    labels: Dict[str, str] = field(default_factory=dict)
 
     @property
     def supported_count(self) -> int:
@@ -127,9 +128,13 @@ class InputSelection:
 
     def display_files(self, limit: int = 8) -> Iterable[str]:
         for path in self.files[:limit]:
-            yield str(path)
+            yield self.label_for(path)
         if len(self.files) > limit:
             yield f"... and {len(self.files) - limit} more"
+
+    def label_for(self, path: Path) -> str:
+        resolved = str(path.expanduser().resolve())
+        return self.labels.get(resolved, path.name)
 
 
 @dataclass

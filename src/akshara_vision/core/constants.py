@@ -55,6 +55,7 @@ TRANSLATION_MODES = [
 ]
 
 TRANSLATION_FAILURE_REASONS = [
+    "blank page or no readable text",
     "source unreadable or too blurry",
     "page rendering or OCR dependency missing",
     "model context or output limit reached",

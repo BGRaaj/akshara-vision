@@ -115,9 +115,9 @@ Inside the interactive shell:
 | Selection | Single files, multiple paths, folders, recursive folders, and glob patterns |
 
 Mixed batches are supported. Akshara Vision detects each file type and records
-missing or unsupported inputs in the run manifest. Batch outputs are numbered
-and grouped by original input name so images, PDFs, archive members, and text
-files remain easy to inspect after a run.
+missing or unsupported inputs in the run manifest. Batch outputs are numbered,
+grouped by input name, and mirror nested folder paths when recursive folders are
+processed.
 
 ## Supported Outputs
 
@@ -136,7 +136,21 @@ chunks, uncertainty notes, and failure reasons.
 
 Each run also writes `items/` for human-friendly per-input outputs and `stages/`
 for recoverable page/chunk checkpoints. Interrupted runs can be recombined later
-without reprocessing completed pages or chunks.
+without reprocessing completed pages or chunks. Recombine restores the run's
+selected export formats when the original manifest is available.
+
+Large PDFs are rendered and restored page by page. The CLI shows the current
+page being rendered or restored instead of waiting for the entire PDF to convert
+before the model starts.
+
+Blank pages are preserved as empty outputs and marked as `blank` in the manifest.
+If a model accidentally returns JSON-like text for a page, Akshara Vision extracts
+the restored text field before writing `.txt` outputs.
+
+Recursive folders keep their nested structure under `items/` and `sources/`.
+ZIP archives keep their nested folder structure under `items/<zip>/archive/`.
+Nested folders get local `combined__LANG.txt` files, so folder-level batches can
+be reviewed without mixing the whole run.
 
 ## Translation
 
@@ -148,6 +162,10 @@ Extraction is saved before translation begins. Translation is then sent as fresh
 smaller text-only model calls, so image context does not consume the translation
 budget. Dense scans can still hit a model's output limit; when that happens,
 Akshara Vision marks the source as partial and records the reason in the manifest.
+
+Generation limits are passed through to the selected backend. Akshara Vision does
+not impose its own fixed maximum; local/cloud providers may still enforce their
+own model limits.
 
 Translation modes:
 

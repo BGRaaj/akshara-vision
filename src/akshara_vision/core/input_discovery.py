@@ -2,7 +2,7 @@ import csv
 import glob
 import json
 from pathlib import Path
-from typing import Iterable, List
+from typing import Dict, Iterable, List, Tuple
 
 from akshara_vision.core.constants import SUPPORTED_INPUT_EXTENSIONS
 from akshara_vision.core.models import InputSelection
@@ -13,6 +13,7 @@ def discover_inputs(raw_inputs: Iterable[str], recursive: bool = False) -> Input
     files: List[Path] = []
     missing: List[str] = []
     unsupported: List[Path] = []
+    labels: Dict[str, str] = {}
 
     for item in raw:
         matches = _expand_one(item, recursive=recursive)
@@ -21,7 +22,9 @@ def discover_inputs(raw_inputs: Iterable[str], recursive: bool = False) -> Input
             continue
         for path in matches:
             if path.is_dir():
-                files.extend(_walk_dir(path, recursive=recursive))
+                walked = _walk_dir(path, recursive=recursive)
+                files.extend(walked)
+                labels.update(_labels_for_root(path, walked))
             elif path.suffix.lower() == ".csv" or (
                 path.suffix.lower() == ".json" and _looks_like_manifest(path)
             ):
@@ -29,13 +32,21 @@ def discover_inputs(raw_inputs: Iterable[str], recursive: bool = False) -> Input
                 files.extend(nested.files)
                 missing.extend(nested.missing)
                 unsupported.extend(nested.unsupported)
+                labels.update(nested.labels)
             elif is_supported_input(path):
                 files.append(path)
+                labels[_label_key(path)] = path.name
             else:
                 unsupported.append(path)
 
-    unique_files = _unique_existing(files)
-    return InputSelection(raw=raw, files=unique_files, missing=missing, unsupported=unsupported)
+    unique_files, unique_labels = _unique_existing(files, labels)
+    return InputSelection(
+        raw=raw,
+        files=unique_files,
+        missing=missing,
+        unsupported=unsupported,
+        labels=unique_labels,
+    )
 
 
 def is_supported_input(path: Path) -> bool:
@@ -45,14 +56,17 @@ def is_supported_input(path: Path) -> bool:
 def _expand_one(item: str, recursive: bool) -> List[Path]:
     expanded = Path(item).expanduser()
     if any(token in item for token in ["*", "?", "["]):
-        return [Path(match).expanduser() for match in glob.glob(item, recursive=recursive)]
+        return [
+            Path(match).expanduser()
+            for match in sorted(glob.glob(item, recursive=recursive))
+        ]
     if expanded.exists():
         return [expanded]
     return []
 
 
 def _walk_dir(path: Path, recursive: bool) -> List[Path]:
-    iterator = path.rglob("*") if recursive else path.glob("*")
+    iterator = sorted(path.rglob("*") if recursive else path.glob("*"))
     files: List[Path] = []
     for item in iterator:
         if not item.is_file():
@@ -111,13 +125,34 @@ def _read_manifest(path: Path) -> List[str]:
     return []
 
 
-def _unique_existing(paths: Iterable[Path]) -> List[Path]:
+def _labels_for_root(root: Path, files: Iterable[Path]) -> Dict[str, str]:
+    labels = {}
+    root_resolved = root.expanduser().resolve()
+    root_name = root_resolved.name
+    for file_path in files:
+        resolved = file_path.expanduser().resolve()
+        try:
+            relative = resolved.relative_to(root_resolved)
+            labels[str(resolved)] = str(Path(root_name) / relative).replace("\\", "/")
+        except ValueError:
+            labels[str(resolved)] = resolved.name
+    return labels
+
+
+def _label_key(path: Path) -> str:
+    return str(path.expanduser().resolve())
+
+
+def _unique_existing(paths: Iterable[Path], labels: Dict[str, str]) -> Tuple[List[Path], Dict[str, str]]:
     seen = set()
     unique = []
+    unique_labels = {}
     for path in paths:
         resolved = path.expanduser().resolve()
         if resolved in seen:
             continue
         seen.add(resolved)
         unique.append(resolved)
-    return unique
+        label = labels.get(str(resolved), resolved.name)
+        unique_labels[str(resolved)] = label
+    return unique, unique_labels

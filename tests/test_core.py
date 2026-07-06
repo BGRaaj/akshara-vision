@@ -1,4 +1,5 @@
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -135,6 +136,17 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(selection.supported_count, 1)
             self.assertEqual(selection.files[0], source.resolve())
 
+    def test_input_discovery_labels_nested_folder_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            book = root / "book"
+            source = book / "part-1" / "page-001.txt"
+            source.parent.mkdir(parents=True)
+            source.write_text("hello", encoding="utf-8")
+            selection = discover_inputs([str(book)], recursive=True)
+            self.assertEqual(selection.supported_count, 1)
+            self.assertEqual(selection.label_for(source), "book/part-1/page-001.txt")
+
     def test_env_file_loading_does_not_overwrite_shell(self):
         import os
 
@@ -159,11 +171,24 @@ class CoreTests(unittest.TestCase):
                     os.environ["AKSHARA_OPENAI_COMPATIBLE_BASE_URL"] = old_value
 
     def test_registries_expose_planned_extensions(self):
+        from akshara_vision.core.constants import OUTPUT_FORMATS
+
         self.assertIn("ollama", provider_registry())
         self.assertIn("gemini", provider_registry())
         self.assertIn("txt", exporter_registry())
         self.assertIn("epub", exporter_registry())
         self.assertIn("searchable-pdf", exporter_registry())
+        self.assertEqual(set(OUTPUT_FORMATS), set(exporter_registry()))
+
+    def test_all_supported_exporters_write_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "akshara_output"
+            metadata = {"title": "Export Test", "output_language": "en"}
+            for name, exporter in exporter_registry().items():
+                result = exporter.export("First paragraph\n\nSecond paragraph\n", destination, metadata)
+                self.assertEqual(result.format, name)
+                self.assertTrue(result.path.exists(), name)
+                self.assertGreaterEqual(result.path.stat().st_size, 0, name)
 
     def test_mock_pipeline_exports_text_manifest_and_markdown(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -320,6 +345,103 @@ class CoreTests(unittest.TestCase):
             combined = result["output_path"].read_text(encoding="utf-8")
             self.assertIn("First part", combined)
             self.assertIn("Second part", combined)
+            self.assertIn("===== 0001-source =====", combined)
+
+    def test_combine_prefers_final_item_outputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            item_one = run_dir / "items" / "0001-first-page-png"
+            item_two = run_dir / "items" / "0002-second-page-png"
+            item_one.mkdir(parents=True)
+            item_two.mkdir(parents=True)
+            (item_one / "restored__english.txt").write_text("Restored first\n", encoding="utf-8")
+            (item_one / "final__kannada.txt").write_text("Final first\n", encoding="utf-8")
+            (item_two / "final__kannada.txt").write_text("Final second\n", encoding="utf-8")
+            result = combine_stage_outputs(run_dir)
+            combined = result["output_path"].read_text(encoding="utf-8")
+            self.assertIn("===== 0001-first-page-png =====", combined)
+            self.assertIn("Final first", combined)
+            self.assertIn("===== 0002-second-page-png =====", combined)
+            self.assertIn("Final second", combined)
+            self.assertNotIn("Restored first", combined)
+
+    def test_combine_rebuilds_nested_item_outputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            item_one = run_dir / "items" / "book" / "part-1" / "0001-page-001-txt"
+            item_two = run_dir / "items" / "book" / "part-2" / "0002-page-001-txt"
+            item_one.mkdir(parents=True)
+            item_two.mkdir(parents=True)
+            (item_one / "final__kannada.txt").write_text("Final first\n", encoding="utf-8")
+            (item_two / "final__kannada.txt").write_text("Final second\n", encoding="utf-8")
+            result = combine_stage_outputs(run_dir)
+            combined = result["output_path"].read_text(encoding="utf-8")
+            self.assertIn("===== book/part-1/0001-page-001-txt =====", combined)
+            self.assertIn("Final first", combined)
+            self.assertIn("===== book/part-2/0002-page-001-txt =====", combined)
+            self.assertIn("Final second", combined)
+
+    def test_combine_rebuilds_requested_export_formats(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            item_one = run_dir / "items" / "0001-page-txt"
+            item_one.mkdir(parents=True)
+            (item_one / "final__kannada.txt").write_text("Final text\n", encoding="utf-8")
+            (run_dir / "run_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "profile": {"output_formats": ["txt", "md", "html", "json"]},
+                        "metadata": {"title": "Combined Test", "output_language": "Kannada"},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            result = combine_stage_outputs(run_dir)
+            export_paths = {export.format: export.path for export in result["exports"]}
+            self.assertTrue(export_paths["txt"].exists())
+            self.assertTrue(export_paths["md"].exists())
+            self.assertTrue(export_paths["html"].exists())
+            self.assertTrue(export_paths["json"].exists())
+            manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+            self.assertIn("recombined_exports", manifest)
+
+    def test_pipeline_preserves_nested_normal_folder_outputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            book = tmp_path / "book"
+            page_one = book / "part-1" / "page-001.txt"
+            page_two = book / "part-2" / "page-001.txt"
+            page_one.parent.mkdir(parents=True)
+            page_two.parent.mkdir(parents=True)
+            page_one.write_text("First nested page", encoding="utf-8")
+            page_two.write_text("Second nested page", encoding="utf-8")
+            profile = WorkflowProfile(
+                name="nested-folder",
+                output_formats=["txt"],
+                output_dir=str(tmp_path / "out"),
+            )
+            profile.source_language = "en"
+            profile.output_language = "en"
+            selection = discover_inputs([str(book)], recursive=True)
+            result = run_pipeline(RunRequest(profile=profile, inputs=selection))
+            run_dir = Path(result["run_dir"])
+            self.assertTrue(
+                (run_dir / "items" / "book" / "part-1" / "0001-page-001-txt" / "final__en.txt").exists()
+            )
+            self.assertTrue(
+                (run_dir / "items" / "book" / "part-2" / "0002-page-001-txt" / "final__en.txt").exists()
+            )
+            self.assertTrue((run_dir / "items" / "book" / "part-1" / "combined__en.txt").exists())
+            self.assertTrue((run_dir / "items" / "book" / "part-2" / "combined__en.txt").exists())
+            self.assertTrue((run_dir / "items" / "book" / "combined__en.txt").exists())
+            self.assertTrue((run_dir / "sources" / "book" / "part-1" / "0001-page-001.txt").exists())
+            self.assertTrue((run_dir / "sources" / "book" / "part-2" / "0002-page-001.txt").exists())
+            output_text = (run_dir / "akshara_output.txt").read_text(encoding="utf-8")
+            self.assertIn("===== book/part-1/page-001.txt =====", output_text)
+            self.assertIn("First nested page", output_text)
+            self.assertIn("===== book/part-2/page-001.txt =====", output_text)
+            self.assertIn("Second nested page", output_text)
 
     def test_failure_reason_helper_reports_blurry_or_unreadable_source(self):
         from akshara_vision.core.pipeline import _infer_failure_reason
@@ -396,6 +518,66 @@ class CoreTests(unittest.TestCase):
         text_out_raw = _extract_multimodal_text(input_4)
         self.assertEqual(text_out_raw.strip(), "ಕನ್ನಡ ಪಠ್ಯ")
 
+    def test_multimodal_json_like_outputs_do_not_leak_to_text(self):
+        from akshara_vision.core.pipeline import _extract_multimodal_text
+
+        blank_json = '{"restored_text":"[missing text]","uncertain":[],"notes":"unreadable source"}'
+        self.assertEqual(_extract_multimodal_text(blank_json), "")
+
+        malformed_json = (
+            '{\n'
+            '  "restored_text": "ii\\n\\nA restored page with an invalid escape \\old hymns.",\n'
+            '  "uncertain": [],\n'
+            '  "notes": ""\n'
+            '}'
+        )
+        restored = _extract_multimodal_text(malformed_json)
+        self.assertIn("A restored page", restored)
+        self.assertIn("old hymns", restored)
+        self.assertNotIn('"restored_text"', restored)
+        self.assertNotIn("{", restored)
+
+    def test_unusable_malformed_response_is_retried_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "retry.png"
+            source.write_bytes(b"image bytes")
+            profile = WorkflowProfile(
+                name="retry-page",
+                output_formats=["txt"],
+                output_dir=str(tmp_path / "out"),
+            )
+            profile.model.model = "gemma4:12b"
+            selection = discover_inputs([str(source)])
+
+            class RetryProvider:
+                name = "mock"
+
+                def __init__(self):
+                    self.calls = 0
+
+                def restore_text(self, text, instruction, settings, media_path=None):
+                    del text, instruction, settings, media_path
+                    self.calls += 1
+                    usage = {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                        "truncated": False,
+                    }
+                    if self.calls == 1:
+                        return '{"restored_text": ', usage
+                    return "Recovered text\n", usage
+
+            provider = RetryProvider()
+            with patch("akshara_vision.core.pipeline.get_provider", return_value=provider):
+                result = run_pipeline(RunRequest(profile=profile, inputs=selection))
+            self.assertEqual(provider.calls, 2)
+            output_text = (Path(result["run_dir"]) / "akshara_output.txt").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("Recovered text", output_text)
+
     def test_execution_mode_changes_provider_settings(self):
         from akshara_vision.core.pipeline import _task_text
         from akshara_vision.providers.local import OllamaProvider, _generation_limit
@@ -411,7 +593,7 @@ class CoreTests(unittest.TestCase):
         self.assertIn("Execution mode: quality", _task_text("source", quality_profile))
         self.assertIn("Do not skip non-English", _task_text("", quality_profile))
         self.assertIn("dense", _task_text("", quality_profile))
-        self.assertEqual(_generation_limit(fast_profile.model, 32768), 16384)
+        self.assertEqual(_generation_limit(fast_profile.model, 32768), 20000)
 
         provider = OllamaProvider()
         fake_result = Mock(returncode=0, stdout="restored\n")
@@ -507,6 +689,48 @@ class CoreTests(unittest.TestCase):
                 restoration["failure_reason"], "model context or output limit reached"
             )
 
+    def test_blank_multimodal_page_writes_empty_text_not_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "blank.png"
+            source.write_bytes(b"blank image bytes")
+            profile = WorkflowProfile(
+                name="blank-page",
+                output_formats=["txt"],
+                output_dir=str(tmp_path / "out"),
+            )
+            profile.model.model = "gemma4:12b"
+            selection = discover_inputs([str(source)])
+
+            class BlankProvider:
+                name = "mock"
+
+                def restore_text(self, text, instruction, settings, media_path=None):
+                    del text, instruction, settings, media_path
+                    return (
+                        '{"restored_text":"[missing text]","uncertain":[],"notes":"unreadable source"}',
+                        {
+                            "prompt_tokens": 1,
+                            "completion_tokens": 1,
+                            "total_tokens": 2,
+                            "truncated": False,
+                        },
+                    )
+
+            with patch("akshara_vision.core.pipeline.get_provider", return_value=BlankProvider()):
+                result = run_pipeline(RunRequest(profile=profile, inputs=selection))
+            run_dir = Path(result["run_dir"])
+            output_text = (run_dir / "akshara_output.txt").read_text(encoding="utf-8")
+            item_text = (
+                run_dir / "items" / "0001-blank-png" / "final__same.txt"
+            ).read_text(encoding="utf-8")
+            restoration = result["manifest"]["metadata"]["restoration"][0]
+            self.assertNotIn('"restored_text"', output_text)
+            self.assertNotIn("[missing text]", output_text)
+            self.assertEqual(item_text, "\n")
+            self.assertEqual(restoration["status"], "blank")
+            self.assertEqual(restoration["failure_reason"], "blank page or no readable text")
+
     def test_multimodal_ocr_pipeline_webp(self):
         from akshara_vision.providers.mock import MockProvider
 
@@ -531,6 +755,73 @@ class CoreTests(unittest.TestCase):
                     "[Mock restored text from multimodal file scan.webp]",
                     output_txt.read_text(),
                 )
+
+    def test_pdf_pipeline_renders_and_restores_pages_incrementally(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "book.pdf"
+            source.write_bytes(b"%PDF fake")
+            profile = WorkflowProfile(
+                name="pdf-stream",
+                output_formats=["txt"],
+                output_dir=str(tmp_path / "out"),
+            )
+            profile.model.model = "gemma4:12b"
+            selection = discover_inputs([str(source)])
+
+            class PdfProvider:
+                name = "mock"
+
+                def __init__(self):
+                    self.media_names = []
+
+                def restore_text(self, text, instruction, settings, media_path=None):
+                    del text, instruction, settings
+                    self.media_names.append(media_path.name)
+                    page_name = media_path.stem if media_path else "unknown"
+                    return (
+                        f"Restored {page_name}\n",
+                        {
+                            "prompt_tokens": 1,
+                            "completion_tokens": 1,
+                            "total_tokens": 2,
+                            "truncated": False,
+                        },
+                    )
+
+            provider = PdfProvider()
+
+            def fake_find_executable(name):
+                return name if name in {"pdfinfo", "pdftoppm"} else None
+
+            def fake_run(command, **kwargs):
+                del kwargs
+                if command[0] == "pdfinfo":
+                    return Mock(returncode=0, stdout="Pages:          2\n", stderr="")
+                prefix = Path(command[-1])
+                prefix.with_suffix(".png").write_bytes(b"page")
+                return Mock(returncode=0, stdout="", stderr="")
+
+            events = []
+            with patch("akshara_vision.core.pipeline.find_executable", side_effect=fake_find_executable):
+                with patch("akshara_vision.core.pipeline.subprocess.run", side_effect=fake_run):
+                    with patch("akshara_vision.core.pipeline.get_provider", return_value=provider):
+                        result = run_pipeline(
+                            RunRequest(profile=profile, inputs=selection),
+                            progress=lambda event, message, advance=1: events.append(
+                                (event, message, advance)
+                            ),
+                        )
+
+            self.assertEqual(provider.media_names, ["page-0001.png", "page-0002.png"])
+            event_messages = [message for _event, message, _advance in events]
+            self.assertIn("Rendering book.pdf page 1/2", event_messages)
+            self.assertIn("Restoring text from book.pdf page 1/2", event_messages)
+            output_text = (Path(result["run_dir"]) / "akshara_output.txt").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("Restored page-0001", output_text)
+            self.assertIn("Restored page-0002", output_text)
 
     def test_zip_archive_preserves_same_named_files(self):
         from akshara_vision.providers.mock import MockProvider
@@ -560,6 +851,45 @@ class CoreTests(unittest.TestCase):
             output_txt = (run_dir / "akshara_output.txt").read_text(encoding="utf-8")
             self.assertIn("First file", output_txt)
             self.assertIn("Second file", output_txt)
+            chunks = result["manifest"]["metadata"]["restoration"][0]["chunks"]
+            chunk_inputs = [chunk["input"] for chunk in chunks]
+            self.assertTrue(any("page-a/sample.txt" in item for item in chunk_inputs))
+            self.assertTrue(any("page-b/sample.txt" in item for item in chunk_inputs))
+
+    def test_zip_archive_writes_nested_folder_outputs(self):
+        from akshara_vision.providers.mock import MockProvider
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            archive_path = tmp_path / "nested.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("book/part-1/page-001.txt", "First nested page")
+                archive.writestr("book/part-1/page-002.txt", "Second nested page")
+                archive.writestr("book/part-2/page-001.txt", "Another nested page")
+            profile = WorkflowProfile(
+                name="nested-archive",
+                output_formats=["txt"],
+                output_dir=str(tmp_path / "out"),
+            )
+            profile.source_language = "en"
+            profile.output_language = "en"
+            profile.model.model = "gemma4:12b"
+            selection = discover_inputs([str(archive_path)])
+            with patch("akshara_vision.core.pipeline.get_provider", return_value=MockProvider()):
+                result = run_pipeline(RunRequest(profile=profile, inputs=selection))
+
+            archive_root = Path(result["run_dir"]) / "items" / "0001-nested-zip" / "archive"
+            self.assertTrue(
+                (archive_root / "book" / "part-1" / "page-001-txt" / "restored__en.txt").exists()
+            )
+            self.assertTrue((archive_root / "book" / "part-1" / "combined__en.txt").exists())
+            self.assertTrue((archive_root / "book" / "part-2" / "combined__en.txt").exists())
+            part_one_combined = (archive_root / "book" / "part-1" / "combined__en.txt").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("First nested page", part_one_combined)
+            self.assertIn("Second nested page", part_one_combined)
+            self.assertNotIn("Another nested page", part_one_combined)
 
     def test_multimodal_unsupported_model_raises_professional_error(self):
         from akshara_vision.core.models import ModelSettings

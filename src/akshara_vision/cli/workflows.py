@@ -472,12 +472,12 @@ def choose_model(current: Optional[ModelSettings] = None) -> ModelSettings:
         default_gen = (
             str(current.generation_limit)
             if current.generation_limit is not None
-            else "16384 (Default)"
+            else "auto (Default)"
         )
-        gen_str = ui.text("Generation limit (output tokens, max 16384)", default_gen)
+        gen_str = ui.text("Generation limit (output tokens, backend limit applies)", default_gen)
         if gen_str.strip() and "default" not in gen_str.lower():
             try:
-                generation_limit = min(16384, max(1024, int(gen_str)))
+                generation_limit = max(1024, int(gen_str))
             except ValueError:
                 pass
         else:
@@ -598,7 +598,7 @@ def review_run(profile: WorkflowProfile, selection) -> None:
         ["Provider", profile.model.provider],
         ["Model", profile.model.model],
         ["Mode", profile.model.execution_mode],
-        ["Generation limit", str(profile.model.generation_limit or "auto up to 16384")],
+        ["Generation limit", str(profile.model.generation_limit or "auto")],
         ["Outputs", ", ".join(profile.output_formats)],
         ["Destination", profile.output_dir],
         ["Inputs found", str(selection.supported_count)],
@@ -1123,6 +1123,12 @@ def combine_command(run_dir: Optional[str] = None) -> None:
         return
     ui.write(f"Combined output: {result['output_path']}")
     ui.write(f"Language-specific alias: {result['alias_path']}")
+    exports = result.get("exports") or []
+    if exports:
+        ui.write("Rebuilt exports:")
+        for item in exports:
+            state = "available" if item.available else "setup note"
+            ui.write(f"  {item.format}: {item.path} ({state})")
 
 
 def check_command() -> int:

@@ -60,15 +60,28 @@ Every run also writes:
 - `run_manifest.json`
 - `sources/`
 
-For PDFs, restored stage files are numbered by rendered page. For zip archives,
-inner files are processed in sorted order and kept under the archive's numbered
-run item. The final export still combines the selected inputs into one document,
-but the `items/` folder keeps each input easy to inspect separately.
+For PDFs, pages are rendered and restored incrementally, and restored stage files
+are numbered by rendered page. Recursive folder inputs preserve their nested
+folder labels under `items/`, `sources/`, and staged checkpoints. For zip
+archives, nested folders are traversed recursively, inner files are labeled with
+their archive-relative paths, and the same folder structure is mirrored under
+`items/<zip>/archive/`. Nested folders get local `combined__LANG.txt` files. The
+final export still combines the selected inputs into one document, but the
+`items/` folder keeps each input easy to inspect separately.
+
+`akv combine` rebuilds from `items/<input>/final__*.txt` first. If those files
+are not present, it falls back to translated stage pieces, then restored stage
+pieces. When the original manifest is available, combine also rebuilds the run's
+selected export formats.
 
 When a model returns partial text because its output limit was reached, the
 manifest marks that source or chunk as `partial` and records
 `model context or output limit reached`. The text already returned by the model
 is still saved in `items/` and `stages/`.
+
+Blank pages or pages with no readable text are saved as empty text, marked as
+`blank` in the manifest, and kept out of final text exports so JSON or diagnostic
+markers do not leak into copy-paste outputs.
 
 Run manifests store project-relative paths when possible so local user directories are
 not leaked by default.
