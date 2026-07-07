@@ -143,6 +143,7 @@ class RunRequest:
     inputs: InputSelection
     dry_run: bool = False
     resume: bool = True
+    resume_run_dir: Optional[str] = None
 
 
 def normalize_translation_mode(value: object) -> str:

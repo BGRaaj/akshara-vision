@@ -73,9 +73,10 @@ akv combine path/to/run-folder
 
 Combine prefers the human-facing `items/*/final__*.txt` files. If a run stopped
 before final item files were written, it falls back to translated stage chunks
-and then restored stage chunks. `resume` is the friendly recovery command; it
-uses the same staged files and shows how many inputs were completed when
-`run_state.json` is available.
+and then restored stage chunks. `resume` is the friendly recovery command; when
+the original inputs are available, it resumes inside the same run folder and
+skips existing PDF pages, archive entries, and staged text chunks. If the inputs
+are unavailable, it combines whatever completed checkpoints are already present.
 
 Press `Ctrl+C` to stop a long run. Completed pages and sources remain on disk
 under `items/` and `stages/`, and the CLI prints the latest run folder for

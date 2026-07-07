@@ -1273,16 +1273,26 @@ def resume_command(run_dir: Optional[str] = None) -> None:
         return
 
     if input_files:
-        completed_paths = {item["path"] for item in completed}
-        pending_paths = [path for path in input_files if path not in completed_paths]
-
-        if pending_paths:
-            ui.status("info", f"Found {len(pending_paths)} pending inputs.")
-            if ui.confirm("Resume processing pending inputs in a new run?", True):
-                profile_dict = state.get("profile", {})
-                profile = WorkflowProfile.from_dict(profile_dict)
-                execute_run(profile, inputs=pending_paths)
+        ui.status("info", "Found original input path(s).")
+        if ui.confirm("Resume this run in the same run folder?", True):
+            profile_dict = state.get("profile", {})
+            profile = WorkflowProfile.from_dict(profile_dict)
+            profile.output_dir = str(run_path.parent)
+            selection = discover_inputs([str(path) for path in input_files], recursive=True)
+            if not selection.files:
+                ui.status("warning", "Original inputs were not found. Combining completed checkpoints instead.")
+                combine_command(str(run_path))
                 return
+            result = _run_with_progress(
+                RunRequest(
+                    profile=profile,
+                    inputs=selection,
+                    dry_run=False,
+                    resume_run_dir=str(run_path),
+                )
+            )
+            _finished_screen(result)
+            return
 
     ui.write("Combining already completed checkpoints into final outputs.")
     combine_command(str(run_path))

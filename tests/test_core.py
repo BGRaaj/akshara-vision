@@ -832,6 +832,69 @@ class CoreTests(unittest.TestCase):
             self.assertIn("Restored page-0001", output_text)
             self.assertIn("Restored page-0002", output_text)
 
+    def test_pdf_resume_skips_existing_page_pieces(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "book.pdf"
+            source.write_bytes(b"%PDF fake")
+            run_dir = tmp_path / "out" / "book-20260706-203702"
+            staged = run_dir / "stages" / "restored" / "0001-book-pdf"
+            staged.mkdir(parents=True)
+            (staged / "0001-restored__english.txt").write_text(
+                "Already restored page 1\n", encoding="utf-8"
+            )
+            profile = WorkflowProfile(
+                name="book",
+                output_formats=["txt"],
+                output_dir=str(tmp_path / "out"),
+            )
+            profile.source_language = "English"
+            profile.output_language = "same"
+            profile.model.model = "gemma4:12b"
+            selection = discover_inputs([str(source)])
+
+            class PdfProvider:
+                name = "mock"
+
+                def __init__(self):
+                    self.media_names = []
+
+                def restore_text(self, text, instruction, settings, media_path=None):
+                    del text, instruction, settings
+                    self.media_names.append(media_path.name)
+                    return "Restored resumed page\n", {}
+
+            provider = PdfProvider()
+
+            def fake_find_executable(name):
+                return name if name in {"pdfinfo", "pdftoppm"} else None
+
+            def fake_run(command, **kwargs):
+                del kwargs
+                if command[0] == "pdfinfo":
+                    return Mock(returncode=0, stdout="Pages:          2\n", stderr="")
+                prefix = Path(command[-1])
+                prefix.with_suffix(".png").write_bytes(b"page")
+                return Mock(returncode=0, stdout="", stderr="")
+
+            with patch("akshara_vision.core.pipeline.find_executable", side_effect=fake_find_executable):
+                with patch("akshara_vision.core.pipeline.subprocess.run", side_effect=fake_run):
+                    with patch("akshara_vision.core.pipeline.get_provider", return_value=provider):
+                        result = run_pipeline(
+                            RunRequest(
+                                profile=profile,
+                                inputs=selection,
+                                resume_run_dir=str(run_dir),
+                            )
+                        )
+
+            self.assertEqual(provider.media_names, ["page-0002.png"])
+            output_text = (Path(result["run_dir"]) / "akshara_output.txt").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("Already restored page 1", output_text)
+            self.assertIn("Restored resumed page", output_text)
+
     def test_zip_archive_preserves_same_named_files(self):
         from akshara_vision.providers.mock import MockProvider
 

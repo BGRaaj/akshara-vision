@@ -77,6 +77,9 @@ class StageWriter:
             self.restored_dir, source_index, source_name, piece_index, "restored", text
         )
 
+    def restored_piece_path(self, source_index: int, source_name: str, piece_index: int) -> Path:
+        return self._piece_path(self.restored_dir, source_index, source_name, piece_index, "restored")
+
     def write_translated_piece(
         self, source_index: int, source_name: str, piece_index: int, text: str
     ) -> Path:
@@ -123,6 +126,12 @@ class StageWriter:
         path = item_dir / f"restored__{_language_slug(self.source_language)}.txt"
         path.write_text(text, encoding="utf-8")
         return path
+
+    def archive_item_restored_path(
+        self, source_index: int, source_name: str, archive_label: str
+    ) -> Path:
+        item_dir = self._archive_item_dir(source_index, source_name, archive_label)
+        return item_dir / f"restored__{_language_slug(self.source_language)}.txt"
 
     def write_archive_item_final(
         self, source_index: int, source_name: str, archive_label: str, text: str
@@ -195,9 +204,21 @@ class StageWriter:
     ) -> Path:
         source_dir = _numbered_label_dir(stage_dir, source_index, source_name)
         source_dir.mkdir(parents=True, exist_ok=True)
-        path = source_dir / f"{piece_index:04d}-{stage_name}__{_language_slug(self.output_language if stage_name == 'translated' else self.source_language)}.txt"
+        path = self._piece_path(stage_dir, source_index, source_name, piece_index, stage_name)
         path.write_text(text, encoding="utf-8")
         return path
+
+    def _piece_path(
+        self,
+        stage_dir: Path,
+        source_index: int,
+        source_name: str,
+        piece_index: int,
+        stage_name: str,
+    ) -> Path:
+        source_dir = _numbered_label_dir(stage_dir, source_index, source_name)
+        language = self.output_language if stage_name == "translated" else self.source_language
+        return source_dir / f"{piece_index:04d}-{stage_name}__{_language_slug(language)}.txt"
 
 
 def run_pipeline(
@@ -205,9 +226,13 @@ def run_pipeline(
 ) -> Dict[str, object]:
     profile = request.profile
     profile.sync_translation_defaults()
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    output_root = Path(profile.output_dir).expanduser()
-    run_dir = output_root / f"{profile.name}-{timestamp}"
+    if request.resume_run_dir:
+        run_dir = Path(request.resume_run_dir).expanduser()
+        timestamp = _timestamp_from_run_dir(run_dir) or datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    else:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        output_root = Path(profile.output_dir).expanduser()
+        run_dir = output_root / f"{profile.name}-{timestamp}"
     _notify(progress, "prepare", "Preparing run folder")
     run_dir.mkdir(parents=True, exist_ok=True)
     artifacts = StageWriter(
@@ -717,6 +742,11 @@ def _write_run_state(run_dir: Path, state: Dict[str, object]) -> Path:
     merged = {**existing, **state}
     path.write_text(json.dumps(merged, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return path
+
+
+def _timestamp_from_run_dir(run_dir: Path) -> Optional[str]:
+    match = re.search(r"(\d{8}-\d{6})$", run_dir.name)
+    return match.group(1) if match else None
 
 
 def _write_consistency_checkpoint(
@@ -1962,6 +1992,28 @@ def _restore_multimodal_pdf(
         page_numbers = range(1, page_count + 1) if page_count else _unknown_pdf_pages()
         for idx in page_numbers:
             total_label = str(page_count) if page_count else "?"
+            existing_piece = artifacts.restored_piece_path(source_index, label, idx)
+            if existing_piece.exists():
+                restored_text = existing_piece.read_text(encoding="utf-8", errors="replace").strip()
+                restored_pages.append(restored_text)
+                chunks_record.append(
+                    {
+                        "index": idx,
+                        "input": f"[PDF Page {idx}: {label}]",
+                        "restored_text": restored_text,
+                        "uncertain": [],
+                        "notes": "resumed from existing staged output",
+                        "status": "restored",
+                        "failure_reason": "",
+                    }
+                )
+                _notify(
+                    progress,
+                    "resume",
+                    f"Skipping completed {label} page {idx}/{total_label}",
+                    advance=1,
+                )
+                continue
             _notify(
                 progress,
                 "render",
@@ -2225,6 +2277,33 @@ def _restore_multimodal_zip(
                 text_content = ext_file.read_text(encoding="utf-8", errors="replace")
                 sub_chunks = _split_text_chunks(text_content)
                 for sub_chunk in sub_chunks:
+                    existing_piece = artifacts.restored_piece_path(source_index, label, chunk_idx)
+                    if existing_piece.exists():
+                        restored_text = existing_piece.read_text(
+                            encoding="utf-8", errors="replace"
+                        ).strip()
+                        restored_parts.append(restored_text)
+                        archive_file_parts.append(restored_text)
+                        chunks_record.append(
+                            {
+                                "index": chunk_idx,
+                                "input": f"[ZIP Text: {archive_label}] "
+                                + _short_excerpt(sub_chunk),
+                                "restored_text": restored_text,
+                                "uncertain": [],
+                                "notes": "resumed from existing staged output",
+                                "status": "restored",
+                                "failure_reason": "",
+                            }
+                        )
+                        _notify(
+                            progress,
+                            "resume",
+                            f"Skipping completed archive chunk {archive_label}",
+                            advance=1,
+                        )
+                        chunk_idx += 1
+                        continue
                     prompt = _task_text(sub_chunk, profile, consistency_state)
                     result, usage = _restore_with_retry(
                         provider, prompt, instruction, profile.model, progress=progress
@@ -2301,6 +2380,37 @@ def _restore_multimodal_zip(
                     chunks_record.append(ch)
                     chunk_idx += 1
             elif suffix in {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}:
+                archive_existing = artifacts.archive_item_restored_path(
+                    source_index, label, archive_label
+                )
+                if archive_existing.exists():
+                    restored_text = archive_existing.read_text(
+                        encoding="utf-8", errors="replace"
+                    ).strip()
+                    restored_parts.append(restored_text)
+                    _add_archive_folder_part(archive_folder_parts, archive_label, restored_text)
+                    artifacts.write_restored_piece(
+                        source_index, label, chunk_idx, restored_text + "\n"
+                    )
+                    chunks_record.append(
+                        {
+                            "index": chunk_idx,
+                            "input": f"[ZIP Image: {archive_label}]",
+                            "restored_text": restored_text,
+                            "uncertain": [],
+                            "notes": "resumed from existing staged output",
+                            "status": "restored",
+                            "failure_reason": "",
+                        }
+                    )
+                    _notify(
+                        progress,
+                        "resume",
+                        f"Skipping completed archive image {archive_label}",
+                        advance=1,
+                    )
+                    chunk_idx += 1
+                    continue
                 prompt = _task_text("", profile, consistency_state)
                 result, usage = _restore_with_retry(
                     provider,
