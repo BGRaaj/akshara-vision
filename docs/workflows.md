@@ -34,7 +34,10 @@ Execution modes:
 
 The run uses chunked restoration for long raw text inputs, so it is processed in
 smaller model batches instead of one large prompt. Progress is timer-based and indeterminate;
-it shows the active step and elapsed time rather than a fake percentage.
+it shows the active step and elapsed time rather than a fake percentage. After a
+page, image, text chunk, or translation chunk completes, the progress line also
+shows item token usage and cumulative run token totals when the provider reports
+usage.
 
 Provider requests do not use a fixed restoration timeout. If a provider returns a
 transient network, rate-limit, or server error, Akshara Vision retries with
@@ -52,6 +55,12 @@ Restored text is written before translation starts. Translation is then performe
 as separate text-only requests over smaller restored chunks, which keeps the
 translation prompt free from the original image context.
 
+If a restored page or chunk looks malformed, JSON-like, or gibberish-heavy,
+Akshara Vision runs a constrained review pass before checkpointing it. That pass
+is allowed to fix only clear OCR/restoration corruption. It must preserve
+structure, page order, uncertainty markers, and unfinished sentences that may
+continue on the next page.
+
 Akshara Vision also keeps a compact local consistency guide during the run. It
 learns only formatting signals such as paragraph spacing, heading style, page
 markers, lists, and table spacing from completed pages. Later pages receive that
@@ -68,11 +77,11 @@ structure observations for later assembly.
 
 The CLI asks whether to enable figure/image enrichment before a run. When
 enabled, prompts may insert concise `[image: ...]` markers for visible
-illustrations, maps, plates, or diagrams, and Akshara stores page/source image
-assets with size and placement metadata. This is disabled by default so normal
-restored text remains clean. Automatic cropping of figures is not enabled yet
-because it needs a layout segmentation layer to avoid cutting the wrong page
-region.
+illustrations, maps, plates, or diagrams, and Akshara stores conservative
+candidate figure crops with bounding boxes, size, DPI, and placement metadata.
+This is disabled by default so normal restored text remains clean. The cropper
+does not claim full layout-perfect segmentation; it ignores tiny marks and
+ambiguous damage instead of treating them as figures.
 
 The CLI also asks how to handle languages:
 

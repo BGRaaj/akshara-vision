@@ -29,7 +29,7 @@ model, provider, scan quality, script complexity, and document damage.
 | Restoration | Text cleanup, OCR error correction, uncertainty markers, chunked long-text processing, raw OCR preservation |
 | Vision input | Direct multimodal processing for scanned images and rendered PDF pages with dense-page and Indic-script extraction guidance |
 | Document intelligence | Document-type-specific extraction guidance plus detected structure metadata for books, manuscripts, magazines, newspapers, articles, letters, and archive bundles |
-| Assembly enrichment | Optional figure markers plus page/source image assets with size and placement metadata for later publication assembly |
+| Assembly enrichment | Optional figure markers plus candidate figure crops with bounding boxes, size, DPI, and placement metadata |
 | Language handling | Per-run choice to preserve all readable detected languages/scripts or strictly extract only the declared source language |
 | Translation | Automatic final-pass translation when output language differs from source language; manual modes for translate, bilingual, transliterate, and metadata-only workflows |
 | Batch processing | Files, folders, recursive folders, globs, ZIP archives, CSV manifests, and JSON manifests |
@@ -37,7 +37,7 @@ model, provider, scan quality, script complexity, and document damage.
 | Models | Ollama, LM Studio, Jan, llama.cpp/OpenAI-compatible local servers, native cloud providers, OpenRouter, and other OpenAI-compatible cloud APIs |
 | Reliability | Long model calls wait for completion, transient provider failures retry with backoff, and failed batch items are tracked without corrupting later outputs |
 | Exports | Text, Markdown, HTML, DOCX, EPUB, JSON, JSONL, YAML, OCR sidecars, review files, and PDF request notes |
-| Auditability | Raw OCR file, restored checkpoint, JSON sidecars, staged per-page/per-chunk outputs, copied source inputs, structured run manifest, model usage metadata, truncation warnings, and failure reasons |
+| Auditability | Live token metrics during long runs, raw OCR file, restored checkpoint, JSON sidecars, staged per-page/per-chunk outputs, copied source inputs, structured run manifest, model usage metadata, truncation warnings, and failure reasons |
 
 ## Install
 
@@ -149,10 +149,11 @@ without reprocessing completed pages or chunks. Recombine restores the run's
 selected export formats when the original manifest is available.
 
 When figure/image enrichment is enabled in the CLI, Akshara may add concise
-`[image: ...]` markers for visible figures and saves source/page image assets
-under `assets/` with width, height, DPI, aspect ratio, and recommended placement
-metadata. Automatic image cropping is intentionally not enabled yet; that needs a
-layout segmentation layer to avoid cutting the wrong part of archival pages.
+`[image: ...]` markers for visible figures and saves candidate figure crops under
+`assets/` with bounding boxes, width, height, DPI, aspect ratio, and recommended
+placement metadata. It avoids saving every full page as a figure. The cropper is
+conservative and heuristic; unclear page damage, cracks, and tiny marks are left
+alone rather than treated as illustrations.
 
 Language handling is selected in the CLI before each run. `preserve-detected`
 keeps readable mixed-language snippets in their original script. `strict-source`
@@ -166,6 +167,11 @@ contains your source images.
 Large PDFs are rendered and restored page by page. The CLI shows the current
 page being rendered or restored instead of waiting for the entire PDF to convert
 before the model starts.
+
+After each page, image, or text chunk model call, the progress line includes
+token usage for that item and cumulative run totals. Suspicious restorations
+that look malformed or gibberish-like are sent through a constrained review pass
+before they are checkpointed.
 
 Blank pages are preserved as empty outputs and marked as `blank` in the manifest.
 If a model accidentally returns JSON-like text for a page, Akshara Vision extracts

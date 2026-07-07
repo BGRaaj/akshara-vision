@@ -23,6 +23,12 @@ from akshara_vision.instructions import load_instruction
 from akshara_vision.registries.exporters import exporter_registry
 from akshara_vision.registries.providers import get_provider
 
+try:
+    from PIL import Image, ImageOps
+except ModuleNotFoundError:  # pragma: no cover - optional runtime guard
+    Image = None
+    ImageOps = None
+
 
 TEXT_EXTENSIONS = {".txt", ".md", ".html", ".hocr", ".xml", ".json"}
 ProgressCallback = Callable[[str, str, int], None]
@@ -30,6 +36,7 @@ RESTORATION_CHUNK_CHARS = 5000
 TRANSLATION_CHUNK_CHARS = 5000
 BLANK_PAGE_REASON = "blank page or no readable text"
 DEFAULT_PROVIDER_RETRIES = 3
+MAX_FIGURE_CROPS_PER_PAGE = 4
 
 EXECUTION_MODE_PDF_DPI = {
     "fast": 200,
@@ -252,6 +259,32 @@ class StageWriter:
             "width": width,
             "height": height,
             "dpi": dpi,
+            "placement": _asset_placement(width, height),
+        }
+
+    def write_figure_asset(
+        self,
+        source_index: int,
+        source_name: str,
+        image,
+        piece_index: int,
+        figure_index: int,
+        bbox: tuple[int, int, int, int],
+        dpi: Optional[int] = None,
+    ) -> Dict[str, object]:
+        asset_dir = self.assets_dir / _slugify(source_name)
+        asset_dir.mkdir(parents=True, exist_ok=True)
+        asset_path = asset_dir / f"{source_index:04d}-{piece_index:04d}-figure-{figure_index:02d}.png"
+        image.save(asset_path)
+        width, height = _image_dimensions(asset_path)
+        return {
+            "kind": "figure-crop",
+            "path": _safe_path(asset_path),
+            "_local_path": str(asset_path),
+            "width": width,
+            "height": height,
+            "dpi": dpi,
+            "bbox": list(bbox),
             "placement": _asset_placement(width, height),
         }
 
@@ -947,12 +980,42 @@ def _restore_text(
             total_usage["total_tokens"] += usage.get("total_tokens", 0)
             if usage.get("truncated"):
                 total_usage["truncated"] = True
+            _notify_usage(
+                progress,
+                f"Restored {source_label or source_path.name} chunk {index}/{len(chunks)}",
+                usage,
+                total_usage,
+            )
 
         parsed = _parse_restoration_result(result, chunk)
         restored_text = parsed["restored_text"].strip()
         if not restored_text:
             restored_text = chunk.strip()
             parsed["failure_reason"] = parsed["failure_reason"] or "source unreadable or too blurry"
+        review_note = ""
+        pre_review_text = ""
+        if restored_text:
+            restored_text, review_note, review_usage, pre_review_text = _maybe_review_restored_text(
+                restored_text,
+                profile,
+                provider,
+                instruction,
+                progress,
+                f"{source_label or source_path.name} chunk {index}",
+                consistency_state,
+            )
+            if review_usage:
+                total_usage["prompt_tokens"] += review_usage.get("prompt_tokens", 0)
+                total_usage["completion_tokens"] += review_usage.get("completion_tokens", 0)
+                total_usage["total_tokens"] += review_usage.get("total_tokens", 0)
+                if review_usage.get("truncated"):
+                    total_usage["truncated"] = True
+                _notify_usage(
+                    progress,
+                    f"Reviewed {source_label or source_path.name} chunk {index}/{len(chunks)}",
+                    review_usage,
+                    total_usage,
+                )
         if usage and usage.get("truncated"):
             parsed["failure_reason"] = "model context or output limit reached"
             parsed["status"] = "partial"
@@ -961,17 +1024,18 @@ def _restore_text(
         artifacts.write_restored_piece(
             source_index, source_label or source_path.name, index, restored_text + "\n"
         )
-        structured_chunks.append(
-            {
-                "index": index,
-                "input": _short_excerpt(chunk),
-                "restored_text": restored_text,
-                "uncertain": parsed["uncertain"],
-                "notes": parsed["notes"],
-                "status": parsed["status"],
-                "failure_reason": parsed["failure_reason"],
-            }
-        )
+        chunk_record = {
+            "index": index,
+            "input": _short_excerpt(chunk),
+            "restored_text": restored_text,
+            "uncertain": parsed["uncertain"],
+            "notes": _join_notes(parsed["notes"], review_note),
+            "status": parsed["status"],
+            "failure_reason": parsed["failure_reason"],
+        }
+        if pre_review_text:
+            chunk_record["pre_review_text"] = pre_review_text
+        structured_chunks.append(chunk_record)
     combined = "\n\n".join(part for part in restored_chunks if part.strip()).strip()
     if not combined:
         combined = "[missing text]"
@@ -1054,6 +1118,31 @@ def _notify(
 ) -> None:
     if progress:
         progress(event, message, advance)
+
+
+def _notify_usage(
+    progress: Optional[ProgressCallback],
+    label: str,
+    item_usage: Optional[dict],
+    total_usage: Dict[str, object],
+) -> None:
+    if not item_usage:
+        return
+    _notify(progress, "usage", f"{label} | {_usage_summary(item_usage, total_usage)}", advance=0)
+
+
+def _usage_summary(item_usage: dict, total_usage: Dict[str, object]) -> str:
+    item_prompt = int(item_usage.get("prompt_tokens") or 0)
+    item_completion = int(item_usage.get("completion_tokens") or 0)
+    item_total = int(item_usage.get("total_tokens") or (item_prompt + item_completion))
+    total_prompt = int(total_usage.get("prompt_tokens") or 0)
+    total_completion = int(total_usage.get("completion_tokens") or 0)
+    total_all = int(total_usage.get("total_tokens") or (total_prompt + total_completion))
+    truncated = " truncated" if item_usage.get("truncated") or total_usage.get("truncated") else ""
+    return (
+        f"tokens page/run {item_total}/{total_all} "
+        f"(in {item_prompt}/{total_prompt}, out {item_completion}/{total_completion}){truncated}"
+    )
 
 
 def _restore_with_retry(
@@ -1367,6 +1456,8 @@ def _normalize_extracted_text(text: str) -> str:
 def _is_blank_or_missing_text(text: str) -> bool:
     normalized = re.sub(r"\s+", " ", text.strip().lower())
     normalized = normalized.strip(". ")
+    if re.fullmatch(r"(?:\[unclear(?::[^\]]*)?\]\s*)+", normalized):
+        return True
     return normalized in {
         "[missing text]",
         "[unclear]",
@@ -1399,6 +1490,10 @@ def _short_excerpt(text: str, limit: int = 120) -> str:
     if len(single_line) <= limit:
         return single_line
     return single_line[: limit - 1].rstrip() + "…"
+
+
+def _join_notes(*notes: object) -> str:
+    return "; ".join(str(note).strip() for note in notes if str(note or "").strip())
 
 
 def _execution_mode(profile: Optional[WorkflowProfile]) -> str:
@@ -1487,6 +1582,7 @@ def _new_consistency_state(profile: WorkflowProfile) -> Dict[str, object]:
         "page_marker_style": "",
         "layout_notes": [],
         "encountered_scripts": [],
+        "recent_text_excerpt": "",
     }
 
 
@@ -1530,7 +1626,9 @@ def _document_type_guidance(profile: WorkflowProfile) -> str:
     if _figure_extraction_enabled(profile):
         selected += (
             " If a non-text image, illustration, plate, map, table image, seal, or diagram is clearly "
-            "present, insert a concise marker like [image: brief description] at its position."
+            "present on the front side of the page, insert a concise marker like [image: brief description] "
+            "at its position. Do not mark bleed-through, mirrored back-page impressions, borders, stains, "
+            "cracks, shadows, or decorative noise as images."
         )
     return selected + "\n"
 
@@ -1706,6 +1804,203 @@ def _image_dimensions(path: Path) -> tuple[Optional[int], Optional[int]]:
     return None, None
 
 
+def _extract_figure_assets(
+    artifacts: StageWriter,
+    source_index: int,
+    source_name: str,
+    image_path: Path,
+    piece_index: int,
+    dpi: Optional[int] = None,
+    provider=None,
+    profile: Optional[WorkflowProfile] = None,
+    progress: Optional[ProgressCallback] = None,
+) -> List[Dict[str, object]]:
+    if Image is None or ImageOps is None:
+        return []
+    try:
+        with Image.open(image_path) as image:
+            source = ImageOps.exif_transpose(image).convert("RGB")
+            boxes = _candidate_figure_boxes(source)
+            assets = []
+            for figure_index, bbox in enumerate(boxes[:MAX_FIGURE_CROPS_PER_PAGE], start=1):
+                cropped = source.crop(bbox)
+                assets.append(
+                    artifacts.write_figure_asset(
+                        source_index,
+                        source_name,
+                        cropped,
+                        piece_index,
+                        figure_index,
+                        bbox,
+                        dpi=dpi,
+                    )
+                )
+            return _verify_figure_assets(assets, provider, profile, progress)
+    except Exception:
+        return []
+
+
+def _verify_figure_assets(
+    assets: List[Dict[str, object]],
+    provider,
+    profile: Optional[WorkflowProfile],
+    progress: Optional[ProgressCallback],
+) -> List[Dict[str, object]]:
+    verified_assets = []
+    for asset in assets:
+        local_path = Path(str(asset.get("_local_path") or ""))
+        asset.pop("_local_path", None)
+        if provider is None or profile is None or not local_path.exists():
+            asset["verification"] = "unverified"
+            verified_assets.append(asset)
+            continue
+        prompt = (
+            "Return only JSON: {\"keep\": true|false, \"label\": \"short label\", \"reason\": \"short reason\"}.\n"
+            "The attached crop was detected as a possible figure from a scanned archival page.\n"
+            "Keep it only if it is a real non-text illustration, photograph, map, plate, seal, chart, "
+            "diagram, or meaningful visual element. Reject it if it is mostly text, page border, bleed-through, "
+            "mirrored back-page impression, stain, crack, scanner noise, blank margin, or accidental crop.\n"
+        )
+        try:
+            response, usage = _restore_with_retry(
+                provider, prompt, "", profile.model, media_path=local_path, progress=progress
+            )
+            _notify_usage(progress, f"Verified figure crop {asset.get('path')}", usage, usage or {})
+            if usage:
+                asset["verification_usage"] = usage
+            decision = _parse_figure_verification(response)
+        except Exception:
+            decision = {"keep": True, "label": "", "reason": "verification failed"}
+        if decision["keep"]:
+            asset["verification"] = "verified" if decision.get("label") else "unverified"
+            asset["label"] = decision.get("label", "")
+            asset["reason"] = decision.get("reason", "")
+            verified_assets.append(asset)
+        else:
+            asset_path = local_path
+            try:
+                asset_path.unlink()
+            except OSError:
+                pass
+    return verified_assets
+
+
+def _parse_figure_verification(response: str) -> Dict[str, object]:
+    json_candidate = _extract_json_object(response or "")
+    if json_candidate:
+        try:
+            data = json.loads(json_candidate)
+        except json.JSONDecodeError:
+            data = {}
+        if isinstance(data, dict):
+            keep = data.get("keep")
+            if isinstance(keep, bool):
+                return {
+                    "keep": keep,
+                    "label": str(data.get("label") or "")[:80],
+                    "reason": str(data.get("reason") or "")[:160],
+                }
+    lowered = (response or "").strip().lower()
+    if lowered.startswith("false") or "reject" in lowered:
+        return {"keep": False, "label": "", "reason": "provider rejected crop"}
+    return {"keep": True, "label": "", "reason": "verification inconclusive"}
+
+
+def _candidate_figure_boxes(image) -> List[tuple[int, int, int, int]]:
+    width, height = image.size
+    if width < 120 or height < 120:
+        return []
+    gray = ImageOps.grayscale(image)
+    grid_x = 48
+    grid_y = 64
+    cell_w = max(width // grid_x, 1)
+    cell_h = max(height // grid_y, 1)
+    active = set()
+    for gy in range(grid_y):
+        for gx in range(grid_x):
+            left = gx * cell_w
+            top = gy * cell_h
+            right = width if gx == grid_x - 1 else min((gx + 1) * cell_w, width)
+            bottom = height if gy == grid_y - 1 else min((gy + 1) * cell_h, height)
+            if right <= left or bottom <= top:
+                continue
+            crop = gray.crop((left, top, right, bottom))
+            pixels = crop.histogram()
+            dark = sum(pixels[:96])
+            total = max((right - left) * (bottom - top), 1)
+            dark_ratio = dark / total
+            if 0.10 <= dark_ratio <= 0.80:
+                active.add((gx, gy))
+
+    boxes = []
+    seen = set()
+    for cell in sorted(active):
+        if cell in seen:
+            continue
+        stack = [cell]
+        seen.add(cell)
+        component = []
+        while stack:
+            current = stack.pop()
+            component.append(current)
+            cx, cy = current
+            for neighbor in ((cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)):
+                if neighbor in active and neighbor not in seen:
+                    seen.add(neighbor)
+                    stack.append(neighbor)
+        if not component:
+            continue
+        min_x = min(x for x, _y in component)
+        max_x = max(x for x, _y in component)
+        min_y = min(y for _x, y in component)
+        max_y = max(y for _x, y in component)
+        left = max(min_x * cell_w - cell_w, 0)
+        top = max(min_y * cell_h - cell_h, 0)
+        right = min((max_x + 2) * cell_w, width)
+        bottom = min((max_y + 2) * cell_h, height)
+        if _looks_like_figure_box(gray, (left, top, right, bottom), width, height):
+            boxes.append((left, top, right, bottom))
+    return _dedupe_boxes(boxes)
+
+
+def _looks_like_figure_box(gray, bbox: tuple[int, int, int, int], page_w: int, page_h: int) -> bool:
+    left, top, right, bottom = bbox
+    box_w = right - left
+    box_h = bottom - top
+    if box_w < page_w * 0.16 or box_h < page_h * 0.10:
+        return False
+    area_ratio = (box_w * box_h) / max(page_w * page_h, 1)
+    if area_ratio < 0.025 or area_ratio > 0.75:
+        return False
+    crop = gray.crop(bbox)
+    histogram = crop.histogram()
+    dark_ratio = sum(histogram[:96]) / max(box_w * box_h, 1)
+    if dark_ratio < 0.06 or dark_ratio > 0.70:
+        return False
+    return True
+
+
+def _dedupe_boxes(boxes: List[tuple[int, int, int, int]]) -> List[tuple[int, int, int, int]]:
+    kept = []
+    for box in sorted(boxes, key=lambda item: (item[1], item[0], -(item[2] - item[0]) * (item[3] - item[1]))):
+        if any(_box_overlap_ratio(box, existing) > 0.55 for existing in kept):
+            continue
+        kept.append(box)
+    return kept
+
+
+def _box_overlap_ratio(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+    left = max(a[0], b[0])
+    top = max(a[1], b[1])
+    right = min(a[2], b[2])
+    bottom = min(a[3], b[3])
+    if right <= left or bottom <= top:
+        return 0.0
+    intersection = (right - left) * (bottom - top)
+    smaller = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+    return intersection / max(smaller, 1)
+
+
 def _asset_placement(width: Optional[int], height: Optional[int]) -> Dict[str, object]:
     if not width or not height:
         return {"role": "source-image", "recommended_width": "auto", "aspect_ratio": None}
@@ -1754,6 +2049,7 @@ def _consistency_prompt(state: Optional[Dict[str, object]]) -> str:
         "page_marker_style": state.get("page_marker_style") or "",
         "layout_notes": notes,
         "encountered_scripts": state.get("encountered_scripts") or [],
+        "recent_text_excerpt": state.get("recent_text_excerpt") or "",
     }
     if not any(values[key] for key in ("paragraph_style", "heading_style", "page_marker_style", "layout_notes")):
         return (
@@ -1801,6 +2097,14 @@ def _update_consistency_state(state: Optional[Dict[str, object]], text: str) -> 
         if script not in encountered:
             encountered.append(script)
     state["encountered_scripts"] = encountered[:8]
+    state["recent_text_excerpt"] = _recent_words(sample, 100)
+
+
+def _recent_words(text: str, limit: int) -> str:
+    words = re.findall(r"\S+", text.strip())
+    if len(words) <= limit:
+        return " ".join(words)
+    return " ".join(words[-limit:])
 
 
 def _detect_scripts(text: str) -> List[str]:
@@ -1895,10 +2199,10 @@ def _task_text(
 
     if execution_mode == "quality":
         depth_instruction = (
-            "Perform a deep, rigorous analysis of the whole page before writing. Work through "
-            "dense pages region by region, including margins, footnotes, headings, captions, "
-            "columns, and small text. Take your time to parse faded, complex, or degraded "
-            "characters before extracting the text.\n"
+            "Extract carefully but stay bounded: scan the page once region by region, including "
+            "margins, footnotes, headings, captions, columns, and small text. Do not enter long "
+            "reasoning loops. If a word cannot be read confidently, keep the best visible reading "
+            "or mark [unclear] and continue.\n"
         )
     elif execution_mode == "balanced":
         depth_instruction = (
@@ -1924,7 +2228,13 @@ def _task_text(
             "Apply the language policy above exactly. Preserve clear mixed-language snippets only when "
             "they are visible and readable; never force a language guess into the output.\n"
             "If the page is dense, prioritize complete extraction over perfect cleanup.\n"
-            "If any words are unclear, mark them as [unclear].\n"
+            "Ignore mirrored, reversed, faint, or bleed-through impressions from the back side of "
+            "the page. Do not restore shadows, show-through, stains, cracks, or scan noise as text.\n"
+            "If any words are unclear, mark them as [unclear]. If the whole page is blank or "
+            "unreadable, return an empty response, not [unclear].\n"
+            "Before returning, internally review the restored text for gibberish, malformed words, "
+            "wrong-script fragments, and obvious OCR corruption. Fix only clear restoration errors. "
+            "Do not complete a sentence merely because it continues on the next page.\n"
             "Do not translate yet. Translation happens as a final stage after extraction.\n"
             "Return ONLY the extracted text. Do not add explanations, commentary, "
             "JSON formatting, code fences, or any other markup.\n"
@@ -1945,6 +2255,10 @@ def _task_text(
         "Do not include markdown, code fences, or commentary.\n"
         "Apply the language policy exactly. Preserve readable mixed-language snippets only when present "
         "in the source; never invent or normalize language labels.\n"
+        "Before returning, review restored_text for gibberish, malformed words, wrong-script fragments, "
+        "and obvious OCR corruption. Fix only clear restoration errors without changing structure.\n"
+        "Ignore mirrored, reversed, faint, or bleed-through impressions from the back side of a page. "
+        "Do not restore shadows, stains, cracks, or scan noise as text.\n"
         "If the chunk is empty or unreadable, return "
         '{"restored_text":"[missing text]","uncertain":[],"notes":"unreadable source","status":"failed","failure_reason":"source unreadable or too blurry"}.\n'
         + context
@@ -1982,13 +2296,31 @@ def _restore_multimodal_image(
     label = source_label or path.name
     assets = []
     if _figure_extraction_enabled(profile):
-        assets.append(artifacts.write_image_asset(source_index, label, path, 1, "source-image"))
+        assets = _extract_figure_assets(
+            artifacts,
+            source_index,
+            label,
+            path,
+            1,
+            provider=provider,
+            profile=profile,
+            progress=progress,
+        )
 
     if not restored_text:
         restored_text = ""
         failure_reason = BLANK_PAGE_REASON
     elif usage and usage.get("truncated"):
         failure_reason = "model context or output limit reached"
+    review_note = ""
+    review_usage = {}
+    pre_review_text = ""
+    if restored_text:
+        restored_text, review_note, review_usage, pre_review_text = _maybe_review_restored_text(
+            restored_text, profile, provider, instruction, progress, label, consistency_state
+        )
+    _notify_usage(progress, f"Restored {label}", usage, usage or {})
+    _notify_usage(progress, f"Reviewed {label}", review_usage, review_usage)
     _update_consistency_state(consistency_state, restored_text)
     artifacts.write_restored_piece(source_index, label, 1, restored_text + "\n")
 
@@ -2000,10 +2332,11 @@ def _restore_multimodal_image(
                 "input": f"[Image: {label}]",
                 "restored_text": restored_text,
                 "uncertain": [],
-                "notes": "",
+                "notes": review_note,
                 "status": _restoration_status(failure_reason),
                 "failure_reason": failure_reason,
                 "assets": assets,
+                **({"pre_review_text": pre_review_text} if pre_review_text else {}),
             }
         ],
         "failure_reason": failure_reason,
@@ -2119,6 +2452,8 @@ def _translation_instruction(profile: WorkflowProfile) -> str:
         "Preserve [unclear] markers exactly as written.\n"
         "For mixed-language batches, translate only the text that is not already in the target language.\n"
         "If a passage is already in the target language, keep it unchanged and include it in the output.\n"
+        "Before returning, review the translated text for gibberish, malformed words, broken script, "
+        "and incomplete OCR artifacts. Fix only clear corruption while preserving structure and meaning.\n"
         "Return only the translated text.\n"
         "If the source and target languages are the same, return the cleaned text unchanged.\n"
     )
@@ -2201,6 +2536,90 @@ def _parse_translation_result(response: str, fallback_text: str) -> Dict[str, ob
         "status": "translated",
         "failure_reason": "",
     }
+
+
+def _maybe_review_restored_text(
+    restored_text: str,
+    profile: WorkflowProfile,
+    provider,
+    instruction: str,
+    progress: Optional[ProgressCallback],
+    label: str,
+    consistency_state: Optional[Dict[str, object]] = None,
+) -> tuple[str, str, dict, str]:
+    if not _needs_restoration_review(restored_text):
+        return restored_text, "", {}, ""
+    _notify(progress, "review", f"Reviewing suspicious restoration for {label}", advance=0)
+    prompt = _restoration_review_prompt(restored_text, profile, consistency_state)
+    try:
+        result, usage = _restore_with_retry(
+            provider, prompt, instruction, profile.model, progress=progress
+        )
+    except Exception:
+        return restored_text, "quality review failed; kept original restored text", {}, ""
+    parsed = _parse_restoration_result(result, restored_text)
+    reviewed = str(parsed.get("restored_text") or "").strip()
+    if not reviewed:
+        return restored_text, "quality review returned no usable correction", usage or {}, ""
+    return reviewed, "quality review applied to suspicious restoration", usage or {}, restored_text
+
+
+def _needs_restoration_review(text: str) -> bool:
+    candidate = text.strip()
+    if not candidate or _is_blank_or_missing_text(candidate):
+        return False
+    if _extract_json_object(candidate):
+        return True
+    if "\ufffd" in candidate:
+        return True
+    if re.search(r"([A-Za-z])\1{5,}", candidate):
+        return True
+    words = re.findall(r"[A-Za-z]{3,}", candidate)
+    if len(words) >= 12:
+        vowel_words = sum(1 for word in words if re.search(r"[aeiouAEIOU]", word))
+        if vowel_words / len(words) < 0.35:
+            return True
+    short_tokens = re.findall(r"\b[A-Za-z]\b", candidate)
+    all_tokens = re.findall(r"\b[A-Za-z]+\b", candidate)
+    if len(all_tokens) >= 30 and len(short_tokens) / len(all_tokens) > 0.45:
+        return True
+    symbol_count = sum(1 for char in candidate if not char.isalnum() and not char.isspace())
+    if len(candidate) > 120 and symbol_count / len(candidate) > 0.35:
+        return True
+    return False
+
+
+def _restoration_review_prompt(
+    text: str,
+    profile: WorkflowProfile,
+    consistency_state: Optional[Dict[str, object]] = None,
+) -> str:
+    recent_context = ""
+    if consistency_state:
+        recent_context = str(consistency_state.get("recent_text_excerpt") or "").strip()
+    context_block = (
+        "RECENT PRIOR CONTEXT FROM THIS DOCUMENT\n"
+        f"{recent_context}\n"
+        "Use this only to repair obvious OCR corruption in the reviewed text. Do not add missing content.\n"
+        if recent_context
+        else ""
+    )
+    return (
+        "Return only a valid JSON object with keys restored_text, uncertain, notes, status, and failure_reason.\n"
+        "You are reviewing one already-restored page or chunk for OCR corruption and gibberish only.\n"
+        "Do not summarize, translate, modernize, add missing facts, complete unfinished page-ending "
+        "sentences, or change the document structure.\n"
+        "Preserve headings, paragraph breaks, line order, tables, names, dates, citations, page markers, "
+        "and [unclear] markers exactly unless they are clearly corrupted by OCR.\n"
+        "Fix only words or characters that are visibly nonsensical in context. If a phrase cannot be "
+        "confidently repaired, keep [unclear].\n"
+        f"Document type: {profile.document_type}\n"
+        f"Source language: {profile.source_language}\n"
+        f"Language handling: {profile.language_policy}\n"
+        f"{context_block}"
+        "RESTORED TEXT TO REVIEW\n"
+        f"{text}"
+    )
 
 
 def _apply_translation_stage(
@@ -2299,6 +2718,12 @@ def _apply_translation_stage(
                 total_usage["total_tokens"] += usage.get("total_tokens", 0)
                 if usage.get("truncated"):
                     total_usage["truncated"] = True
+                _notify_usage(
+                    progress,
+                    f"Translated {source_name} chunk {chunk_index}/{len(chunks)}",
+                    usage,
+                    total_usage,
+                )
 
             parsed = _parse_translation_result(result, chunk)
             translated_text = parsed["translated_text"].strip()
@@ -2462,10 +2887,16 @@ def _restore_multimodal_pdf(
 
             page_assets = []
             if _figure_extraction_enabled(profile):
-                page_assets.append(
-                    artifacts.write_image_asset(
-                        source_index, label, page_img, idx, "page-image", dpi=dpi
-                    )
+                page_assets = _extract_figure_assets(
+                    artifacts,
+                    source_index,
+                    label,
+                    page_img,
+                    idx,
+                    dpi=dpi,
+                    provider=provider,
+                    profile=profile,
+                    progress=progress,
                 )
 
             _notify(
@@ -2490,6 +2921,12 @@ def _restore_multimodal_pdf(
                     total_usage["total_tokens"] += usage.get("total_tokens", 0)
                     if usage.get("truncated"):
                         total_usage["truncated"] = True
+                    _notify_usage(
+                        progress,
+                        f"Restored {label} page {idx}/{total_label}",
+                        usage,
+                        total_usage,
+                    )
                 restored_text = _extract_multimodal_text(result)
                 failure_reason = ""
                 if not restored_text:
@@ -2497,11 +2934,37 @@ def _restore_multimodal_pdf(
                     failure_reason = BLANK_PAGE_REASON
                 elif usage and usage.get("truncated"):
                     failure_reason = "model context or output limit reached"
+                review_note = ""
+                pre_review_text = ""
+                if restored_text:
+                    restored_text, review_note, review_usage, pre_review_text = _maybe_review_restored_text(
+                        restored_text,
+                        profile,
+                        provider,
+                        instruction,
+                        progress,
+                        f"{label} page {idx}",
+                        consistency_state,
+                    )
+                    if review_usage:
+                        total_usage["prompt_tokens"] += review_usage.get("prompt_tokens", 0)
+                        total_usage["completion_tokens"] += review_usage.get("completion_tokens", 0)
+                        total_usage["total_tokens"] += review_usage.get("total_tokens", 0)
+                        if review_usage.get("truncated"):
+                            total_usage["truncated"] = True
+                        _notify_usage(
+                            progress,
+                            f"Reviewed {label} page {idx}/{total_label}",
+                            review_usage,
+                            total_usage,
+                        )
                 del result
             except Exception as exc:
                 failed_pages.append((idx, page_img, prompt))
                 restored_text = ""
                 failure_reason = f"model generation failed: {exc}"
+                review_note = ""
+                pre_review_text = ""
 
             _update_consistency_state(consistency_state, restored_text)
             _write_consistency_checkpoint(
@@ -2509,18 +2972,19 @@ def _restore_multimodal_pdf(
             )
             restored_pages.append(restored_text)
             artifacts.write_restored_piece(source_index, label, idx, restored_text + "\n")
-            chunks_record.append(
-                {
-                    "index": idx,
-                    "input": f"[PDF Page {idx}: {label}]",
-                    "restored_text": restored_text,
-                    "uncertain": [],
-                    "notes": "",
-                    "status": _restoration_status(failure_reason),
-                    "failure_reason": failure_reason,
-                    "assets": page_assets,
-                }
-            )
+            chunk_record = {
+                "index": idx,
+                "input": f"[PDF Page {idx}: {label}]",
+                "restored_text": restored_text,
+                "uncertain": [],
+                "notes": review_note,
+                "status": _restoration_status(failure_reason),
+                "failure_reason": failure_reason,
+                "assets": page_assets,
+            }
+            if pre_review_text:
+                chunk_record["pre_review_text"] = pre_review_text
+            chunks_record.append(chunk_record)
             if idx not in [f[0] for f in failed_pages]:
                 try:
                     page_img.unlink()
@@ -2559,6 +3023,12 @@ def _restore_multimodal_pdf(
                         total_usage["total_tokens"] += usage.get("total_tokens", 0)
                         if usage.get("truncated"):
                             total_usage["truncated"] = True
+                        _notify_usage(
+                            progress,
+                            f"Retried {label} page {idx}",
+                            usage,
+                            total_usage,
+                        )
                     restored_text = _extract_multimodal_text(result)
                     failure_reason = ""
                     if not restored_text:
@@ -2566,6 +3036,30 @@ def _restore_multimodal_pdf(
                         failure_reason = BLANK_PAGE_REASON
                     elif usage and usage.get("truncated"):
                         failure_reason = "model context or output limit reached"
+                    review_note = ""
+                    pre_review_text = ""
+                    if restored_text:
+                        restored_text, review_note, review_usage, pre_review_text = _maybe_review_restored_text(
+                            restored_text,
+                            profile,
+                            provider,
+                            instruction,
+                            progress,
+                            f"{label} page {idx}",
+                            consistency_state,
+                        )
+                        if review_usage:
+                            total_usage["prompt_tokens"] += review_usage.get("prompt_tokens", 0)
+                            total_usage["completion_tokens"] += review_usage.get("completion_tokens", 0)
+                            total_usage["total_tokens"] += review_usage.get("total_tokens", 0)
+                            if review_usage.get("truncated"):
+                                total_usage["truncated"] = True
+                            _notify_usage(
+                                progress,
+                                f"Reviewed retry {label} page {idx}",
+                                review_usage,
+                                total_usage,
+                            )
 
                     restored_pages[idx - 1] = restored_text
                     for chunk in chunks_record:
@@ -2573,6 +3067,9 @@ def _restore_multimodal_pdf(
                             chunk["restored_text"] = restored_text
                             chunk["status"] = _restoration_status(failure_reason)
                             chunk["failure_reason"] = failure_reason
+                            chunk["notes"] = _join_notes(chunk.get("notes", ""), review_note)
+                            if pre_review_text:
+                                chunk["pre_review_text"] = pre_review_text
                             break
                     artifacts.write_restored_piece(source_index, label, idx, restored_text + "\n")
                     del result, restored_text
@@ -2752,12 +3249,42 @@ def _restore_multimodal_zip(
                         total_usage["total_tokens"] += usage.get("total_tokens", 0)
                         if usage.get("truncated"):
                             total_usage["truncated"] = True
+                        _notify_usage(
+                            progress,
+                            f"Restored archive text {archive_label} chunk {chunk_idx}",
+                            usage,
+                            total_usage,
+                        )
                     parsed = _parse_restoration_result(result, sub_chunk)
                     restored_text = parsed["restored_text"].strip()
                     if not restored_text:
                         restored_text = sub_chunk.strip()
                         if not restored_text:
                             parsed["failure_reason"] = parsed["failure_reason"] or BLANK_PAGE_REASON
+                    review_note = ""
+                    pre_review_text = ""
+                    if restored_text:
+                        restored_text, review_note, review_usage, pre_review_text = _maybe_review_restored_text(
+                            restored_text,
+                            profile,
+                            provider,
+                            instruction,
+                            progress,
+                            f"{archive_label} chunk {chunk_idx}",
+                            consistency_state,
+                        )
+                        if review_usage:
+                            total_usage["prompt_tokens"] += review_usage.get("prompt_tokens", 0)
+                            total_usage["completion_tokens"] += review_usage.get("completion_tokens", 0)
+                            total_usage["total_tokens"] += review_usage.get("total_tokens", 0)
+                            if review_usage.get("truncated"):
+                                total_usage["truncated"] = True
+                            _notify_usage(
+                                progress,
+                                f"Reviewed archive text {archive_label} chunk {chunk_idx}",
+                                review_usage,
+                                total_usage,
+                            )
                     if usage and usage.get("truncated"):
                         parsed["failure_reason"] = "model context or output limit reached"
                         parsed["status"] = "partial"
@@ -2772,17 +3299,18 @@ def _restore_multimodal_zip(
                     artifacts.write_restored_piece(
                         source_index, label, chunk_idx, restored_text + "\n"
                     )
-                    chunks_record.append(
-                        {
-                            "index": chunk_idx,
-                            "input": f"[ZIP Text: {archive_label}] " + _short_excerpt(sub_chunk),
-                            "restored_text": restored_text,
-                            "uncertain": parsed["uncertain"],
-                            "notes": parsed["notes"],
-                            "status": parsed["status"],
-                            "failure_reason": parsed["failure_reason"],
-                        }
-                    )
+                    chunk_record = {
+                        "index": chunk_idx,
+                        "input": f"[ZIP Text: {archive_label}] " + _short_excerpt(sub_chunk),
+                        "restored_text": restored_text,
+                        "uncertain": parsed["uncertain"],
+                        "notes": _join_notes(parsed["notes"], review_note),
+                        "status": parsed["status"],
+                        "failure_reason": parsed["failure_reason"],
+                    }
+                    if pre_review_text:
+                        chunk_record["pre_review_text"] = pre_review_text
+                    chunks_record.append(chunk_record)
                     chunk_idx += 1
                 archive_file_text = "\n\n".join(part for part in archive_file_parts if part.strip())
                 artifacts.write_archive_item_restored(
@@ -2807,6 +3335,12 @@ def _restore_multimodal_zip(
                     total_usage["total_tokens"] += usage.get("total_tokens", 0)
                     if usage.get("truncated"):
                         total_usage["truncated"] = True
+                    _notify_usage(
+                        progress,
+                        f"Restored archive PDF {archive_label}",
+                        usage,
+                        total_usage,
+                    )
                 restored_parts.append(pdf_clean.strip())
                 artifacts.write_archive_item_restored(
                     source_index, label, archive_label, pdf_clean
@@ -2852,10 +3386,15 @@ def _restore_multimodal_zip(
                 prompt = _task_text("", profile, consistency_state)
                 assets = []
                 if _figure_extraction_enabled(profile):
-                    assets.append(
-                        artifacts.write_image_asset(
-                            source_index, f"{label}/{archive_label}", ext_file, chunk_idx, "archive-image"
-                        )
+                    assets = _extract_figure_assets(
+                        artifacts,
+                        source_index,
+                        f"{label}/{archive_label}",
+                        ext_file,
+                        chunk_idx,
+                        provider=provider,
+                        profile=profile,
+                        progress=progress,
                     )
                 result, usage = _restore_with_retry(
                     provider,
@@ -2871,6 +3410,12 @@ def _restore_multimodal_zip(
                     total_usage["total_tokens"] += usage.get("total_tokens", 0)
                     if usage.get("truncated"):
                         total_usage["truncated"] = True
+                    _notify_usage(
+                        progress,
+                        f"Restored archive image {archive_label}",
+                        usage,
+                        total_usage,
+                    )
                 restored_text = _extract_multimodal_text(result)
                 failure_reason = ""
                 if not restored_text:
@@ -2878,6 +3423,30 @@ def _restore_multimodal_zip(
                     failure_reason = BLANK_PAGE_REASON
                 elif usage and usage.get("truncated"):
                     failure_reason = "model context or output limit reached"
+                review_note = ""
+                pre_review_text = ""
+                if restored_text:
+                    restored_text, review_note, review_usage, pre_review_text = _maybe_review_restored_text(
+                        restored_text,
+                        profile,
+                        provider,
+                        instruction,
+                        progress,
+                        archive_label,
+                        consistency_state,
+                    )
+                    if review_usage:
+                        total_usage["prompt_tokens"] += review_usage.get("prompt_tokens", 0)
+                        total_usage["completion_tokens"] += review_usage.get("completion_tokens", 0)
+                        total_usage["total_tokens"] += review_usage.get("total_tokens", 0)
+                        if review_usage.get("truncated"):
+                            total_usage["truncated"] = True
+                        _notify_usage(
+                            progress,
+                            f"Reviewed archive image {archive_label}",
+                            review_usage,
+                            total_usage,
+                        )
                 _update_consistency_state(consistency_state, restored_text)
                 _write_consistency_checkpoint(
                     artifacts.run_dir, profile, consistency_state, archive_label
@@ -2890,18 +3459,19 @@ def _restore_multimodal_zip(
                 artifacts.write_restored_piece(
                     source_index, label, chunk_idx, restored_text + "\n"
                 )
-                chunks_record.append(
-                    {
-                        "index": chunk_idx,
-                        "input": f"[ZIP Image: {archive_label}]",
-                        "restored_text": restored_text,
-                        "uncertain": [],
-                        "notes": "",
-                        "status": _restoration_status(failure_reason),
-                        "failure_reason": failure_reason,
-                        "assets": assets,
-                    }
-                )
+                chunk_record = {
+                    "index": chunk_idx,
+                    "input": f"[ZIP Image: {archive_label}]",
+                    "restored_text": restored_text,
+                    "uncertain": [],
+                    "notes": review_note,
+                    "status": _restoration_status(failure_reason),
+                    "failure_reason": failure_reason,
+                    "assets": assets,
+                }
+                if pre_review_text:
+                    chunk_record["pre_review_text"] = pre_review_text
+                chunks_record.append(chunk_record)
                 chunk_idx += 1
 
         for folder_label, parts in sorted(archive_folder_parts.items()):

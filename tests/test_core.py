@@ -354,10 +354,50 @@ class CoreTests(unittest.TestCase):
             output_text = (run_dir / "akshara_output.txt").read_text(encoding="utf-8")
             self.assertIn("===== kannada-page.png =====", output_text)
             self.assertIn("===== english-page.png =====", output_text)
-            self.assertTrue((run_dir / "assets" / "kannada-page-png").exists())
-            self.assertTrue((run_dir / "assets" / "english-page-png").exists())
             manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual(manifest["metadata"]["document_structure"]["asset_count"], 2)
+            self.assertEqual(manifest["metadata"]["document_structure"]["asset_count"], 0)
+
+    def test_figure_enrichment_crops_large_picture_regions(self):
+        from PIL import Image, ImageDraw
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "illustrated-page.png"
+            image = Image.new("RGB", (600, 800), "white")
+            draw = ImageDraw.Draw(image)
+            draw.rectangle((170, 180, 430, 420), fill="white", outline="black", width=6)
+            for offset in range(-220, 260, 18):
+                draw.line((170 + offset, 420, 430 + offset, 180), fill="black", width=5)
+            image.save(source)
+            profile = WorkflowProfile(
+                name="figure-crop",
+                output_formats=["txt"],
+                output_dir=str(tmp_path / "out"),
+            )
+            profile.model.model = "gemma4:12b"
+            profile.extract_figures = True
+            selection = discover_inputs([str(source)])
+
+            class FigureProvider:
+                name = "mock"
+
+                def restore_text(self, text, instruction, settings, media_path=None):
+                    del text, instruction, settings, media_path
+                    return "Page text\n", {
+                        "prompt_tokens": 2,
+                        "completion_tokens": 3,
+                        "total_tokens": 5,
+                        "truncated": False,
+                    }
+
+            with patch("akshara_vision.core.pipeline.get_provider", return_value=FigureProvider()):
+                result = run_pipeline(RunRequest(profile=profile, inputs=selection))
+
+            manifest = json.loads((Path(result["run_dir"]) / "run_manifest.json").read_text())
+            chunks = manifest["metadata"]["restoration"][0]["chunks"]
+            self.assertGreaterEqual(len(chunks[0]["assets"]), 1)
+            self.assertEqual(chunks[0]["assets"][0]["kind"], "figure-crop")
+            self.assertIn("bbox", chunks[0]["assets"][0])
 
     def test_combine_stage_outputs_rebuilds_final_text(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -621,6 +661,53 @@ class CoreTests(unittest.TestCase):
             )
             self.assertIn("Recovered text", output_text)
 
+    def test_suspicious_restoration_gets_quality_review(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "gibberish.png"
+            source.write_bytes(b"image bytes")
+            profile = WorkflowProfile(
+                name="quality-review",
+                output_formats=["txt"],
+                output_dir=str(tmp_path / "out"),
+            )
+            profile.model.model = "gemma4:12b"
+            selection = discover_inputs([str(source)])
+
+            class ReviewProvider:
+                name = "mock"
+
+                def __init__(self):
+                    self.calls = 0
+
+                def restore_text(self, text, instruction, settings, media_path=None):
+                    del instruction, settings, media_path
+                    self.calls += 1
+                    usage = {
+                        "prompt_tokens": 2,
+                        "completion_tokens": 2,
+                        "total_tokens": 4,
+                        "truncated": False,
+                    }
+                    if "RESTORED TEXT TO REVIEW" in text:
+                        return (
+                            '{"restored_text":"This is corrected text.","uncertain":[],"notes":"","status":"restored","failure_reason":""}',
+                            usage,
+                        )
+                    return (
+                        "bcdfg hjklm npqrst vwxyz bcdfg hjklm npqrst vwxyz "
+                        "bcdfg hjklm npqrst vwxyz bcdfg hjklm npqrst vwxyz\n"
+                    ), usage
+
+            provider = ReviewProvider()
+            with patch("akshara_vision.core.pipeline.get_provider", return_value=provider):
+                result = run_pipeline(RunRequest(profile=profile, inputs=selection))
+            output_text = (Path(result["run_dir"]) / "akshara_output.txt").read_text(
+                encoding="utf-8"
+            )
+            self.assertEqual(provider.calls, 2)
+            self.assertIn("This is corrected text.", output_text)
+
     def test_execution_mode_changes_provider_settings(self):
         from akshara_vision.core.pipeline import _new_consistency_state, _task_text
         from akshara_vision.providers.local import OllamaProvider, _generation_limit
@@ -872,6 +959,7 @@ class CoreTests(unittest.TestCase):
             event_messages = [message for _event, message, _advance in events]
             self.assertIn("Rendering book.pdf page 1/2", event_messages)
             self.assertIn("Restoring text from book.pdf page 1/2", event_messages)
+            self.assertTrue(any("tokens page/run" in message for message in event_messages))
             output_text = (Path(result["run_dir"]) / "akshara_output.txt").read_text(
                 encoding="utf-8"
             )

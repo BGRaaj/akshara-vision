@@ -59,7 +59,7 @@ Every run also writes:
 - `items/<input>/final__LANG.txt`
 - `items/<input>/final__LANG.txt.json`
 - `stages/` with per-page and per-chunk checkpoint files
-- `assets/` with opt-in source/page image assets and sizing metadata in chunk records
+- `assets/` with opt-in candidate figure crops and sizing metadata in chunk records
 - `run_state.json` with interruption/recovery state while a run is active
 - `run_manifest.json`
 - `sources/`
@@ -99,9 +99,20 @@ page markers, content kind counts, and target-format assembly hints. They improv
 final assembly while keeping the restored text itself clean.
 
 If figure/image enrichment is enabled, chunk records may also include `assets`
-entries with path, width, height, DPI, aspect ratio, and recommended placement.
-This supports later publication assembly without pretending to crop figures
-automatically.
+entries with path, width, height, DPI, aspect ratio, bounding box, and
+recommended placement. These are conservative candidate figure crops, not
+guaranteed layout-perfect segmentation. Akshara avoids saving whole pages as
+figures and ignores tiny marks, cracks, or ambiguous noise.
+
+For long runs, progress updates show token usage after each completed page,
+image, text chunk, or translation chunk when the provider reports usage. The
+final manifest still stores the aggregate usage summary.
+
+Suspicious restoration output that looks malformed or gibberish-heavy can be
+reviewed by the selected model before it is written to final item outputs. The
+review prompt is constrained to fix only clear corruption while preserving
+structure and source meaning. When review changes a chunk, `pre_review_text`
+is kept in structured outputs so reviewers can audit what changed.
 
 Markdown, HTML, DOCX, and EPUB exports use the detected title where possible.
 HTML and EPUB add lightweight publication styling for paragraphs, page markers,

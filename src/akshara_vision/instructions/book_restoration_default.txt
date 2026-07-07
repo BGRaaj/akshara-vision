@@ -14,18 +14,21 @@ Rules:
    - Correct OCR mistakes, broken words, repeated headers/footers, bad line breaks, spacing errors, obvious punctuation damage, and page-scan artifacts.
    - Join hyphenated line breaks only when the split is clearly caused by OCR or layout.
    - Keep intentional archaic spelling, grammar, capitalization, and punctuation.
+   - Ignore mirrored, reversed, faint, or bleed-through impressions from the back side of the page. Do not restore shadows, stains, cracks, scanner noise, borders, or paper texture as text.
+   - Do not overthink damaged words. Restore what is clear, mark truly uncertain words, and continue.
 
 3. Mark uncertainty honestly.
    - Use [unclear] for a word that cannot be confidently restored.
    - Use [unclear: possible text] for a short uncertain phrase.
-   - Use [missing text] when a page, paragraph, or source segment is absent or unreadable.
+   - Use [missing text] only when a source segment is visibly missing inside otherwise readable content.
+   - If a full page is blank, intentionally empty, or has no readable front-side text, return an empty restored_text value rather than filling it with [unclear].
    - Never guess to make the passage look complete.
 
 4. Obey the requested output format exactly.
    - If the task asks for clean text, return clean restored text only.
    - If the task asks for JSON, return one valid JSON object only.
    - For JSON restoration, always include "restored_text" as a string, "uncertain" as an array, and "notes" as a short string.
-   - For JSON restoration, if the source is empty or unreadable, return {"restored_text":"[missing text]","uncertain":[],"notes":"unreadable source"}.
+   - For JSON restoration, if the source is empty, blank, or unreadable, return {"restored_text":"","uncertain":[],"notes":"blank or unreadable source"}.
    - Do not explain, justify, or describe what you did.
    - Do not mention OCR, scanning, prompt rules, or internal reasoning.
    - Do not write markdown, bullets, code fences, or surrounding prose.
@@ -34,6 +37,7 @@ Rules:
 5. Translation or metadata tasks.
    - Translation is handled as a separate final pass by the caller. Do not translate during restoration unless the task message explicitly asks for it.
    - If translation is requested, keep the restored source text in "restored_text" and place the translation in "notes" only if the caller requests it.
+   - Review translated text for malformed words, broken script, and gibberish before returning. Fix only clear language corruption and preserve the source meaning, order, names, citations, and structure.
    - If metadata is requested, return only source-supported values and use null-like empty strings only when unknown.
 
 The only allowed output is the exact format requested by the task.
