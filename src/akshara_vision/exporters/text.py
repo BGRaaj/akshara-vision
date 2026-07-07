@@ -1,8 +1,9 @@
 import html
 import json
+import re
 import zipfile
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 from akshara_vision.exporters.base import ExportResult
 
@@ -49,6 +50,7 @@ class HtmlExporter:
             "p{font-size:1.08rem;margin:0 0 1.05rem;}\n"
             ".page-marker{text-align:center;font-variant-numeric:oldstyle-nums;margin:2rem 0 1rem;}\n"
             ".figure-marker{border:1px solid #6f5a47;padding:.75rem 1rem;text-align:center;font-style:italic;margin:1.5rem 0;}\n"
+            ".figure-marker img{max-width:100%;height:auto;display:block;margin:0 auto .75rem;}\n"
             "@media print{body{background:white;color:black}main{max-width:none;padding:0.75in}h1{page-break-after:avoid}}\n"
             "</style>\n"
             "</head>\n"
@@ -137,7 +139,11 @@ def _paragraphs(text: str) -> list[str]:
 def _markdown_body(text: str) -> str:
     parts = []
     for paragraph in _paragraphs(text):
-        if paragraph.lower().startswith("[image:"):
+        image = _parse_image_marker(paragraph)
+        if image:
+            alt, path = image
+            parts.append(f"![{alt}]({path})")
+        elif paragraph.lower().startswith("[image:"):
             parts.append(f"> {paragraph}")
         else:
             parts.append(paragraph)
@@ -149,13 +155,33 @@ def _html_body(text: str) -> str:
     for paragraph in _paragraphs(text):
         escaped = html.escape(paragraph).replace("\n", "<br />\n")
         stripped = paragraph.strip()
-        if stripped.lower().startswith("[image:"):
+        image = _parse_image_marker(stripped)
+        if image:
+            alt, path = image
+            body.append(
+                '<figure class="figure-marker">'
+                f'<img src="{html.escape(path, quote=True)}" alt="{html.escape(alt, quote=True)}" />'
+                f"<figcaption>{html.escape(alt)}</figcaption>"
+                "</figure>"
+            )
+        elif stripped.lower().startswith("[image:"):
             body.append(f'<figure class="figure-marker">{escaped}</figure>')
         elif _looks_like_page_marker(stripped):
             body.append(f'<p class="page-marker">{escaped}</p>')
         else:
             body.append(f"<p>{escaped}</p>")
     return "\n".join(body)
+
+
+def _parse_image_marker(text: str) -> Optional[tuple[str, str]]:
+    match = re.match(r"^\[image:\s*(?P<label>.+?)\s*\|\s*(?P<path>[^\]]+)\]$", text.strip(), re.I)
+    if not match:
+        return None
+    label = match.group("label").strip() or "Figure"
+    path = match.group("path").strip()
+    if not path:
+        return None
+    return label, path
 
 
 def _looks_like_page_marker(text: str) -> bool:

@@ -44,12 +44,12 @@ class MonoUI:
         if self.theme == "light":
             return InquirerPyStyle(
                 {
-                    "questionmark": "#3a2417 bg:#f4ecd8 bold",
+                    "questionmark": "#f4ecd8 bg:#3a2417 bold",
                     "question": "#3a2417 bg:#f4ecd8 bold",
                     "answer": "#3a2417 bg:#f4ecd8",
                     "input": "#3a2417 bg:#f4ecd8",
-                    "pointer": "#3a2417 bg:#f4ecd8 bold",
-                    "highlighted": "#3a2417 bg:#e7dcc3 bold",
+                    "pointer": "#f4ecd8 bg:#3a2417 bold",
+                    "highlighted": "#f4ecd8 bg:#3a2417 bold",
                     "selected": "#3a2417 bg:#f4ecd8",
                     "separator": "#3a2417 bg:#f4ecd8",
                     "instruction": "#5f4634 bg:#f4ecd8",
@@ -57,12 +57,12 @@ class MonoUI:
             )
         return InquirerPyStyle(
             {
-                "questionmark": "white bold",
+                "questionmark": "black bg:white bold",
                 "question": "white bold",
                 "answer": "white",
                 "input": "white",
-                "pointer": "white bold",
-                "highlighted": "white bold",
+                "pointer": "black bg:white bold",
+                "highlighted": "black bg:white bold",
                 "selected": "white",
                 "separator": "white",
                 "instruction": "white",
@@ -227,7 +227,7 @@ class MonoUI:
                     message=message,
                     choices=choices,
                     default=default or choices[0],
-                    qmark=">",
+                    qmark="◆",
                     style=self.prompt_style(),
                 ).execute()
             )
@@ -252,7 +252,7 @@ class MonoUI:
                     message=message,
                     choices=choices,
                     default=default,
-                    qmark=">",
+                    qmark="◆",
                     style=self.prompt_style(),
                 ).execute()
             )
@@ -279,7 +279,7 @@ class MonoUI:
                 inquirer.text(
                     message=message,
                     default=default,
-                    qmark=">",
+                    qmark="◆",
                     style=self.prompt_style(),
                 ).execute()
             )
@@ -293,7 +293,7 @@ class MonoUI:
                 inquirer.confirm(
                     message=message,
                     default=default,
-                    qmark=">",
+                    qmark="◆",
                     style=self.prompt_style(),
                 ).execute()
             )
@@ -352,6 +352,12 @@ class ProgressReporter:
                 self.ui.write(f"[{elapsed:0.1f}s] {message} (+{advance})")
             else:
                 self.ui.write(f"[{elapsed:0.1f}s] {message}")
+
+    def log(self, message: str) -> None:
+        if self._progress is not None:
+            self._progress.console.print(message, style=self.ui.style(), highlight=False)
+        else:
+            self.ui.write(message)
 
     def finish(self, message: str = "Complete") -> None:
         self.update(message, advance=0)

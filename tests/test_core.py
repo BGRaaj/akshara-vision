@@ -489,6 +489,85 @@ class CoreTests(unittest.TestCase):
             manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
             self.assertIn("recombined_exports", manifest)
 
+    def test_combine_uses_manifest_assets_in_requested_exports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            (run_dir / "assets" / "book").mkdir(parents=True)
+            (run_dir / "assets" / "book" / "0001-0001-figure-01.png").write_bytes(b"image")
+            (run_dir / "run_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "profile": {"output_formats": ["txt", "md", "html", "json"]},
+                        "metadata": {
+                            "title": "Illustrated",
+                            "output_language": "English",
+                            "restoration": [
+                                {
+                                    "label": "book.pdf",
+                                    "chunks": [
+                                        {
+                                            "index": 1,
+                                            "restored_text": "Page text",
+                                            "assets": [
+                                                {
+                                                    "kind": "figure-crop",
+                                                    "path": "assets/book/0001-0001-figure-01.png",
+                                                    "label": "plate",
+                                                    "width": 300,
+                                                    "height": 200,
+                                                    "placement": "wide",
+                                                }
+                                            ],
+                                        }
+                                    ],
+                                }
+                            ],
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            result = combine_stage_outputs(run_dir)
+            combined = result["output_path"].read_text(encoding="utf-8")
+            self.assertIn("[image: plate", combined)
+            html_text = (run_dir / "akshara_output.html").read_text(encoding="utf-8")
+            self.assertIn("<img", html_text)
+            self.assertIn("assets/book/0001-0001-figure-01.png", html_text)
+            json_payload = json.loads((run_dir / "akshara_output.json").read_text(encoding="utf-8"))
+            self.assertEqual(json_payload["metadata"]["assets"][0]["label"], "plate")
+
+    def test_combine_uses_record_checkpoints_when_manifest_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            records = run_dir / "stages" / "records" / "0001-book-pdf"
+            records.mkdir(parents=True)
+            (records / "0001-record.json").write_text(
+                json.dumps(
+                    {
+                        "index": 1,
+                        "restored_text": "Checkpoint text",
+                        "assets": [
+                            {
+                                "kind": "figure-crop",
+                                "path": "assets/book/figure.png",
+                                "label": "map",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (run_dir / "run_state.json").write_text(
+                json.dumps({"profile": {"output_formats": ["html"], "output_language": "English"}}),
+                encoding="utf-8",
+            )
+            result = combine_stage_outputs(run_dir)
+            self.assertTrue((run_dir / "akshara_output.html").exists())
+            combined = result["output_path"].read_text(encoding="utf-8")
+            self.assertIn("Checkpoint text", combined)
+            self.assertIn("[image: map", combined)
+
     def test_pipeline_preserves_nested_normal_folder_outputs(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

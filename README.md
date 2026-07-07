@@ -149,11 +149,13 @@ without reprocessing completed pages or chunks. Recombine restores the run's
 selected export formats when the original manifest is available.
 
 When figure/image enrichment is enabled in the CLI, Akshara may add concise
-`[image: ...]` markers for visible figures and saves candidate figure crops under
-`assets/` with bounding boxes, width, height, DPI, aspect ratio, and recommended
-placement metadata. It avoids saving every full page as a figure. The cropper is
-conservative and heuristic; unclear page damage, cracks, and tiny marks are left
-alone rather than treated as illustrations.
+`[image: ... | assets/...]` markers for visible figures and saves candidate
+figure crops under `assets/` with bounding boxes, width, height, DPI, aspect
+ratio, and recommended placement metadata. Markdown, HTML, EPUB, and JSON
+exports preserve this metadata; HTML/EPUB render linked figure images when
+present. It avoids saving every full page as a figure. The cropper is
+conservative and heuristic; unclear page damage, cracks, and tiny marks are
+left alone rather than treated as illustrations.
 
 Language handling is selected in the CLI before each run. `preserve-detected`
 keeps readable mixed-language snippets in their original script. `strict-source`
@@ -309,16 +311,19 @@ A profile stores:
 
 | Mode | Behavior |
 | --- | --- |
-| `fast` | Lower PDF render DPI and faster extraction prompt |
-| `balanced` | Default balance between speed and fidelity |
-| `quality` | Higher PDF render DPI and more careful extraction prompt |
+| `fast` | 200 DPI PDF rendering, shorter prompt, heuristic figure crops |
+| `balanced` | 300 DPI PDF rendering, default prompt, verifies first figure crop |
+| `quality` | 400 DPI PDF rendering, more careful prompt, verifies figure crops |
 
-Akshara Vision uses the selected context and generation limits where the backend
-supports them. If a model still truncates output, the run finishes with a visible
-warning and records the reason in the manifest.
+Profile context and generation limits are passed through to compatible backends.
+The CLI offers suggested values, but does not artificially cap them. If a model
+truncates output, the run finishes with a visible warning and records the reason
+in the manifest.
 
 Actual model calls are not stopped by a fixed Akshara timeout. Use `Ctrl+C` to
-interrupt safely when you want to pause a long run.
+interrupt safely when you want to pause a long run. If a provider call is active,
+the CLI acknowledges the interrupt and waits for the current request to finish
+so completed checkpoints stay consistent.
 
 ## Run Artifacts
 

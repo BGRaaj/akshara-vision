@@ -28,9 +28,9 @@ Execution modes:
 
 | Mode | Tradeoff |
 | --- | --- |
-| `fast` | Faster runs with lower PDF render DPI and a more throughput-focused prompt |
-| `balanced` | Default balance of speed and fidelity |
-| `quality` | Slower runs with higher PDF render DPI and a more fidelity-focused deep analysis prompt |
+| `fast` | 200 DPI, shorter prompt, heuristic figure crops |
+| `balanced` | 300 DPI, default prompt, verifies first figure crop |
+| `quality` | 400 DPI, more careful prompt, verifies figure crops |
 
 The run uses chunked restoration for long raw text inputs, so it is processed in
 smaller model batches instead of one large prompt. Progress is timer-based and indeterminate;
@@ -38,6 +38,11 @@ it shows the active step and elapsed time rather than a fake percentage. After a
 page, image, text chunk, or translation chunk completes, the progress line also
 shows item token usage and cumulative run token totals when the provider reports
 usage.
+
+While a provider request is active, Akshara periodically reports that the model
+is still working. Pressing `Ctrl+C` during that window shows a safe-stop message
+and waits for the active request to finish before returning control, so already
+written checkpoints remain usable.
 
 Provider requests do not use a fixed restoration timeout. If a provider returns a
 transient network, rate-limit, or server error, Akshara Vision retries with
@@ -111,7 +116,8 @@ are unavailable, it combines whatever completed checkpoints are already present.
 
 Press `Ctrl+C` to stop a long run. Completed pages and sources remain on disk
 under `items/` and `stages/`, and the CLI prints the latest run folder for
-recovery.
+recovery. If a model request is active, Akshara acknowledges the interrupt and
+waits for that request to finish cleanly.
 
 A run folder is the timestamped folder inside the selected output folder, not the
 source folder. Example: `akshara-output/default-20260706-120000`.

@@ -104,6 +104,10 @@ recommended placement. These are conservative candidate figure crops, not
 guaranteed layout-perfect segmentation. Akshara avoids saving whole pages as
 figures and ignores tiny marks, cracks, or ambiguous noise.
 
+When staged outputs are combined, Akshara rebuilds text from structured chunk
+records where possible, re-inserts figure markers, carries asset metadata into
+JSON/YAML exports, and renders linked figures in HTML/EPUB outputs.
+
 For long runs, progress updates show token usage after each completed page,
 image, text chunk, or translation chunk when the provider reports usage. The
 final manifest still stores the aggregate usage summary.

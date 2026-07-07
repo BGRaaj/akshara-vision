@@ -134,7 +134,18 @@ passages that use unfamiliar terminology.
 
 ### Context Window & Token Limits
 
-For successful Indic transcription and reasoning-based manuscript parsing, verify that your model configuration meets these requirements:
-- **Context Length (`num_ctx`):** At least **16,384 tokens**. The vision model needs this room to ingest the system prompt instructions, image embeddings (which take substantial token space), and the document text.
-- **Generation Limit (`num_predict` / `max_tokens`):** Akshara Vision requests up to **16,384 output tokens** by default for local and OpenAI-compatible providers, capped there to avoid runaway generations.
-- **Truncation Safety:** Akshara Vision enforces these options on compatible local APIs automatically. If a page chunk output is truncated due to context limits, the run finishes with a transparent `Finished (Truncated)` warning banner to prevent silent, corrupt outputs.
+For successful Indic transcription and reasoning-based manuscript parsing, use a
+vision model with enough context for image tokens and page text. Akshara passes
+profile context/output limits through to compatible backends and does not
+artificially cap them. Suggested starting points:
+
+| Mode | Suggested starting point |
+| --- | --- |
+| `fast` | 8k context, 4k output |
+| `balanced` | 16k context, 8k output |
+| `quality` | 32k context, 12k output |
+
+Very large `num_ctx` or `num_predict` values can push local models out of VRAM
+and slow a run dramatically, so tune these based on your hardware. If a page
+chunk output is truncated, the run finishes with a transparent
+`Finished (Truncated)` warning and records the reason in the manifest.

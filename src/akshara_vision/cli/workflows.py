@@ -357,9 +357,13 @@ def guide_command() -> None:
             "balanced - concise hints and clean defaults",
             "full - explain choices while onboarding",
             "minimal - compact board for repeat users",
+            "Back",
         ],
         f"{current['guide']} - {_guide_label(current['guide'])}",
-    ).split(" ", 1)[0]
+    )
+    if guide == "Back":
+        return
+    guide = guide.split(" ", 1)[0]
     store.save_ui_preferences({"guide": guide})
     ui.write(f"Guide level set to: {guide}")
 
@@ -372,8 +376,10 @@ def mode_command() -> None:
         "Fast favors throughput. Balanced keeps the current defaults. Quality spends more time for harder pages."
     )
     profile.model.execution_mode = ui.choose(
-        "Execution mode", EXECUTION_MODES, profile.model.execution_mode
+        "Execution mode", EXECUTION_MODES + ["Back"], profile.model.execution_mode
     )
+    if profile.model.execution_mode == "Back":
+        return
     store.save_profile(profile)
     ui.write(f"Execution mode set to: {profile.model.execution_mode}")
 
@@ -384,7 +390,9 @@ def ui_command() -> None:
     ui.set_theme(current["theme"])
     ui.apply_terminal_theme()
     ui.heading("Akshara Vision", "Customize")
-    theme = ui.choose("Theme", ["dark", "light"], current["theme"])
+    theme = ui.choose("Theme", ["dark", "light", "Back"], current["theme"])
+    if theme == "Back":
+        return
     ui.set_theme(theme)
     ui.apply_terminal_theme(clear=True)
     store.save_ui_preferences(
@@ -398,22 +406,20 @@ def ui_command() -> None:
 
 def onboard(
     store: Optional[ConfigStore] = None, profile_name: Optional[str] = None
-) -> WorkflowProfile:
+) -> Optional[WorkflowProfile]:
     store = store or ConfigStore()
     ui.heading("Akshara Vision", "Onboarding")
     ui.write("Press Enter to accept the shown default. Use arrow keys for menus.")
     profile = WorkflowProfile(name=profile_name or "default")
     profile.name = ui.text("Profile name (Enter accepts default)", profile.name)
-    profile.workflow = ui.choose("Workflow", WORKFLOWS, profile.workflow)
-    profile.document_type = ui.choose("Document type", DOCUMENT_TYPES, profile.document_type)
-    profile.source_language = ui.text(
-        "Source language (for example: English, Hindi, Kannada)",
-        profile.source_language,
-    )
-    profile.output_language = ui.text(
-        "Output language (for example: English, Hindi, Kannada)",
-        profile.output_language,
-    )
+    profile.workflow = ui.choose("Workflow", WORKFLOWS + ["Back"], profile.workflow)
+    if profile.workflow == "Back":
+        return profile
+    profile.document_type = ui.choose("Document type", DOCUMENT_TYPES + ["Back"], profile.document_type)
+    if profile.document_type == "Back":
+        return profile
+    profile.source_language = choose_language_value("Source language", profile.source_language, "auto")
+    profile.output_language = choose_language_value("Output language", profile.output_language, "same")
     profile.language_policy = choose_language_policy(profile.language_policy)
     ui.write("Translation will switch on automatically when the output language differs.")
     profile.translation_mode = ui.choose(
@@ -426,15 +432,23 @@ def onboard(
             "bilingual",
             "transliterate",
             "metadata-only",
+            "Back",
         ],
         profile.translation_mode,
     )
+    if profile.translation_mode == "Back":
+        return profile
     profile.sync_translation_defaults()
 
-    profile.model = choose_model(profile.model)
+    chosen_model = choose_model(profile.model)
+    if chosen_model is None:
+        return None
+    profile.model = chosen_model
     profile.model.execution_mode = ui.choose(
-        "Execution mode", EXECUTION_MODES, profile.model.execution_mode
+        "Execution mode", EXECUTION_MODES + ["Back"], profile.model.execution_mode
     )
+    if profile.model.execution_mode == "Back":
+        return profile
     profile.output_formats = choose_output_formats(profile.output_formats)
     profile.extract_figures = ui.confirm(
         "Enable figure/image markers and page image assets for assembly?", profile.extract_figures
@@ -449,12 +463,14 @@ def onboard(
     return profile
 
 
-def choose_model(current: Optional[ModelSettings] = None) -> ModelSettings:
+def choose_model(current: Optional[ModelSettings] = None) -> Optional[ModelSettings]:
     current = current or ModelSettings()
     with ui.progress("Analyzing available model providers...") as reporter:
         statuses = {name: provider.status() for name, provider in provider_registry().items()}
         reporter.finish("Finished analyzing providers.")
-    source = ui.choose("Model source", ["local", "cloud"], _provider_source(current.provider))
+    source = ui.choose("Model source", ["local", "cloud", "Back"], _provider_source(current.provider))
+    if source == "Back":
+        return current
     if source == "cloud":
         provider_names = [
             "openai",
@@ -489,13 +505,15 @@ def choose_model(current: Optional[ModelSettings] = None) -> ModelSettings:
         (choice for choice in choices if choice.startswith(f"{default_provider} ")),
         choices[0],
     )
-    selected_label = ui.choose("Model provider", choices, default_label)
+    selected_label = ui.choose("Model provider", choices + ["Back"], default_label)
+    if selected_label == "Back":
+        return None
     provider_name = selected_label.split(" ", 1)[0]
     status = statuses.get(provider_name)
     model_choices = status.models if status and status.models else _recommended_models(provider_name)
     manual_choice = "Enter exact model name manually"
     if model_choices:
-        model_choices = list(dict.fromkeys(model_choices + [manual_choice]))
+        model_choices = list(dict.fromkeys(model_choices + [manual_choice, "Back"]))
         model = ui.choose(
             "Model",
             model_choices,
@@ -503,6 +521,8 @@ def choose_model(current: Optional[ModelSettings] = None) -> ModelSettings:
         )
     else:
         model = manual_choice
+    if model == "Back":
+        return None
     if model == manual_choice:
         hint = _model_name_hint(provider_name)
         ui.write(hint)
@@ -524,30 +544,18 @@ def choose_model(current: Optional[ModelSettings] = None) -> ModelSettings:
     context_window = current.context_window
     generation_limit = current.generation_limit
     if provider_name in {"ollama", "openai-compatible-local", "lm-studio", "jan", "llama-cpp"}:
-        default_cw = (
-            str(current.context_window) if current.context_window is not None else "16384 (Default)"
+        context_window = choose_token_limit(
+            "Context window",
+            current.context_window,
+            suggestions=[8192, 16384, 32768, 65536],
+            minimum=2048,
         )
-        cw_str = ui.text("Context size limit (tokens, e.g. 2048, 8192, 16384)", default_cw)
-        if cw_str.strip() and "default" not in cw_str.lower():
-            try:
-                context_window = int(cw_str)
-            except ValueError:
-                pass
-        else:
-            context_window = None
-        default_gen = (
-            str(current.generation_limit)
-            if current.generation_limit is not None
-            else "auto (Default)"
+        generation_limit = choose_token_limit(
+            "Output token limit",
+            current.generation_limit,
+            suggestions=[4096, 8192, 16384, 32768],
+            minimum=1024,
         )
-        gen_str = ui.text("Generation limit (output tokens, backend limit applies)", default_gen)
-        if gen_str.strip() and "default" not in gen_str.lower():
-            try:
-                generation_limit = max(1024, int(gen_str))
-            except ValueError:
-                pass
-        else:
-            generation_limit = None
 
     return ModelSettings(
         provider=provider_name,
@@ -561,19 +569,80 @@ def choose_model(current: Optional[ModelSettings] = None) -> ModelSettings:
 
 def choose_output_formats(defaults: Optional[List[str]] = None) -> List[str]:
     defaults = defaults or ["txt"]
-    choices = list(OUTPUT_FORMATS.keys())
+    choices = list(OUTPUT_FORMATS.keys()) + ["Back"]
     selected = ui.checkbox("Output formats", choices, defaults)
+    if "Back" in selected:
+        return defaults
+    selected = [item for item in selected if item in OUTPUT_FORMATS]
     return selected or ["txt"]
+
+
+def choose_language_value(label: str, current: str, default_keyword: str) -> str:
+    current = str(current or default_keyword).strip() or default_keyword
+    choices = [
+        f"Use {default_keyword}",
+        f"Keep current: {current}",
+        "Enter language manually",
+        "Back",
+    ]
+    selected = ui.choose(label, choices, choices[1])
+    if selected == "Back":
+        return current
+    if selected.startswith("Use "):
+        return default_keyword
+    if selected.startswith("Keep current"):
+        return current
+    ui.note("Enter a language name, for example English, Kannada, Sanskrit, Hindi, Tamil, or auto/same.")
+    entered = ui.text(f"{label} manual value", current)
+    return entered.strip() or current
+
+
+def choose_token_limit(
+    label: str,
+    current: Optional[int],
+    suggestions: List[int],
+    minimum: int,
+) -> Optional[int]:
+    current_label = f"Keep current: {current}" if current is not None else "Use backend default"
+    choices = [current_label, "Use backend default"]
+    choices.extend(f"{value:,} tokens" for value in suggestions)
+    choices.extend(["Enter manually", "Back"])
+    selected = ui.choose(label, choices, current_label)
+    if selected == "Back":
+        return current
+    if selected == "Use backend default":
+        return None
+    if selected.startswith("Keep current"):
+        return current
+    if selected == "Enter manually":
+        ui.note(f"Enter a whole number of tokens. Minimum accepted value: {minimum}.")
+        raw = ui.text(f"{label} manual token value", str(current or suggestions[1]))
+        try:
+            return max(minimum, int(raw.replace(",", "").strip()))
+        except ValueError:
+            ui.status("warning", "Invalid number. Keeping the previous value.")
+            return current
+    try:
+        return max(minimum, int(selected.split(" ", 1)[0].replace(",", "")))
+    except ValueError:
+        return current
 
 
 def choose_language_policy(default: str = "preserve-detected") -> str:
     choices = [
-        "preserve-detected - keep all readable languages/scripts",
-        "strict-source - extract only the declared source language",
+        "Keep all readable languages and scripts",
+        "Only extract the declared source language",
+        "Back",
     ]
+    values = {
+        choices[0]: "preserve-detected",
+        choices[1]: "strict-source",
+        choices[2]: default,
+    }
     default_label = choices[1] if default == "strict-source" else choices[0]
-    selected = ui.choose("Language handling", choices, default_label)
-    return selected.split(" ", 1)[0]
+    ui.note("Choose how Akshara should handle mixed-language pages.")
+    selected = ui.choose("Language handling mode", choices, default_label)
+    return values[selected]
 
 
 def choose_output_folder(default: str = "akshara-output") -> str:
@@ -595,13 +664,22 @@ def run_guided(
     profile = store.load_profile(profile_name) if profile_name else store.load_default_profile()
     ui.heading("Akshara Vision", "Guided Run")
     if not profile.locked:
-        profile.workflow = ui.choose("Workflow", WORKFLOWS, profile.workflow)
-        profile.document_type = ui.choose("Document type", DOCUMENT_TYPES, profile.document_type)
+        profile.workflow = ui.choose("Workflow", WORKFLOWS + ["Back"], profile.workflow)
+        if profile.workflow == "Back":
+            return None
+        profile.document_type = ui.choose("Document type", DOCUMENT_TYPES + ["Back"], profile.document_type)
+        if profile.document_type == "Back":
+            return None
 
-        profile.model = choose_model(profile.model)
+        chosen_model = choose_model(profile.model)
+        if chosen_model is None:
+            return None
+        profile.model = chosen_model
         profile.model.execution_mode = ui.choose(
-            "Execution mode", EXECUTION_MODES, profile.model.execution_mode
+            "Execution mode", EXECUTION_MODES + ["Back"], profile.model.execution_mode
         )
+        if profile.model.execution_mode == "Back":
+            return None
         profile.output_formats = choose_output_formats(profile.output_formats)
     return execute_run(profile, inputs=inputs, recursive=recursive, dry_run=dry_run)
 
@@ -737,17 +815,19 @@ def _run_with_progress(request: RunRequest):
     ui.section("Working")
     with ui.progress("Processing") as reporter:
 
-        def progress(_event: str, message: str, advance: int = 1) -> None:
+        def progress(event: str, message: str, advance: int = 1) -> None:
             reporter.update(message, advance=advance)
+            if event in {"usage", "interrupt"}:
+                reporter.log(message)
 
         return run_pipeline(request, progress=progress)
 
 
 def _mode_behavior(mode: str) -> str:
     return {
-        "fast": "lower PDF DPI, shorter prompt",
-        "balanced": "standard PDF DPI, careful prompt",
-        "quality": "higher PDF DPI, deeper extraction prompt",
+        "fast": "200 DPI, shorter prompt, heuristic figure crops",
+        "balanced": "300 DPI, default prompt, verifies first figure crop",
+        "quality": "400 DPI, more careful prompt, verifies figure crops",
     }.get(mode, "standard settings")
 
 
@@ -1013,8 +1093,9 @@ def _choose_profile(store: ConfigStore) -> Optional[str]:
     return selected.split(" ", 1)[0]
 
 
-def _show_profile(profile: WorkflowProfile) -> None:
-    ui.heading("Akshara Vision", f"Profile: {profile.name}")
+def _show_profile(profile: WorkflowProfile, show_heading: bool = True) -> None:
+    if show_heading:
+        ui.heading("Akshara Vision", f"Profile: {profile.name}")
     ui.table(
         [
             ["Name", profile.name],
@@ -1041,37 +1122,44 @@ def _show_profile(profile: WorkflowProfile) -> None:
 
 def _edit_profile_interactive(store: ConfigStore, name: str) -> None:
     profile = store.load_profile(name)
-    ui.heading("Akshara Vision", f"Modify: {profile.name}")
-    section = ui.choose(
-        "What should change?",
-        [
-            "Workflow and document",
-            "Languages and translation",
-            "Model and limits",
-            "Outputs",
-            "Output folder",
-            "Lock/default",
-            "Everything",
-        ],
-        "Everything",
-    )
-    if section in {"Workflow and document", "Everything"}:
-        profile.workflow = ui.choose("Workflow", WORKFLOWS, profile.workflow)
-        profile.document_type = ui.choose("Document type", DOCUMENT_TYPES, profile.document_type)
-    if section in {"Languages and translation", "Everything"}:
-        profile.source_language = ui.text(
-            "Source language (for example: English, Hindi, Kannada)",
-            profile.source_language,
-        )
-        profile.output_language = ui.text(
-            "Output language (for example: English, Hindi, Kannada)",
-            profile.output_language,
-        )
-        profile.language_policy = choose_language_policy(profile.language_policy)
-        ui.write("Translation will switch on automatically when the output language differs.")
-        profile.translation_mode = ui.choose(
-            "Translation mode",
+    while True:
+        ui.heading("Akshara Vision", f"Modify: {profile.name}")
+        _show_profile(profile, show_heading=False)
+        section = ui.choose(
+            "What should change?",
             [
+                "Workflow and document",
+                "Languages and translation",
+                "Model and limits",
+                "Outputs",
+                "Output folder",
+                "Lock/default",
+                "Everything",
+                "Back",
+            ],
+            "Everything",
+        )
+        if section == "Back":
+            return
+        if section in {"Workflow and document", "Everything"}:
+            profile.workflow = ui.choose("Workflow", WORKFLOWS + ["Back"], profile.workflow)
+            if profile.workflow == "Back":
+                profile.workflow = store.load_profile(name).workflow
+            profile.document_type = ui.choose(
+                "Document type", DOCUMENT_TYPES + ["Back"], profile.document_type
+            )
+            if profile.document_type == "Back":
+                profile.document_type = store.load_profile(name).document_type
+        if section in {"Languages and translation", "Everything"}:
+            profile.source_language = choose_language_value(
+                "Source language", profile.source_language, "auto"
+            )
+            profile.output_language = choose_language_value(
+                "Output language", profile.output_language, "same"
+            )
+            profile.language_policy = choose_language_policy(profile.language_policy)
+            ui.write("Translation turns on automatically when output language differs from source.")
+            mode_choices = [
                 "auto",
                 "off",
                 "same-language-cleanup",
@@ -1079,30 +1167,39 @@ def _edit_profile_interactive(store: ConfigStore, name: str) -> None:
                 "bilingual",
                 "transliterate",
                 "metadata-only",
-            ],
-            profile.translation_mode,
-        )
-        profile.sync_translation_defaults()
-    if section in {"Model and limits", "Everything"}:
-        profile.model = choose_model(profile.model)
-        profile.model.execution_mode = ui.choose(
-            "Execution mode", EXECUTION_MODES, profile.model.execution_mode
-        )
-    if section in {"Outputs", "Everything"}:
-        profile.output_formats = choose_output_formats(profile.output_formats)
-        profile.extract_figures = ui.confirm(
-            "Enable figure/image markers and page image assets for assembly?", profile.extract_figures
-        )
-    if section in {"Output folder", "Everything"}:
-        profile.output_dir = choose_output_folder(profile.output_dir)
-    if section in {"Lock/default", "Everything"}:
-        profile.locked = ui.confirm(
-            "Lock this profile as the default quick-run workflow?", profile.locked
-        )
-    saved = store.save_profile(profile)
-    if profile.locked:
-        store.set_default_profile(profile.name)
-    ui.write(f"Saved profile: {saved}")
+                "Back",
+            ]
+            selected_mode = ui.choose("Translation mode", mode_choices, profile.translation_mode)
+            if selected_mode != "Back":
+                profile.translation_mode = selected_mode
+            profile.sync_translation_defaults()
+        if section in {"Model and limits", "Everything"}:
+            chosen_model = choose_model(profile.model)
+            if chosen_model is None:
+                continue
+            profile.model = chosen_model
+            selected_mode = ui.choose(
+                "Execution mode", EXECUTION_MODES + ["Back"], profile.model.execution_mode
+            )
+            if selected_mode != "Back":
+                profile.model.execution_mode = selected_mode
+        if section in {"Outputs", "Everything"}:
+            profile.output_formats = choose_output_formats(profile.output_formats)
+            profile.extract_figures = ui.confirm(
+                "Enable figure/image markers and page image assets for assembly?",
+                profile.extract_figures,
+            )
+        if section in {"Output folder", "Everything"}:
+            profile.output_dir = choose_output_folder(profile.output_dir)
+        if section in {"Lock/default", "Everything"}:
+            profile.locked = ui.confirm(
+                "Lock this profile as the default quick-run workflow?", profile.locked
+            )
+        saved = store.save_profile(profile)
+        if profile.locked:
+            store.set_default_profile(profile.name)
+        ui.status("success", f"Saved profile: {saved}")
+        ui.write("Choose another section or Back.")
 
 
 def _delete_profile(store: ConfigStore, name: str) -> None:
@@ -1176,6 +1273,9 @@ def model_command(action: str = "status") -> None:
     ui.heading("Akshara Vision", "Models")
     if action == "setup":
         settings = choose_model()
+        if settings is None:
+            ui.status("info", "Model setup cancelled.")
+            return
         store = ConfigStore()
         profile = store.load_default_profile()
         profile.model = settings

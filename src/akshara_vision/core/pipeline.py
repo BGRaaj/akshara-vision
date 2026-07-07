@@ -2,13 +2,15 @@ import gc
 import json
 import os
 import platform
+import queue
 import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -60,11 +62,13 @@ class StageWriter:
         self.stages_dir = self.run_dir / "stages"
         self.restored_dir = self.stages_dir / "restored"
         self.translated_dir = self.stages_dir / "translated"
+        self.records_dir = self.stages_dir / "records"
         self.combined_dir = self.stages_dir / "combined"
         self.items_dir = self.run_dir / "items"
         self.assets_dir = self.run_dir / "assets"
         self.restored_dir.mkdir(parents=True, exist_ok=True)
         self.translated_dir.mkdir(parents=True, exist_ok=True)
+        self.records_dir.mkdir(parents=True, exist_ok=True)
         self.combined_dir.mkdir(parents=True, exist_ok=True)
         self.items_dir.mkdir(parents=True, exist_ok=True)
 
@@ -94,6 +98,23 @@ class StageWriter:
         return self._write_piece(
             self.translated_dir, source_index, source_name, piece_index, "translated", text
         )
+
+    def write_record_piece(
+        self,
+        source_index: int,
+        source_name: str,
+        piece_index: int,
+        record: Dict[str, object],
+    ) -> Path:
+        source_dir = _numbered_label_dir(self.records_dir, source_index, source_name)
+        source_dir.mkdir(parents=True, exist_ok=True)
+        path = source_dir / f"{piece_index:04d}-record.json"
+        payload = dict(record)
+        payload.setdefault("source_index", source_index)
+        payload.setdefault("source_name", source_name)
+        payload.setdefault("piece_index", piece_index)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return path
 
     def write_combined_restored(self, text: str) -> Path:
         path = self.combined_dir / f"restored__{_language_slug(self.source_language)}.txt"
@@ -255,7 +276,7 @@ class StageWriter:
         width, height = _image_dimensions(asset_path)
         return {
             "kind": kind,
-            "path": _safe_path(asset_path),
+            "path": _run_relative_path(self.run_dir, asset_path),
             "width": width,
             "height": height,
             "dpi": dpi,
@@ -279,7 +300,7 @@ class StageWriter:
         width, height = _image_dimensions(asset_path)
         return {
             "kind": "figure-crop",
-            "path": _safe_path(asset_path),
+            "path": _run_relative_path(self.run_dir, asset_path),
             "_local_path": str(asset_path),
             "width": width,
             "height": height,
@@ -507,7 +528,8 @@ def run_pipeline(
             _notify(progress, "error", f"Recorded failed source {source_label}: {failure_reason}", advance=1)
 
         raw_parts.append(f"===== {source_label} =====\n{raw_text}".strip())
-        source_text = cleaned.strip() + "\n"
+        output_cleaned = _text_with_chunk_assets(cleaned, restoration_record.get("chunks"))
+        source_text = output_cleaned.strip() + "\n"
         artifacts.write_item_restored(index, source_label, source_text)
         restored_sources.append(
             {
@@ -548,9 +570,10 @@ def run_pipeline(
                     or (record.get("failure_reason") and record.get("status") != "restored")
                 ],
                 "consistency": consistency_state,
+                "assets": _collect_assets_from_records(restoration_records),
             },
         )
-        cleaned_parts.append(f"===== {source_label} =====\n{cleaned}".strip())
+        cleaned_parts.append(f"===== {source_label} =====\n{output_cleaned}".strip())
         _notify(progress, "source", f"Bundling source {source_label}", advance=1)
         _copy_source(path, run_dir / "sources", index=index, label=source_label)
         gc.collect()
@@ -577,6 +600,7 @@ def run_pipeline(
 
     document_structure = _document_structure(restoration_records, profile.document_type, profile)
     detected_title = _detected_title(document_structure) or f"Akshara Vision - {profile.name}"
+    asset_manifest = _collect_assets_from_records(restoration_records)
     metadata = {
         "title": detected_title,
         "created_at": timestamp,
@@ -599,6 +623,7 @@ def run_pipeline(
         "missing": request.inputs.missing,
         "unsupported": [_safe_path(path) for path in request.inputs.unsupported],
         "usage": total_usage,
+        "assets": asset_manifest,
         "consistency": consistency_state,
         "document_structure": document_structure,
         "assembly_profile": _assembly_profile(profile.document_type, profile.output_formats),
@@ -669,6 +694,7 @@ def run_pipeline(
                 or (record.get("failure_reason") and record.get("status") != "restored")
             ],
             "consistency": consistency_state,
+            "assets": asset_manifest,
             "next_action": "Run complete.",
         },
     )
@@ -679,10 +705,18 @@ def combine_stage_outputs(run_dir: Path) -> Dict[str, object]:
     run_dir = Path(run_dir)
     stage_root = run_dir / "stages"
     items_root = run_dir / "items"
-    if not stage_root.exists() and not items_root.exists():
+    run_manifest = run_dir / "run_manifest.json"
+    manifest = _load_manifest(run_manifest)
+    run_state = _load_manifest(run_dir / "run_state.json")
+    effective_manifest = manifest or run_state
+    if not stage_root.exists() and not items_root.exists() and not effective_manifest:
         raise RuntimeError(f"No staged outputs found in {run_dir}.")
 
-    combined_parts = _combined_parts_from_items(items_root)
+    combined_parts = _combined_parts_from_manifest(effective_manifest)
+    if not combined_parts and stage_root.exists():
+        combined_parts = _combined_parts_from_record_checkpoints(stage_root / "records")
+    if not combined_parts:
+        combined_parts = _combined_parts_from_items(items_root)
     if not combined_parts and stage_root.exists():
         combined_parts = _combined_parts_from_stages(stage_root)
     if not combined_parts:
@@ -697,8 +731,7 @@ def combine_stage_outputs(run_dir: Path) -> Dict[str, object]:
     combined_path = combined_dir / "recombined.txt"
     combined_path.write_text(combined_text + "\n", encoding="utf-8")
 
-    run_manifest = run_dir / "run_manifest.json"
-    language_suffix = _combine_language_suffix(run_manifest)
+    language_suffix = _combine_language_suffix(run_manifest, run_state)
 
     output_alias = run_dir / f"akshara_output__{language_suffix}.txt"
     output_alias.write_text(combined_text + "\n", encoding="utf-8")
@@ -706,16 +739,20 @@ def combine_stage_outputs(run_dir: Path) -> Dict[str, object]:
     canonical.write_text(combined_text + "\n", encoding="utf-8")
     _write_nested_folder_combines(items_root, language_suffix)
 
-    manifest = _load_manifest(run_manifest)
-    metadata = _combine_metadata(manifest, run_dir, language_suffix)
-    output_formats = _output_formats_from_manifest(manifest)
+    metadata = _combine_metadata(effective_manifest, run_dir, language_suffix)
+    metadata["assets"] = _collect_assets_from_records(
+        (effective_manifest.get("metadata") or {}).get("restoration")
+        if isinstance(effective_manifest.get("metadata"), dict)
+        else []
+    ) or _collect_assets_from_record_checkpoints(stage_root / "records")
+    output_formats = _output_formats_from_manifest(effective_manifest)
     exports = _export_text(
         combined_text + "\n",
         run_dir / "akshara_output",
         metadata,
         output_formats,
     )
-    _write_recombined_manifest(run_manifest, manifest, exports)
+    _write_recombined_manifest(run_manifest, effective_manifest, exports)
 
     return {
         "run_dir": run_dir,
@@ -723,7 +760,58 @@ def combine_stage_outputs(run_dir: Path) -> Dict[str, object]:
         "output_path": canonical,
         "alias_path": output_alias,
         "exports": exports,
-    }
+}
+
+
+def _combined_parts_from_manifest(manifest: Dict[str, object]) -> List[str]:
+    metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+    records = metadata.get("restoration") if isinstance(metadata, dict) else None
+    if not isinstance(records, list):
+        return []
+    parts = []
+    for index, record in enumerate(records, start=1):
+        if not isinstance(record, dict):
+            continue
+        label = str(record.get("label") or record.get("source") or f"source-{index}")
+        text = _text_with_chunk_assets("", record.get("chunks"))
+        if text.strip():
+            parts.append(f"===== {label} =====\n{text.strip()}")
+    return parts
+
+
+def _combined_parts_from_record_checkpoints(records_root: Path) -> List[str]:
+    if not records_root.exists():
+        return []
+    parts = []
+    for source_group in sorted(path for path in records_root.glob("*") if path.is_dir()):
+        chunks = []
+        for record_path in sorted(source_group.glob("*-record.json")):
+            try:
+                record = json.loads(record_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict):
+                chunks.append(record)
+        text = _text_with_chunk_assets("", chunks)
+        if text.strip():
+            parts.append(f"===== {source_group.name} =====\n{text.strip()}")
+    return parts
+
+
+def _collect_assets_from_record_checkpoints(records_root: Path) -> List[Dict[str, object]]:
+    if not records_root.exists():
+        return []
+    assets = []
+    for record_path in sorted(records_root.rglob("*-record.json")):
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict):
+            for asset in record.get("assets") or []:
+                if isinstance(asset, dict):
+                    assets.append(asset)
+    return assets
 
 
 def _combined_parts_from_items(items_root: Path) -> List[str]:
@@ -763,6 +851,70 @@ def _read_structured_output_text(path: Path) -> str:
             return str(data.get("text") or data.get("restored_text") or "")
         return ""
     return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _chunk_text_with_assets(chunk: Dict[str, object]) -> str:
+    text = str(chunk.get("restored_text") or chunk.get("text") or "").strip()
+    markers = _asset_markers(chunk.get("assets"))
+    if markers and not _contains_asset_marker(text):
+        text = (text + "\n\n" + markers).strip() if text else markers
+    return text
+
+
+def _asset_markers(assets: object) -> str:
+    if not isinstance(assets, list):
+        return ""
+    markers = []
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        path = str(asset.get("path") or "").strip()
+        if not path:
+            continue
+        label = str(asset.get("label") or asset.get("kind") or "figure").strip()
+        placement = str(asset.get("placement") or "").strip()
+        size = _asset_size_label(asset)
+        detail = ", ".join(part for part in [placement, size] if part)
+        suffix = f" ({detail})" if detail else ""
+        markers.append(f"[image: {label}{suffix} | {path}]")
+    return "\n".join(markers)
+
+
+def _asset_size_label(asset: Dict[str, object]) -> str:
+    width = asset.get("width")
+    height = asset.get("height")
+    if width and height:
+        return f"{width}x{height}"
+    return ""
+
+
+def _contains_asset_marker(text: str) -> bool:
+    lowered = text.lower()
+    return "[image:" in lowered or "![" in lowered
+
+
+def _text_with_chunk_assets(text: str, chunks: object) -> str:
+    if not isinstance(chunks, list) or not chunks:
+        return text
+    parts = [_chunk_text_with_assets(chunk) for chunk in chunks if isinstance(chunk, dict)]
+    combined = "\n\n".join(part for part in parts if part.strip()).strip()
+    return combined or text
+
+
+def _collect_assets_from_records(records: object) -> List[Dict[str, object]]:
+    assets: List[Dict[str, object]] = []
+    if not isinstance(records, list):
+        return assets
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        for chunk in record.get("chunks") or []:
+            if not isinstance(chunk, dict):
+                continue
+            for asset in chunk.get("assets") or []:
+                if isinstance(asset, dict):
+                    assets.append(asset)
+    return assets
 
 
 def _write_nested_folder_combines(items_root: Path, language_suffix: str) -> List[Path]:
@@ -819,7 +971,7 @@ def _combined_parts_from_stages(stage_root: Path) -> List[str]:
     return combined_parts
 
 
-def _combine_language_suffix(run_manifest: Path) -> str:
+def _combine_language_suffix(run_manifest: Path, run_state: Optional[Dict[str, object]] = None) -> str:
     language_suffix = "combined"
     if run_manifest.exists():
         try:
@@ -828,6 +980,9 @@ def _combine_language_suffix(run_manifest: Path) -> str:
             language_suffix = _language_slug(metadata.get("output_language") or language_suffix)
         except json.JSONDecodeError:
             pass
+    elif run_state:
+        profile = run_state.get("profile") if isinstance(run_state.get("profile"), dict) else {}
+        language_suffix = _language_slug(profile.get("output_language") or language_suffix)
     return language_suffix
 
 
@@ -1036,6 +1191,12 @@ def _restore_text(
         if pre_review_text:
             chunk_record["pre_review_text"] = pre_review_text
         structured_chunks.append(chunk_record)
+        artifacts.write_record_piece(
+            source_index,
+            source_label or source_path.name,
+            index,
+            chunk_record,
+        )
     combined = "\n\n".join(part for part in restored_chunks if part.strip()).strip()
     if not combined:
         combined = "[missing text]"
@@ -1073,6 +1234,13 @@ def _safe_path(path: Path) -> str:
         return str(path.resolve().relative_to(Path.cwd().resolve()))
     except ValueError:
         return path.name
+
+
+def _run_relative_path(run_dir: Path, path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(run_dir.resolve())).replace("\\", "/")
+    except ValueError:
+        return _safe_path(path)
 
 
 def _slugify(value: object, default: str = "item") -> str:
@@ -1167,8 +1335,13 @@ def _restore_with_retry(
                 "or wrapper JSON unless the prompt explicitly asks for JSON."
             )
         try:
-            response, usage = provider.restore_text(
-                retry_prompt, instruction, settings, media_path=media_path
+            response, usage = _provider_restore_with_heartbeat(
+                provider,
+                retry_prompt,
+                instruction,
+                settings,
+                media_path=media_path,
+                progress=progress,
             )
         except Exception as exc:
             last_error = exc
@@ -1201,6 +1374,78 @@ def _restore_with_retry(
     if last_error:
         raise last_error
     return last_response, last_usage
+
+
+def _provider_restore_with_heartbeat(
+    provider,
+    prompt: str,
+    instruction: str,
+    settings,
+    media_path: Optional[Path],
+    progress: Optional[ProgressCallback],
+) -> tuple[str, dict]:
+    results: "queue.Queue[tuple[str, object]]" = queue.Queue(maxsize=1)
+    label = media_path.name if media_path else "text chunk"
+    started_at = time.monotonic()
+
+    def worker() -> None:
+        try:
+            results.put(("ok", provider.restore_text(prompt, instruction, settings, media_path=media_path)))
+        except BaseException as exc:  # noqa: BLE001 - preserve provider exception across thread
+            results.put(("error", exc))
+
+    thread = threading.Thread(target=worker, name="akshara-provider-call")
+    thread.start()
+    last_notice = 0.0
+    try:
+        while thread.is_alive():
+            try:
+                status, payload = results.get(timeout=0.5)
+                if status == "error":
+                    raise payload
+                return payload  # type: ignore[return-value]
+            except queue.Empty:
+                elapsed = time.monotonic() - started_at
+                if elapsed - last_notice >= 20:
+                    last_notice = elapsed
+                    _notify(
+                        progress,
+                        "waiting",
+                        f"Model still working on {label} ({_format_elapsed(elapsed)} elapsed)",
+                        advance=0,
+                    )
+        status, payload = results.get_nowait()
+        if status == "error":
+            raise payload
+        return payload  # type: ignore[return-value]
+    except KeyboardInterrupt:
+        _notify(
+            progress,
+            "interrupt",
+            "Interrupt received. Waiting for the active model request to finish cleanly...",
+            advance=0,
+        )
+        while thread.is_alive():
+            thread.join(timeout=2)
+            elapsed = time.monotonic() - started_at
+            _notify(
+                progress,
+                "interrupt",
+                f"Safe stop pending: active model request is still running ({_format_elapsed(elapsed)} elapsed)",
+                advance=0,
+            )
+        raise
+
+
+def _format_elapsed(seconds: float) -> str:
+    total = max(int(seconds), 0)
+    minutes, secs = divmod(total, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m {secs}s"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
 
 
 def _sleep_before_retry(attempt: int) -> None:
@@ -1847,11 +2092,19 @@ def _verify_figure_assets(
     progress: Optional[ProgressCallback],
 ) -> List[Dict[str, object]]:
     verified_assets = []
-    for asset in assets:
+    verification_limit = _figure_verification_limit(profile)
+    for asset_index, asset in enumerate(assets, start=1):
         local_path = Path(str(asset.get("_local_path") or ""))
         asset.pop("_local_path", None)
-        if provider is None or profile is None or not local_path.exists():
-            asset["verification"] = "unverified"
+        if (
+            provider is None
+            or profile is None
+            or not local_path.exists()
+            or asset_index > verification_limit
+        ):
+            asset["verification"] = "heuristic"
+            if asset_index > verification_limit:
+                asset["reason"] = "verification skipped by execution mode"
             verified_assets.append(asset)
             continue
         prompt = (
@@ -1883,6 +2136,15 @@ def _verify_figure_assets(
             except OSError:
                 pass
     return verified_assets
+
+
+def _figure_verification_limit(profile: Optional[WorkflowProfile]) -> int:
+    mode = _execution_mode(profile)
+    return {
+        "fast": 0,
+        "balanced": 1,
+        "quality": MAX_FIGURE_CROPS_PER_PAGE,
+    }.get(mode, 1)
 
 
 def _parse_figure_verification(response: str) -> Dict[str, object]:
@@ -2199,20 +2461,20 @@ def _task_text(
 
     if execution_mode == "quality":
         depth_instruction = (
-            "Extract carefully but stay bounded: scan the page once region by region, including "
-            "margins, footnotes, headings, captions, columns, and small text. Do not enter long "
-            "reasoning loops. If a word cannot be read confidently, keep the best visible reading "
-            "or mark [unclear] and continue.\n"
+            "Extract carefully in one bounded pass: scan the page region by region, including "
+            "margins, footnotes, headings, captions, columns, and small text. Make decisions quickly. "
+            "If a word cannot be read confidently, keep the best visible reading or mark [unclear] "
+            "and continue.\n"
         )
     elif execution_mode == "balanced":
         depth_instruction = (
-            "Perform a careful and thorough extraction of the whole page. Work top-to-bottom "
-            "and left-to-right unless the page layout clearly uses another reading order.\n"
+            "Extract the whole page in one careful pass. Work top-to-bottom and left-to-right "
+            "unless the page layout clearly uses another reading order. Do not stall on damaged words.\n"
         )
     else:  # fast
         depth_instruction = (
-            "Quickly extract the text from the image while still preserving every clearly "
-            "visible line. Focus on legibility and page order.\n"
+            "Extract quickly while preserving every clearly visible line. Do not pause on damaged "
+            "words; keep the best visible reading or mark [unclear] and continue.\n"
         )
 
     if not raw_text:
@@ -2232,8 +2494,8 @@ def _task_text(
             "the page. Do not restore shadows, show-through, stains, cracks, or scan noise as text.\n"
             "If any words are unclear, mark them as [unclear]. If the whole page is blank or "
             "unreadable, return an empty response, not [unclear].\n"
-            "Before returning, internally review the restored text for gibberish, malformed words, "
-            "wrong-script fragments, and obvious OCR corruption. Fix only clear restoration errors. "
+            "Do not perform an extended self-review or reasoning loop. Return the extraction promptly; "
+            "Akshara will run a separate repair pass only if the result appears corrupted. "
             "Do not complete a sentence merely because it continues on the next page.\n"
             "Do not translate yet. Translation happens as a final stage after extraction.\n"
             "Return ONLY the extracted text. Do not add explanations, commentary, "
@@ -2255,8 +2517,7 @@ def _task_text(
         "Do not include markdown, code fences, or commentary.\n"
         "Apply the language policy exactly. Preserve readable mixed-language snippets only when present "
         "in the source; never invent or normalize language labels.\n"
-        "Before returning, review restored_text for gibberish, malformed words, wrong-script fragments, "
-        "and obvious OCR corruption. Fix only clear restoration errors without changing structure.\n"
+        "Keep the pass bounded. Fix clear OCR corruption, but do not run an extended review loop.\n"
         "Ignore mirrored, reversed, faint, or bleed-through impressions from the back side of a page. "
         "Do not restore shadows, stains, cracks, or scan noise as text.\n"
         "If the chunk is empty or unreadable, return "
@@ -2341,6 +2602,7 @@ def _restore_multimodal_image(
         ],
         "failure_reason": failure_reason,
     }
+    artifacts.write_record_piece(source_index, label, 1, record["chunks"][0])
     return restored_text + "\n", record, usage
 
 
@@ -2450,6 +2712,7 @@ def _translation_instruction(profile: WorkflowProfile) -> str:
         "Preserve names, dates, citations, paragraph breaks, headings, and page order.\n"
         "Do not add commentary, explanations, summaries, or markdown fences.\n"
         "Preserve [unclear] markers exactly as written.\n"
+        "Preserve [image: ... | path] markers exactly as written; do not translate or alter asset paths.\n"
         "For mixed-language batches, translate only the text that is not already in the target language.\n"
         "If a passage is already in the target language, keep it unchanged and include it in the output.\n"
         "Before returning, review the translated text for gibberish, malformed words, broken script, "
@@ -2471,6 +2734,7 @@ def _translation_prompt(chunk: str, profile: WorkflowProfile) -> str:
             "translated_text must contain the translated version of the supplied restored text.\n"
             "notes must be a short string or an empty string.\n"
             "Do not add markdown fences or commentary.\n"
+            "Preserve any [image: ... | path] marker exactly.\n"
             "SOURCE TEXT\n"
             f"{chunk}"
         )
@@ -2479,6 +2743,7 @@ def _translation_prompt(chunk: str, profile: WorkflowProfile) -> str:
         "translated_text must contain only the translated text.\n"
         "notes must be a short string or an empty string.\n"
         "Do not add markdown fences or commentary.\n"
+        "Preserve any [image: ... | path] marker exactly.\n"
         "SOURCE TEXT\n"
         f"{chunk}"
     )
@@ -2552,8 +2817,13 @@ def _maybe_review_restored_text(
     _notify(progress, "review", f"Reviewing suspicious restoration for {label}", advance=0)
     prompt = _restoration_review_prompt(restored_text, profile, consistency_state)
     try:
+        review_settings = _bounded_model_settings(
+            profile.model,
+            context_window=8192,
+            generation_limit=4096,
+        )
         result, usage = _restore_with_retry(
-            provider, prompt, instruction, profile.model, progress=progress
+            provider, prompt, instruction, review_settings, progress=progress
         )
     except Exception:
         return restored_text, "quality review failed; kept original restored text", {}, ""
@@ -2562,6 +2832,18 @@ def _maybe_review_restored_text(
     if not reviewed:
         return restored_text, "quality review returned no usable correction", usage or {}, ""
     return reviewed, "quality review applied to suspicious restoration", usage or {}, restored_text
+
+
+def _bounded_model_settings(settings, context_window: int, generation_limit: int):
+    try:
+        bounded = replace(settings)
+    except TypeError:
+        return settings
+    current_context = getattr(bounded, "context_window", None)
+    current_generation = getattr(bounded, "generation_limit", None)
+    bounded.context_window = min(int(current_context or context_window), context_window)
+    bounded.generation_limit = min(int(current_generation or generation_limit), generation_limit)
+    return bounded
 
 
 def _needs_restoration_review(text: str) -> bool:
@@ -2985,6 +3267,7 @@ def _restore_multimodal_pdf(
             if pre_review_text:
                 chunk_record["pre_review_text"] = pre_review_text
             chunks_record.append(chunk_record)
+            artifacts.write_record_piece(source_index, label, idx, chunk_record)
             if idx not in [f[0] for f in failed_pages]:
                 try:
                     page_img.unlink()
@@ -3070,6 +3353,7 @@ def _restore_multimodal_pdf(
                             chunk["notes"] = _join_notes(chunk.get("notes", ""), review_note)
                             if pre_review_text:
                                 chunk["pre_review_text"] = pre_review_text
+                            artifacts.write_record_piece(source_index, label, idx, chunk)
                             break
                     artifacts.write_restored_piece(source_index, label, idx, restored_text + "\n")
                     del result, restored_text
@@ -3311,6 +3595,7 @@ def _restore_multimodal_zip(
                     if pre_review_text:
                         chunk_record["pre_review_text"] = pre_review_text
                     chunks_record.append(chunk_record)
+                    artifacts.write_record_piece(source_index, label, chunk_idx, chunk_record)
                     chunk_idx += 1
                 archive_file_text = "\n\n".join(part for part in archive_file_parts if part.strip())
                 artifacts.write_archive_item_restored(
@@ -3472,6 +3757,7 @@ def _restore_multimodal_zip(
                 if pre_review_text:
                     chunk_record["pre_review_text"] = pre_review_text
                 chunks_record.append(chunk_record)
+                artifacts.write_record_piece(source_index, label, chunk_idx, chunk_record)
                 chunk_idx += 1
 
         for folder_label, parts in sorted(archive_folder_parts.items()):
