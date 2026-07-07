@@ -36,8 +36,8 @@ The run uses chunked restoration for long raw text inputs, so it is processed in
 smaller model batches instead of one large prompt. Progress is timer-based and indeterminate;
 it shows the active step and elapsed time rather than a fake percentage. After a
 page, image, text chunk, or translation chunk completes, the progress line also
-shows item token usage and cumulative run token totals when the provider reports
-usage.
+shows item token usage and cumulative run token totals in plain language when
+the provider reports usage.
 
 While a provider request is active, Akshara periodically reports that the model
 is still working. Pressing `Ctrl+C` during that window shows a safe-stop message
@@ -73,17 +73,22 @@ guide as context so similar pages are formatted consistently. It does not add
 facts, does not override the restoration instructions, and is not emitted into
 the final text.
 
-The selected document type also changes extraction guidance. Books emphasize
-title matter, contents, chapters, page numbers, prefaces, indexes, and footnotes.
-Magazines and newspapers emphasize column order, article boundaries, headlines,
-captions, and sidebars. Manuscripts emphasize folios, marginalia, uncertain
-readings, corrections, and damaged text. The run manifest records deterministic
-structure observations for later assembly.
+The selected document type also changes extraction guidance and deterministic
+tagging. Books emphasize title matter, contents, chapters, page numbers,
+prefaces, indexes, and footnotes. Magazines and newspapers emphasize column
+order, article boundaries, headlines, mastheads, bylines, captions,
+advertisements, classifieds, sidebars, and multi-column flow. Manuscripts
+emphasize folios, marginalia, corrections, colophons, lineated text, uncertain
+readings, and damaged text. Journal articles, letters, and archive bundles also
+receive their own role sets. The run manifest records semantic units, layout
+classes, content features, contents entries, headings, page markers, footnotes,
+and figure metadata for later assembly.
 
 The CLI asks whether to enable figure/image enrichment before a run. When
 enabled, prompts may insert concise `[image: ...]` markers for visible
 illustrations, maps, plates, or diagrams, and Akshara stores conservative
-candidate figure crops with bounding boxes, size, DPI, and placement metadata.
+candidate figure crops with bounding boxes, relative page coordinates, page
+zones, size, DPI, and placement metadata.
 This is disabled by default so normal restored text remains clean. The cropper
 does not claim full layout-perfect segmentation; it ignores tiny marks and
 ambiguous damage instead of treating them as figures.

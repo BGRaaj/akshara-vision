@@ -209,6 +209,40 @@ class CoreTests(unittest.TestCase):
             )
             self.assertIn("> [image: plate]", md_result.path.read_text(encoding="utf-8"))
 
+    def test_publication_exporters_use_semantic_contents_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "akshara_output"
+            metadata = {
+                "title": "Book Title",
+                "document_structure": {
+                    "semantic_units": [
+                        {
+                            "role": "contents",
+                            "contents_entries": [
+                                {"title": "The First Case", "page": "7"},
+                                {"title": "The Second Case", "page": "31"},
+                            ],
+                        },
+                        {
+                            "role": "preface",
+                            "headings": ["PREFACE"],
+                            "footnotes": [{"marker": "1", "text": "Original note"}],
+                        },
+                    ]
+                },
+            }
+            html_result = exporter_registry()["html"].export("Body text", destination, metadata)
+            html_text = html_result.path.read_text(encoding="utf-8")
+            self.assertIn("<h2>Contents</h2>", html_text)
+            self.assertIn("The First Case", html_text)
+            self.assertIn("<h2>Notes</h2>", html_text)
+            self.assertIn("<p>Body text</p>", html_text)
+            md_result = exporter_registry()["md"].export("Body text", destination, metadata)
+            md_text = md_result.path.read_text(encoding="utf-8")
+            self.assertIn("## Contents", md_text)
+            self.assertIn("The Second Case", md_text)
+            self.assertIn("Body text", md_text)
+
     def test_mock_pipeline_exports_text_manifest_and_markdown(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -398,6 +432,96 @@ class CoreTests(unittest.TestCase):
             self.assertGreaterEqual(len(chunks[0]["assets"]), 1)
             self.assertEqual(chunks[0]["assets"][0]["kind"], "figure-crop")
             self.assertIn("bbox", chunks[0]["assets"][0])
+            self.assertIn("layout", chunks[0]["assets"][0])
+            self.assertIn("relative_bbox", chunks[0]["assets"][0]["layout"])
+            self.assertIn("page_zone", chunks[0]["assets"][0]["layout"])
+
+    def test_document_structure_tags_contents_and_footnotes(self):
+        from akshara_vision.core.pipeline import _document_structure
+
+        records = [
+            {
+                "label": "book.pdf",
+                "chunks": [
+                    {
+                        "index": 3,
+                        "restored_text": (
+                            "CONTENTS\n"
+                            "The First Case ........ 7\n"
+                            "The Second Case ........ 31\n"
+                            "1. A footnote here"
+                        ),
+                        "assets": [],
+                    }
+                ],
+            }
+        ]
+        structure = _document_structure(records, "Book", WorkflowProfile())
+        self.assertEqual(structure["content_kinds"]["contents"], 1)
+        self.assertEqual(structure["contents_entries"][0]["title"], "The First Case")
+        self.assertEqual(structure["contents_entries"][0]["page"], "7")
+        self.assertEqual(structure["semantic_units"][0]["role"], "contents")
+        self.assertIn("contents_entries", structure["content_features"])
+        self.assertEqual(records[0]["chunks"][0]["semantic_tags"]["role"], "contents")
+        self.assertEqual(records[0]["chunks"][0]["semantic_tags"]["assembly_hint"], "toc")
+
+    def test_document_structure_uses_document_type_specific_roles(self):
+        from akshara_vision.core.pipeline import _document_structure
+
+        magazine = [
+            {
+                "label": "magazine.pdf",
+                "chunks": [
+                    {
+                        "index": 8,
+                        "restored_text": (
+                            "ADVERTISEMENT\n"
+                            "Fine cloth       New lamps\n"
+                            "Buy today        Limited offer\n"
+                        ),
+                        "assets": [{"path": "assets/figure.png"}],
+                    }
+                ],
+            }
+        ]
+        manuscript = [
+            {
+                "label": "folio.png",
+                "chunks": [
+                    {
+                        "index": 2,
+                        "restored_text": "f. 12r\nline one\nline two\n[unclear]\n[unclear]\n[unclear]",
+                    }
+                ],
+            }
+        ]
+        journal = [
+            {
+                "label": "paper.pdf",
+                "chunks": [{"index": 1, "restored_text": "ABSTRACT\nThis paper discusses..."}],
+            }
+        ]
+
+        magazine_structure = _document_structure(magazine, "Magazine", WorkflowProfile())
+        manuscript_structure = _document_structure(manuscript, "Manuscript", WorkflowProfile())
+        journal_structure = _document_structure(journal, "Journal article", WorkflowProfile())
+
+        self.assertEqual(magazine_structure["semantic_units"][0]["role"], "advertisement")
+        self.assertIn("multi_column", magazine_structure["content_features"])
+        self.assertEqual(manuscript_structure["semantic_units"][0]["role"], "folio")
+        self.assertEqual(manuscript_structure["semantic_units"][0]["layout"], "lineated")
+        self.assertEqual(journal_structure["semantic_units"][0]["role"], "abstract")
+
+    def test_usage_summary_is_human_readable(self):
+        from akshara_vision.core.pipeline import _usage_summary
+
+        summary = _usage_summary(
+            {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            {"prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42},
+        )
+        self.assertIn("tokens this page: 15", summary)
+        self.assertIn("run total: 42", summary)
+        self.assertNotIn("page/run", summary)
 
     def test_combine_stage_outputs_rebuilds_final_text(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1038,7 +1162,7 @@ class CoreTests(unittest.TestCase):
             event_messages = [message for _event, message, _advance in events]
             self.assertIn("Rendering book.pdf page 1/2", event_messages)
             self.assertIn("Restoring text from book.pdf page 1/2", event_messages)
-            self.assertTrue(any("tokens page/run" in message for message in event_messages))
+            self.assertTrue(any("tokens this page" in message for message in event_messages))
             output_text = (Path(result["run_dir"]) / "akshara_output.txt").read_text(
                 encoding="utf-8"
             )

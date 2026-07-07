@@ -24,7 +24,7 @@ class MarkdownExporter:
     def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
         title = _metadata_title(metadata)
         path = destination.with_suffix(".md")
-        body = _markdown_body(text)
+        body = _markdown_body(text, metadata)
         path.write_text(f"# {title}\n\n{body}", encoding="utf-8")
         return ExportResult(self.name, path)
 
@@ -34,7 +34,7 @@ class HtmlExporter:
 
     def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
         title = html.escape(_metadata_title(metadata))
-        body = _html_body(text)
+        body = _html_body(text, metadata)
         path = destination.with_suffix(".html")
         path.write_text(
             "<!doctype html>\n"
@@ -51,6 +51,10 @@ class HtmlExporter:
             ".page-marker{text-align:center;font-variant-numeric:oldstyle-nums;margin:2rem 0 1rem;}\n"
             ".figure-marker{border:1px solid #6f5a47;padding:.75rem 1rem;text-align:center;font-style:italic;margin:1.5rem 0;}\n"
             ".figure-marker img{max-width:100%;height:auto;display:block;margin:0 auto .75rem;}\n"
+            ".contents table{width:100%;border-collapse:collapse;margin:1rem 0 2rem;}\n"
+            ".contents td{border-bottom:1px solid #d8cdbc;padding:.35rem 0;}\n"
+            ".contents td:last-child{text-align:right;white-space:nowrap;padding-left:1.5rem;}\n"
+            ".multi-column{column-gap:2rem;}\n"
             "@media print{body{background:white;color:black}main{max-width:none;padding:0.75in}h1{page-break-after:avoid}}\n"
             "</style>\n"
             "</head>\n"
@@ -118,7 +122,7 @@ class EpubExporter:
     def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
         title = _metadata_title(metadata)
         path = destination.with_suffix(".epub")
-        body = _html_body(text)
+        body = _html_body(text, metadata)
         with zipfile.ZipFile(path, "w") as archive:
             archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
             archive.writestr("META-INF/container.xml", _epub_container())
@@ -136,7 +140,15 @@ def _paragraphs(text: str) -> list[str]:
     return [part.strip() for part in text.split("\n\n") if part.strip()]
 
 
-def _markdown_body(text: str) -> str:
+def _markdown_body(text: str, metadata: Optional[Dict[str, object]] = None) -> str:
+    structured = _markdown_structured_body(metadata)
+    plain = _markdown_plain_body(text)
+    if structured:
+        return (structured + "\n\n" + plain).strip() + "\n"
+    return plain
+
+
+def _markdown_plain_body(text: str) -> str:
     parts = []
     for paragraph in _paragraphs(text):
         image = _parse_image_marker(paragraph)
@@ -150,7 +162,15 @@ def _markdown_body(text: str) -> str:
     return "\n\n".join(parts).strip() + "\n"
 
 
-def _html_body(text: str) -> str:
+def _html_body(text: str, metadata: Optional[Dict[str, object]] = None) -> str:
+    structured = _html_structured_body(metadata)
+    plain = _html_plain_body(text)
+    if structured:
+        return structured + "\n" + plain
+    return plain
+
+
+def _html_plain_body(text: str) -> str:
     body = []
     for paragraph in _paragraphs(text):
         escaped = html.escape(paragraph).replace("\n", "<br />\n")
@@ -171,6 +191,137 @@ def _html_body(text: str) -> str:
         else:
             body.append(f"<p>{escaped}</p>")
     return "\n".join(body)
+
+
+def _semantic_units(metadata: Optional[Dict[str, object]]) -> list[Dict[str, object]]:
+    if not metadata:
+        return []
+    structure = metadata.get("document_structure")
+    if not isinstance(structure, dict):
+        return []
+    units = structure.get("semantic_units")
+    return [unit for unit in units if isinstance(unit, dict)] if isinstance(units, list) else []
+
+
+def _markdown_structured_body(metadata: Optional[Dict[str, object]]) -> str:
+    units = _semantic_units(metadata)
+    if not units:
+        return ""
+    parts = []
+    contents = []
+    footnotes = []
+    for unit in units:
+        role = str(unit.get("role") or "body")
+        heading = _unit_heading(unit)
+        if role == "contents":
+            entries = unit.get("contents_entries") if isinstance(unit.get("contents_entries"), list) else []
+            if entries:
+                contents.extend(entries)
+                continue
+        if role in {"title", "title-page"} and heading:
+            parts.append(f"## {heading}")
+        elif heading and _role_deserves_heading(role):
+            parts.append(f"## {heading}")
+        footnotes.extend(unit.get("footnotes") if isinstance(unit.get("footnotes"), list) else [])
+    if contents:
+        lines = ["## Contents", ""]
+        lines.extend(
+            f"- {entry.get('title', '').strip()} {entry.get('page', '').strip()}".rstrip()
+            for entry in contents
+            if isinstance(entry, dict)
+        )
+        parts.insert(0, "\n".join(lines).strip())
+    if footnotes:
+        lines = ["## Notes", ""]
+        lines.extend(
+            f"- {note.get('marker', '').strip()}: {note.get('text', '').strip()}"
+            for note in footnotes
+            if isinstance(note, dict)
+        )
+        parts.append("\n".join(lines).strip())
+    return "\n\n".join(part for part in parts if part).strip() + ("\n" if parts else "")
+
+
+def _html_structured_body(metadata: Optional[Dict[str, object]]) -> str:
+    units = _semantic_units(metadata)
+    if not units:
+        return ""
+    blocks = []
+    contents = []
+    footnotes = []
+    for unit in units:
+        role = str(unit.get("role") or "body")
+        heading = _unit_heading(unit)
+        if role == "contents":
+            entries = unit.get("contents_entries") if isinstance(unit.get("contents_entries"), list) else []
+            contents.extend(entry for entry in entries if isinstance(entry, dict))
+            continue
+        if role in {"title", "title-page"} and heading:
+            blocks.append(f'<section class="title-page"><h2>{html.escape(heading)}</h2></section>')
+        elif heading and _role_deserves_heading(role):
+            blocks.append(
+                f'<section class="{html.escape(role)}"><h2>{html.escape(heading)}</h2>'
+                "</section>"
+            )
+        footnotes.extend(unit.get("footnotes") if isinstance(unit.get("footnotes"), list) else [])
+    if contents:
+        rows = []
+        for entry in contents:
+            title = html.escape(str(entry.get("title") or ""))
+            page = html.escape(str(entry.get("page") or ""))
+            rows.append(f"<tr><td>{title}</td><td>{page}</td></tr>")
+        blocks.insert(0, '<section class="contents"><h2>Contents</h2><table>' + "".join(rows) + "</table></section>")
+    if footnotes:
+        notes = []
+        for note in footnotes:
+            marker = html.escape(str(note.get("marker") or ""))
+            body = html.escape(str(note.get("text") or ""))
+            notes.append(f"<li><span>{marker}</span> {body}</li>")
+        blocks.append('<section class="notes"><h2>Notes</h2><ol>' + "".join(notes) + "</ol></section>")
+    return "\n".join(blocks)
+
+
+def _role_deserves_heading(role: str) -> bool:
+    return role in {
+        "preface",
+        "section",
+        "chapter",
+        "index",
+        "appendix",
+        "abstract",
+        "references",
+        "bibliography",
+        "editorial",
+        "feature",
+        "article",
+        "headline",
+        "masthead",
+        "folio",
+        "marginalia",
+        "colophon",
+        "date-place",
+        "salutation",
+        "signature",
+        "cover-sheet",
+        "folder-label",
+        "record",
+    }
+
+
+def _unit_heading(unit: Dict[str, object]) -> str:
+    headings = unit.get("headings")
+    if isinstance(headings, list):
+        for heading in headings:
+            text = str(heading).strip()
+            if text:
+                return text
+    candidates = unit.get("title_candidates")
+    if isinstance(candidates, list):
+        for candidate in candidates:
+            text = str(candidate).strip()
+            if text:
+                return text
+    return ""
 
 
 def _parse_image_marker(text: str) -> Optional[tuple[str, str]]:

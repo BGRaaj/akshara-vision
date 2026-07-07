@@ -95,14 +95,19 @@ preserve repeated mixed-language patterns more consistently.
 
 `run_manifest.json` includes `document_structure` and `assembly_profile` fields.
 These are deterministic observations such as title candidates, section headings,
-page markers, content kind counts, and target-format assembly hints. They improve
-final assembly while keeping the restored text itself clean.
+page markers, content kind counts, layout counts, feature counts, semantic
+page/chunk roles, table-of-contents entries, footnotes, figure counts, and
+target-format assembly hints. Books, magazines, newspapers, manuscripts,
+journal articles, letters, and archive bundles receive different role sets so
+assembly can treat contents pages, articles, folios, references, signatures, and
+archive item boundaries differently while keeping the restored text itself clean.
 
 If figure/image enrichment is enabled, chunk records may also include `assets`
-entries with path, width, height, DPI, aspect ratio, bounding box, and
-recommended placement. These are conservative candidate figure crops, not
-guaranteed layout-perfect segmentation. Akshara avoids saving whole pages as
-figures and ignores tiny marks, cracks, or ambiguous noise.
+entries with path, width, height, DPI, aspect ratio, bounding box, relative page
+coordinates, page zone, size class, and recommended placement. These are
+conservative candidate figure crops, not guaranteed layout-perfect segmentation.
+Akshara avoids saving whole pages as figures and ignores tiny marks, cracks,
+bleed-through, or ambiguous noise.
 
 When staged outputs are combined, Akshara rebuilds text from structured chunk
 records where possible, re-inserts figure markers, carries asset metadata into
@@ -110,6 +115,8 @@ JSON/YAML exports, and renders linked figures in HTML/EPUB outputs.
 
 For long runs, progress updates show token usage after each completed page,
 image, text chunk, or translation chunk when the provider reports usage. The
+message separates `tokens this page` from `run total` so cost/performance can be
+tracked without decoding compact counters. The
 final manifest still stores the aggregate usage summary.
 
 Suspicious restoration output that looks malformed or gibberish-heavy can be

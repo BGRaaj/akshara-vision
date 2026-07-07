@@ -40,6 +40,102 @@ BLANK_PAGE_REASON = "blank page or no readable text"
 DEFAULT_PROVIDER_RETRIES = 3
 MAX_FIGURE_CROPS_PER_PAGE = 4
 
+DOCUMENT_ROLE_GUIDANCE = {
+    "book": {
+        "front": {"title", "contents", "preface", "foreword", "introduction"},
+        "main": {"chapter", "section", "part", "appendix", "index"},
+        "roles": {
+            "title": "title matter",
+            "contents": "table of contents",
+            "preface": "front matter",
+            "chapter": "chapter text",
+            "section": "section text",
+            "appendix": "appendix",
+            "index": "index",
+            "footnotes": "notes",
+            "body": "body text",
+        },
+    },
+    "magazine": {
+        "roles": {
+            "cover": "cover or title page",
+            "masthead": "masthead",
+            "contents": "contents",
+            "editorial": "editorial",
+            "feature": "feature article",
+            "article": "article",
+            "advertisement": "advertisement",
+            "sidebar": "sidebar",
+            "caption": "caption",
+            "multi-column": "multi-column article flow",
+            "illustrated": "illustrated page",
+            "body": "periodical body",
+        },
+    },
+    "newspaper": {
+        "roles": {
+            "front-page": "front page",
+            "headline": "headline",
+            "article": "article",
+            "dateline": "dateline",
+            "byline": "byline",
+            "advertisement": "advertisement",
+            "classifieds": "classifieds",
+            "continuation": "continued article",
+            "multi-column": "column flow",
+            "caption": "caption",
+            "body": "newspaper body",
+        },
+    },
+    "manuscript": {
+        "roles": {
+            "folio": "folio marker",
+            "marginalia": "marginalia",
+            "annotation": "annotation",
+            "correction": "scribal correction",
+            "colophon": "colophon",
+            "damaged": "damaged passage",
+            "lineated-text": "lineated manuscript text",
+            "body": "manuscript body",
+        },
+    },
+    "journal article": {
+        "roles": {
+            "title": "article title",
+            "authors": "authors",
+            "abstract": "abstract",
+            "section": "section",
+            "references": "references",
+            "bibliography": "bibliography",
+            "footnotes": "notes",
+            "figure-table": "figure or table",
+            "body": "article body",
+        },
+    },
+    "letter": {
+        "roles": {
+            "date-place": "date or place line",
+            "salutation": "salutation",
+            "signature": "signature",
+            "postscript": "postscript",
+            "address": "address",
+            "body": "letter body",
+        },
+    },
+    "archive bundle": {
+        "roles": {
+            "cover-sheet": "cover sheet",
+            "folder-label": "folder label",
+            "identifier": "identifier",
+            "date": "date",
+            "form": "form",
+            "record": "record",
+            "item-boundary": "item boundary",
+            "body": "archive item body",
+        },
+    },
+}
+
 EXECUTION_MODE_PDF_DPI = {
     "fast": 200,
     "balanced": 300,
@@ -105,6 +201,7 @@ class StageWriter:
         source_name: str,
         piece_index: int,
         record: Dict[str, object],
+        document_type: str = "",
     ) -> Path:
         source_dir = _numbered_label_dir(self.records_dir, source_index, source_name)
         source_dir.mkdir(parents=True, exist_ok=True)
@@ -113,6 +210,7 @@ class StageWriter:
         payload.setdefault("source_index", source_index)
         payload.setdefault("source_name", source_name)
         payload.setdefault("piece_index", piece_index)
+        payload.setdefault("semantic_tags", _semantic_tags_for_chunk(payload, document_type, source_name))
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return path
 
@@ -281,6 +379,7 @@ class StageWriter:
             "height": height,
             "dpi": dpi,
             "placement": _asset_placement(width, height),
+            "layout": _asset_layout_metadata(None, None, width, height),
         }
 
     def write_figure_asset(
@@ -291,6 +390,7 @@ class StageWriter:
         piece_index: int,
         figure_index: int,
         bbox: tuple[int, int, int, int],
+        page_size: Optional[tuple[int, int]] = None,
         dpi: Optional[int] = None,
     ) -> Dict[str, object]:
         asset_dir = self.assets_dir / _slugify(source_name)
@@ -307,6 +407,7 @@ class StageWriter:
             "dpi": dpi,
             "bbox": list(bbox),
             "placement": _asset_placement(width, height),
+            "layout": _asset_layout_metadata(bbox, page_size, width, height),
         }
 
     def _item_dir(self, source_index: int, source_name: str) -> Path:
@@ -709,6 +810,7 @@ def combine_stage_outputs(run_dir: Path) -> Dict[str, object]:
     manifest = _load_manifest(run_manifest)
     run_state = _load_manifest(run_dir / "run_state.json")
     effective_manifest = manifest or run_state
+    _ensure_manifest_structure(effective_manifest)
     if not stage_root.exists() and not items_root.exists() and not effective_manifest:
         raise RuntimeError(f"No staged outputs found in {run_dir}.")
 
@@ -777,6 +879,23 @@ def _combined_parts_from_manifest(manifest: Dict[str, object]) -> List[str]:
         if text.strip():
             parts.append(f"===== {label} =====\n{text.strip()}")
     return parts
+
+
+def _ensure_manifest_structure(manifest: Dict[str, object]) -> None:
+    metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+    records = metadata.get("restoration") if isinstance(metadata, dict) else None
+    if not isinstance(records, list):
+        return
+    existing = metadata.get("document_structure")
+    if isinstance(existing, dict) and existing.get("semantic_units"):
+        return
+    profile = manifest.get("profile") if isinstance(manifest.get("profile"), dict) else {}
+    document_type = str(
+        metadata.get("document_type")
+        or profile.get("document_type")
+        or "General"
+    )
+    metadata["document_structure"] = _document_structure(records, document_type)
 
 
 def _combined_parts_from_record_checkpoints(records_root: Path) -> List[str]:
@@ -1196,6 +1315,7 @@ def _restore_text(
             source_label or source_path.name,
             index,
             chunk_record,
+            profile.document_type,
         )
     combined = "\n\n".join(part for part in restored_chunks if part.strip()).strip()
     if not combined:
@@ -1308,8 +1428,10 @@ def _usage_summary(item_usage: dict, total_usage: Dict[str, object]) -> str:
     total_all = int(total_usage.get("total_tokens") or (total_prompt + total_completion))
     truncated = " truncated" if item_usage.get("truncated") or total_usage.get("truncated") else ""
     return (
-        f"tokens page/run {item_total}/{total_all} "
-        f"(in {item_prompt}/{total_prompt}, out {item_completion}/{total_completion}){truncated}"
+        f"tokens this page: {item_total} "
+        f"(input {item_prompt}, output {item_completion}); "
+        f"run total: {total_all} "
+        f"(input {total_prompt}, output {total_completion}){truncated}"
     )
 
 
@@ -1838,33 +1960,38 @@ def _document_type_guidance(profile: WorkflowProfile) -> str:
         "book": (
             "Book restoration skill: preserve title pages, subtitles, author/editor lines, "
             "preface/foreword sections, table of contents, chapter headings, page numbers, "
-            "footnotes, indexes, appendices, and running headers without inventing missing data."
+            "footnotes, indexes, appendices, and running headers without inventing missing data. "
+            "Keep the page readable in one pass; do not spend time reconstructing invisible words."
         ),
         "magazine": (
             "Magazine restoration skill: identify columns, article boundaries, headlines, decks, "
             "captions, bylines, page numbers, advertisements, and sidebars. Do not merge text from "
-            "different columns or adjacent articles."
+            "different columns or adjacent articles. Read each article block in its natural flow and "
+            "move on promptly when a damaged word is uncertain."
         ),
         "newspaper": (
             "Newspaper restoration skill: preserve column order, article boundaries, headlines, "
             "datelines, bylines, captions, advertisements, and continuation markers. Avoid mixing "
-            "rows across columns."
+            "rows across columns. Do not infer show-through or back-page impressions as front-page text."
         ),
         "manuscript": (
             "Manuscript restoration skill: preserve folio/page markers, marginalia, corrections, "
-            "scribal marks, uncertain readings, line breaks, and damaged text honestly."
+            "scribal marks, uncertain readings, line breaks, and damaged text honestly. Do not force "
+            "modern spelling or complete damaged readings."
         ),
         "journal article": (
             "Article restoration skill: preserve title, authors, abstract, section headings, "
-            "citations, footnotes, tables, figures, captions, and bibliography structure."
+            "citations, footnotes, tables, figures, captions, and bibliography structure. Keep citation "
+            "order exactly as visible."
         ),
         "letter": (
             "Letter restoration skill: preserve salutation, date, place, body paragraphs, "
-            "postscript, signature, and address marks."
+            "postscript, signature, and address marks. Preserve line breaks where they carry letter form."
         ),
         "archive bundle": (
             "Archive bundle skill: preserve each item boundary, original ordering, labels, dates, "
-            "identifiers, and folder-like grouping."
+            "identifiers, and folder-like grouping. Treat each visible record as an item, not as one "
+            "continuous book page."
         ),
     }
     selected = guidance.get(kind, "General restoration skill: preserve document order, headings, labels, notes, page markers, and uncertain text.")
@@ -1907,10 +2034,17 @@ def _document_structure(
     records: List[Dict[str, object]], document_type: str, profile: Optional[WorkflowProfile] = None
 ) -> Dict[str, object]:
     chunks = []
-    for record in records:
+    semantic_units = []
+    for source_number, record in enumerate(records, start=1):
+        source_label = str(record.get("label") or record.get("source") or f"source-{source_number}")
         for chunk in record.get("chunks", []):
             if isinstance(chunk, dict):
+                chunk.setdefault(
+                    "semantic_tags",
+                    _semantic_tags_for_chunk(chunk, document_type, source_label),
+                )
                 chunks.append(chunk)
+                semantic_units.append(chunk["semantic_tags"])
     observations = [
         _piece_observations(str(chunk.get("restored_text") or ""), document_type, int(chunk.get("index") or 0))
         for chunk in chunks
@@ -1918,7 +2052,11 @@ def _document_structure(
     title_candidates = []
     page_markers = []
     section_headings = []
+    contents_entries = []
+    footnotes = []
     content_kinds: Dict[str, int] = {}
+    layouts: Dict[str, int] = {}
+    content_features: Dict[str, int] = {}
     asset_count = 0
     for item in observations:
         title_candidates.extend(item.get("title_candidates", []))
@@ -1926,8 +2064,15 @@ def _document_structure(
         if page_marker:
             page_markers.append(page_marker)
         section_headings.extend(item.get("section_headings", []))
+        contents_entries.extend(item.get("contents_entries", []))
+        footnotes.extend(item.get("footnotes", []))
         content_kind = str(item.get("content_kind") or "body")
         content_kinds[content_kind] = content_kinds.get(content_kind, 0) + 1
+        layout = str(item.get("layout") or "single-flow")
+        layouts[layout] = layouts.get(layout, 0) + 1
+        for feature in item.get("content_features", []):
+            feature_name = str(feature)
+            content_features[feature_name] = content_features.get(feature_name, 0) + 1
     for chunk in chunks:
         chunk_assets = chunk.get("assets")
         if isinstance(chunk_assets, list):
@@ -1938,7 +2083,12 @@ def _document_structure(
         "title_candidates": _unique_limited(title_candidates, 8),
         "section_headings": _unique_limited(section_headings, 24),
         "page_markers": _unique_limited(page_markers, 24),
+        "contents_entries": contents_entries[:120],
+        "footnotes": footnotes[:120],
         "content_kinds": content_kinds,
+        "layouts": layouts,
+        "content_features": content_features,
+        "semantic_units": semantic_units,
         "figure_extraction_enabled": _figure_extraction_enabled(profile),
         "asset_count": asset_count,
     }
@@ -1961,34 +2111,303 @@ def _piece_observations(text: str, document_type: str, index: int) -> Dict[str, 
         if re.fullmatch(r"(?:page\s*)?[ivxlcdm\d]+", line, flags=re.I):
             page_marker = line
             break
-    kind = _content_kind(lines, document_type)
+    detected_kind = _content_kind(lines, document_type)
+    kind = "title" if detected_kind == "body" and _looks_like_title_page(lines, index) else detected_kind
+    features = _content_features(lines, kind, document_type)
+    layout = _layout_class(lines, kind, features)
     return {
         "index": index,
         "content_kind": kind,
+        "role_label": _role_label(kind, document_type),
+        "assembly_hint": _assembly_hint(kind, document_type),
+        "layout": layout,
+        "content_features": features,
         "page_marker": page_marker,
         "title_candidates": first_lines[:2] if index <= 2 else [],
         "section_headings": headings[:6],
+        "contents_entries": _contents_entries(lines) if kind == "contents" else [],
+        "footnotes": _footnotes(lines),
         "has_multi_column_spacing": any(re.search(r"\S\s{4,}\S", line) for line in lines[:80]),
         "has_figure_marker": any("[image:" in line.lower() for line in lines),
     }
 
 
+def _semantic_tags_for_chunk(
+    chunk: Dict[str, object], document_type: str, source_label: str
+) -> Dict[str, object]:
+    text = str(chunk.get("restored_text") or chunk.get("text") or "")
+    index = int(chunk.get("index") or chunk.get("piece_index") or 0)
+    observations = _piece_observations(text, document_type, index)
+    role = str(observations.get("content_kind") or "body")
+    return {
+        "source": source_label,
+        "index": index,
+        "role": role,
+        "role_label": observations.get("role_label") or _role_label(role, document_type),
+        "layout": observations.get("layout") or "single-flow",
+        "assembly_hint": observations.get("assembly_hint") or _assembly_hint(role, document_type),
+        "content_features": observations.get("content_features") or [],
+        "page_marker": observations.get("page_marker") or "",
+        "headings": observations.get("section_headings") or [],
+        "title_candidates": observations.get("title_candidates") or [],
+        "contents_entries": observations.get("contents_entries") or [],
+        "footnotes": observations.get("footnotes") or [],
+        "has_figures": bool(chunk.get("assets")),
+        "asset_count": len(chunk.get("assets") or []) if isinstance(chunk.get("assets"), list) else 0,
+    }
+
+
+def _contents_entries(lines: List[str]) -> List[Dict[str, str]]:
+    entries = []
+    for line in lines[:120]:
+        cleaned = re.sub(r"\s+", " ", line.strip())
+        if len(cleaned) < 3:
+            continue
+        match = re.match(r"^(?P<title>.+?)\s*(?:\.{2,}|\s{2,}| - | -- )\s*(?P<page>[ivxlcdm\d]+)$", cleaned, re.I)
+        if not match:
+            match = re.match(r"^(?P<page>[ivxlcdm\d]+)\s+(?P<title>.+)$", cleaned, re.I)
+        if not match:
+            continue
+        title = match.group("title").strip(" .-")
+        page = match.group("page").strip()
+        if title and page:
+            entries.append({"title": title, "page": page, "raw": line.strip()})
+    return entries[:80]
+
+
+def _footnotes(lines: List[str]) -> List[Dict[str, str]]:
+    notes = []
+    for line in lines:
+        match = re.match(r"^\s*(?P<marker>(?:\*+|\d+|[a-z]))[\).:\]]\s+(?P<text>.+)$", line, re.I)
+        if match and len(match.group("text").strip()) > 8:
+            notes.append(
+                {
+                    "marker": match.group("marker"),
+                    "text": match.group("text").strip(),
+                }
+            )
+    return notes[:40]
+
+
 def _content_kind(lines: List[str], document_type: str) -> str:
     joined = "\n".join(lines[:40]).lower()
     kind = str(document_type or "").lower()
+    first = lines[0].strip().lower() if lines else ""
     if "contents" in joined or "table of contents" in joined:
         return "contents"
     if "preface" in joined or "foreword" in joined:
         return "preface"
+    if "abstract" in first or first == "summary":
+        return "abstract"
+    if re.search(r"\b(references|bibliography|works cited)\b", joined):
+        return "references" if kind == "journal article" else "bibliography"
     if "index" in joined and kind == "book":
         return "index"
-    if re.search(r"\b(chapter|section|part)\b", joined):
+    if re.search(r"\b(appendix)\b", joined):
+        return "appendix"
+    if kind == "book" and re.search(r"\bchapter\b", joined):
+        return "chapter"
+    if kind in {"book", "journal article", "general"} and re.search(r"\b(section|part)\b", joined):
         return "section"
-    if kind in {"magazine", "newspaper"} and any(re.search(r"\S\s{4,}\S", line) for line in lines[:80]):
+    if kind == "magazine":
+        if index_hint := _periodical_role(lines, joined, "magazine"):
+            return index_hint
+    if kind == "newspaper":
+        if index_hint := _periodical_role(lines, joined, "newspaper"):
+            return index_hint
+    if kind == "manuscript":
+        if index_hint := _manuscript_role(lines, joined):
+            return index_hint
+    if kind == "letter":
+        if index_hint := _letter_role(lines, joined):
+            return index_hint
+    if kind == "archive bundle":
+        if index_hint := _archive_role(lines, joined):
+            return index_hint
+    if kind in {"magazine", "newspaper"} and _has_column_spacing(lines):
         return "multi-column"
     if any("[image:" in line.lower() for line in lines):
         return "illustrated"
     return "body"
+
+
+def _periodical_role(lines: List[str], joined: str, document_type: str) -> str:
+    if not lines:
+        return ""
+    first = lines[0].strip()
+    if document_type == "magazine":
+        if re.search(r"\b(masthead|editor|publisher|volume|vol\.|issue|no\.)\b", joined):
+            return "masthead"
+        if re.search(r"\b(editorial|from the editor)\b", joined):
+            return "editorial"
+        if re.search(r"\b(feature|special report|cover story)\b", joined):
+            return "feature"
+        if re.search(r"\b(advertisement|advertiser|classified)\b", joined):
+            return "advertisement"
+        if re.search(r"\b(sidebar|box item)\b", joined):
+            return "sidebar"
+        if re.search(r"\b(caption|photo|illustration|plate)\b", joined):
+            return "caption"
+        if _has_column_spacing(lines):
+            return "multi-column"
+        if len(first) <= 80 and first == first.upper() and len(lines) <= 25:
+            return "article"
+    else:
+        if re.search(r"\b(classifieds?|wanted|for sale|tenders?)\b", joined):
+            return "classifieds"
+        if re.search(r"\b(advertisement|advertiser)\b", joined):
+            return "advertisement"
+        if re.search(r"\b(continued from|continued on)\b", joined):
+            return "continuation"
+        if re.search(r"^[A-Z][A-Z .,'-]{6,}$", first):
+            return "headline"
+        if re.search(r"\b(by|from our correspondent|staff reporter)\b", "\n".join(lines[:8]).lower()):
+            return "byline"
+        if re.search(r"\b[A-Z][a-z]+,\s+[A-Z][a-z]+\.?\s+\d{1,2}\b", "\n".join(lines[:8])):
+            return "dateline"
+        if _has_column_spacing(lines):
+            return "multi-column"
+    return ""
+
+
+def _manuscript_role(lines: List[str], joined: str) -> str:
+    if not lines:
+        return ""
+    if re.search(r"\b(folio|fol\.|recto|verso)\b", joined) or re.fullmatch(r"(?:f\.?\s*)?\d+[rv]", lines[0], re.I):
+        return "folio"
+    if re.search(r"\b(marginalia|margin note|in margin)\b", joined):
+        return "marginalia"
+    if re.search(r"\b(correction|inserted|deleted|interlineation)\b", joined):
+        return "correction"
+    if re.search(r"\b(colophon|scribe|copied by|completed by)\b", joined):
+        return "colophon"
+    if joined.count("[unclear]") >= 3 or "[missing text]" in joined:
+        return "damaged"
+    if len(lines) >= 8 and all(len(line) <= 90 for line in lines[:12]):
+        return "lineated-text"
+    return ""
+
+
+def _letter_role(lines: List[str], joined: str) -> str:
+    if not lines:
+        return ""
+    first = lines[0].strip()
+    if re.search(r"\b(dear|respected|sir|madam|my dear)\b", "\n".join(lines[:6]), re.I):
+        return "salutation"
+    if re.search(r"\b(yours faithfully|yours sincerely|sincerely|obediently|signed)\b", joined):
+        return "signature"
+    if re.search(r"\b(p\.?s\.?|postscript)\b", joined):
+        return "postscript"
+    if re.search(r"\b(to|from)\b.+\b(street|road|district|post|address)\b", joined):
+        return "address"
+    if re.search(r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b", first) or re.search(
+        r"\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\b",
+        first,
+        re.I,
+    ):
+        return "date-place"
+    return ""
+
+
+def _archive_role(lines: List[str], joined: str) -> str:
+    if not lines:
+        return ""
+    if re.search(r"\b(file|folder|bundle|box)\s*(no\.?|number|id)?\b", joined):
+        return "folder-label"
+    if re.search(r"\b(id|identifier|reference|ref\.|case no\.|serial no\.)\b", joined):
+        return "identifier"
+    if re.search(r"\b(form|application|register|ledger)\b", joined):
+        return "form"
+    if re.search(r"\b(date|dated)\b", joined):
+        return "date"
+    if re.search(r"\b(item|document|record)\s+\d+\b", joined):
+        return "item-boundary"
+    return "record" if len(lines) <= 35 else ""
+
+
+def _content_features(lines: List[str], role: str, document_type: str) -> List[str]:
+    joined = "\n".join(lines[:100]).lower()
+    features = []
+    if _has_column_spacing(lines):
+        features.append("multi_column")
+    if any("[image:" in line.lower() for line in lines):
+        features.append("figure_marker")
+    if _contents_entries(lines):
+        features.append("contents_entries")
+    if _footnotes(lines):
+        features.append("footnotes")
+    if re.search(r"\b(by|from our correspondent|staff reporter)\b", joined):
+        features.append("byline")
+    if re.search(r"\b(advertisement|classifieds?|wanted|for sale)\b", joined):
+        features.append("advertising")
+    if re.search(r"\b(caption|photo|illustration|figure|plate|map)\b", joined):
+        features.append("visual_reference")
+    if re.search(r"\S\s{6,}\S", "\n".join(lines[:80])):
+        features.append("table_or_columns")
+    if role in {"marginalia", "annotation", "correction", "folio"} or str(document_type).lower() == "manuscript":
+        features.append("manuscript_layout")
+    return _unique_limited(features, 12)
+
+
+def _layout_class(lines: List[str], role: str, features: List[str]) -> str:
+    if "multi_column" in features:
+        return "multi-column"
+    if role in {"contents", "references", "bibliography", "index", "classifieds"}:
+        return "list-like"
+    if role in {"folio", "marginalia", "lineated-text"}:
+        return "lineated"
+    if "table_or_columns" in features:
+        return "tabular-or-columnar"
+    return "single-flow"
+
+
+def _has_column_spacing(lines: List[str]) -> bool:
+    spaced = sum(1 for line in lines[:80] if re.search(r"\S\s{4,}\S", line))
+    return spaced >= 2
+
+
+def _role_label(role: str, document_type: str) -> str:
+    kind = str(document_type or "").lower()
+    roles = DOCUMENT_ROLE_GUIDANCE.get(kind, {}).get("roles", {})
+    if isinstance(roles, dict):
+        label = roles.get(role)
+        if label:
+            return str(label)
+    return role.replace("-", " ")
+
+
+def _assembly_hint(role: str, document_type: str) -> str:
+    kind = str(document_type or "").lower()
+    if role in {"title", "cover", "masthead", "cover-sheet", "folder-label"}:
+        return "front_matter"
+    if role in {"contents"}:
+        return "toc"
+    if role in {"preface", "abstract", "editorial"}:
+        return "introductory"
+    if role in {"chapter", "section", "article", "feature", "record", "letter", "body", "lineated-text"}:
+        return "main_flow"
+    if role in {"index", "references", "bibliography", "footnotes"}:
+        return "back_matter"
+    if role in {"advertisement", "classifieds", "sidebar", "caption", "illustrated", "figure-table"}:
+        return "supplementary"
+    if kind == "archive bundle":
+        return "archive_item"
+    return "main_flow"
+
+
+def _looks_like_title_page(lines: List[str], index: int) -> bool:
+    if index > 2 or not lines or len(lines) > 18:
+        return False
+    text_lines = [
+        line for line in lines
+        if not re.fullmatch(r"(?:page\s*)?[ivxlcdm\d]+", line, flags=re.I)
+    ]
+    if not text_lines:
+        return False
+    longish = [line for line in text_lines if 4 <= len(line) <= 120]
+    has_title_shape = any(line == line.upper() and len(line) >= 4 for line in longish)
+    has_credit = any(re.search(r"\b(by|author|editor|translated by)\b", line, re.I) for line in text_lines)
+    return bool(has_title_shape and (len(text_lines) <= 10 or has_credit))
 
 
 def _assembly_profile(document_type: str, output_formats: List[str]) -> Dict[str, object]:
@@ -2077,6 +2496,7 @@ def _extract_figure_assets(
                         piece_index,
                         figure_index,
                         bbox,
+                        page_size=source.size,
                         dpi=dpi,
                     )
                 )
@@ -2278,6 +2698,94 @@ def _asset_placement(width: Optional[int], height: Optional[int]) -> Dict[str, o
         "recommended_width": recommended_width,
         "aspect_ratio": aspect_ratio,
     }
+
+
+def _asset_layout_metadata(
+    bbox: Optional[tuple[int, int, int, int]],
+    page_size: Optional[tuple[int, int]],
+    width: Optional[int],
+    height: Optional[int],
+) -> Dict[str, object]:
+    aspect_ratio = round(width / height, 4) if width and height else None
+    layout: Dict[str, object] = {
+        "size_class": _asset_size_class(width, height, page_size, bbox),
+        "aspect_ratio": aspect_ratio,
+        "page_zone": "unknown",
+        "relative_bbox": None,
+        "assembly": {
+            "anchor": "after-nearest-paragraph",
+            "flow": "block",
+            "preserve_aspect_ratio": True,
+        },
+    }
+    if not bbox or not page_size:
+        return layout
+
+    page_w, page_h = page_size
+    if page_w <= 0 or page_h <= 0:
+        return layout
+    left, top, right, bottom = bbox
+    center_x = (left + right) / 2
+    center_y = (top + bottom) / 2
+    relative_bbox = [
+        round(left / page_w, 4),
+        round(top / page_h, 4),
+        round(right / page_w, 4),
+        round(bottom / page_h, 4),
+    ]
+    page_zone = _page_zone(center_x / page_w, center_y / page_h)
+    area_ratio = round(((right - left) * (bottom - top)) / max(page_w * page_h, 1), 4)
+    layout.update(
+        {
+            "page_width": page_w,
+            "page_height": page_h,
+            "page_zone": page_zone,
+            "relative_bbox": relative_bbox,
+            "area_ratio": area_ratio,
+            "size_class": _asset_size_class(width, height, page_size, bbox),
+            "assembly": {
+                "anchor": "after-nearest-paragraph",
+                "flow": "block",
+                "page_zone": page_zone,
+                "size_class": _asset_size_class(width, height, page_size, bbox),
+                "preserve_aspect_ratio": True,
+            },
+        }
+    )
+    return layout
+
+
+def _asset_size_class(
+    width: Optional[int],
+    height: Optional[int],
+    page_size: Optional[tuple[int, int]],
+    bbox: Optional[tuple[int, int, int, int]],
+) -> str:
+    if bbox and page_size:
+        page_w, page_h = page_size
+        left, top, right, bottom = bbox
+        area_ratio = ((right - left) * (bottom - top)) / max(page_w * page_h, 1)
+        width_ratio = (right - left) / max(page_w, 1)
+        if area_ratio >= 0.38 or width_ratio >= 0.78:
+            return "full-width"
+        if area_ratio >= 0.14 or width_ratio >= 0.48:
+            return "large"
+        if area_ratio >= 0.055:
+            return "medium"
+        return "small"
+    if not width or not height:
+        return "unknown"
+    if width > height * 1.4:
+        return "wide"
+    if height > width * 1.4:
+        return "tall"
+    return "medium"
+
+
+def _page_zone(x_ratio: float, y_ratio: float) -> str:
+    horizontal = "left" if x_ratio < 0.33 else "right" if x_ratio > 0.67 else "center"
+    vertical = "top" if y_ratio < 0.33 else "bottom" if y_ratio > 0.67 else "middle"
+    return f"{vertical}-{horizontal}"
 
 
 def _unique_limited(values: List[object], limit: int) -> List[str]:
@@ -2483,6 +2991,8 @@ def _task_text(
             context
             + "Look at the attached image carefully.\n"
             + depth_instruction
+            + "Use only visible front-side text. Never use mirrored bleed-through, shadows, texture, "
+            "stains, page cracks, or back-side impressions as source text.\n"
             + "Restoration stage only: extract ALL text visible in the image exactly as written.\n"
             "Preserve the original language, script, spelling, line breaks, page order, and formatting.\n"
             "Do not skip non-English, Indic, Sanskrit, Kannada, Hindi, Tamil, Telugu, Malayalam, "
@@ -2602,7 +3112,7 @@ def _restore_multimodal_image(
         ],
         "failure_reason": failure_reason,
     }
-    artifacts.write_record_piece(source_index, label, 1, record["chunks"][0])
+    artifacts.write_record_piece(source_index, label, 1, record["chunks"][0], profile.document_type)
     return restored_text + "\n", record, usage
 
 
@@ -3267,7 +3777,7 @@ def _restore_multimodal_pdf(
             if pre_review_text:
                 chunk_record["pre_review_text"] = pre_review_text
             chunks_record.append(chunk_record)
-            artifacts.write_record_piece(source_index, label, idx, chunk_record)
+            artifacts.write_record_piece(source_index, label, idx, chunk_record, profile.document_type)
             if idx not in [f[0] for f in failed_pages]:
                 try:
                     page_img.unlink()
@@ -3353,7 +3863,7 @@ def _restore_multimodal_pdf(
                             chunk["notes"] = _join_notes(chunk.get("notes", ""), review_note)
                             if pre_review_text:
                                 chunk["pre_review_text"] = pre_review_text
-                            artifacts.write_record_piece(source_index, label, idx, chunk)
+                            artifacts.write_record_piece(source_index, label, idx, chunk, profile.document_type)
                             break
                     artifacts.write_restored_piece(source_index, label, idx, restored_text + "\n")
                     del result, restored_text
@@ -3595,7 +4105,9 @@ def _restore_multimodal_zip(
                     if pre_review_text:
                         chunk_record["pre_review_text"] = pre_review_text
                     chunks_record.append(chunk_record)
-                    artifacts.write_record_piece(source_index, label, chunk_idx, chunk_record)
+                    artifacts.write_record_piece(
+                        source_index, label, chunk_idx, chunk_record, profile.document_type
+                    )
                     chunk_idx += 1
                 archive_file_text = "\n\n".join(part for part in archive_file_parts if part.strip())
                 artifacts.write_archive_item_restored(
@@ -3757,7 +4269,9 @@ def _restore_multimodal_zip(
                 if pre_review_text:
                     chunk_record["pre_review_text"] = pre_review_text
                 chunks_record.append(chunk_record)
-                artifacts.write_record_piece(source_index, label, chunk_idx, chunk_record)
+                artifacts.write_record_piece(
+                    source_index, label, chunk_idx, chunk_record, profile.document_type
+                )
                 chunk_idx += 1
 
         for folder_label, parts in sorted(archive_folder_parts.items()):

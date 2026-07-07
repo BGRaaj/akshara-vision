@@ -28,8 +28,8 @@ model, provider, scan quality, script complexity, and document damage.
 | Interactive CLI | Monochrome terminal UI, home board, dropdowns, checkboxes, confirmations, profile manager, model setup, doctor checks |
 | Restoration | Text cleanup, OCR error correction, uncertainty markers, chunked long-text processing, raw OCR preservation |
 | Vision input | Direct multimodal processing for scanned images and rendered PDF pages with dense-page and Indic-script extraction guidance |
-| Document intelligence | Document-type-specific extraction guidance plus detected structure metadata for books, manuscripts, magazines, newspapers, articles, letters, and archive bundles |
-| Assembly enrichment | Optional figure markers plus candidate figure crops with bounding boxes, size, DPI, and placement metadata |
+| Document intelligence | Document-type-specific extraction guidance plus semantic roles, layout hints, and detected structure metadata for books, manuscripts, magazines, newspapers, articles, letters, and archive bundles |
+| Assembly enrichment | Optional figure markers plus candidate figure crops with bounding boxes, page zones, relative positions, size, DPI, and placement metadata |
 | Language handling | Per-run choice to preserve all readable detected languages/scripts or strictly extract only the declared source language |
 | Translation | Automatic final-pass translation when output language differs from source language; manual modes for translate, bilingual, transliterate, and metadata-only workflows |
 | Batch processing | Files, folders, recursive folders, globs, ZIP archives, CSV manifests, and JSON manifests |
@@ -171,9 +171,17 @@ page being rendered or restored instead of waiting for the entire PDF to convert
 before the model starts.
 
 After each page, image, or text chunk model call, the progress line includes
-token usage for that item and cumulative run totals. Suspicious restorations
-that look malformed or gibberish-like are sent through a constrained review pass
-before they are checkpointed.
+plain-language token usage for that item and cumulative run totals. Suspicious
+restorations that look malformed or gibberish-like are sent through a constrained
+review pass before they are checkpointed.
+
+Akshara also tags restored chunks with deterministic semantic roles. Books get
+roles such as title matter, contents, preface, chapter, section, appendix, index,
+and notes. Magazines and newspapers add roles such as masthead, headline,
+article, feature, advertisement, classifieds, and multi-column flow. Manuscripts,
+letters, journal articles, and archive bundles get their own role sets. Contents
+entries are parsed into title/page pairs when clear, so publishing exports can
+build more useful document structure without changing the restored text.
 
 Blank pages are preserved as empty outputs and marked as `blank` in the manifest.
 If a model accidentally returns JSON-like text for a page, Akshara Vision extracts
