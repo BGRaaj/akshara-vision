@@ -449,6 +449,7 @@ def onboard(
     )
     if profile.model.execution_mode == "Back":
         return profile
+    profile.model.request_timeout_seconds = choose_request_timeout(profile.model.request_timeout_seconds)
     profile.output_formats = choose_output_formats(profile.output_formats)
     profile.extract_figures = ui.confirm(
         "Enable figure/image markers and page image assets for assembly?", profile.extract_figures
@@ -570,17 +571,75 @@ def choose_model(current: Optional[ModelSettings] = None) -> Optional[ModelSetti
 def choose_output_formats(defaults: Optional[List[str]] = None) -> List[str]:
     defaults = defaults or ["txt"]
     choices = list(OUTPUT_FORMATS.keys()) + ["Back"]
-    selected = ui.checkbox("Output formats", choices, defaults)
-    if "Back" in selected:
-        return defaults
-    selected = [item for item in selected if item in OUTPUT_FORMATS]
-    return selected or ["txt"]
+    while True:
+        selected = ui.checkbox("Output formats (Space selects, Enter confirms)", choices, defaults)
+        if "Back" in selected:
+            return defaults
+        selected = [item for item in selected if item in OUTPUT_FORMATS]
+        if selected:
+            return selected
+        ui.status("info", "Select at least one output format, or choose Back.")
+
+
+def choose_request_timeout(current: Optional[int] = None) -> Optional[int]:
+    choices = [
+        "wait forever",
+        "skip after 5 minutes",
+        "skip after 10 minutes",
+        "skip after 20 minutes",
+        "skip after 30 minutes",
+        "skip after 60 minutes",
+        "custom minutes",
+        "Back",
+    ]
+    default = _request_timeout_label(current)
+    selected = ui.choose("Slow page/model request handling", choices, default)
+    if selected == "Back":
+        return current
+    if selected == "wait forever":
+        return None
+    if selected == "custom minutes":
+        while True:
+            raw = ui.text("Minutes before skipping one slow page/request", "10").strip()
+            try:
+                minutes = int(raw)
+            except ValueError:
+                ui.write("Enter a whole number of minutes.")
+                continue
+            if minutes <= 0:
+                ui.write("Enter a value greater than zero, or choose wait forever.")
+                continue
+            return minutes * 60
+    match = re.search(r"(\d+)", selected)
+    return int(match.group(1)) * 60 if match else current
+
+
+def _request_timeout_label(seconds: Optional[int]) -> str:
+    if not seconds:
+        return "wait forever"
+    minutes = max(1, int(seconds) // 60)
+    known = {
+        5: "skip after 5 minutes",
+        10: "skip after 10 minutes",
+        20: "skip after 20 minutes",
+        30: "skip after 30 minutes",
+        60: "skip after 60 minutes",
+    }
+    return known.get(minutes, "custom minutes")
+
+
+def _request_timeout_display(seconds: Optional[int]) -> str:
+    if not seconds:
+        return "wait forever"
+    minutes = max(1, int(seconds) // 60)
+    return f"skip after {minutes} minute{'s' if minutes != 1 else ''}"
 
 
 def choose_language_value(label: str, current: str, default_keyword: str) -> str:
     current = str(current or default_keyword).strip() or default_keyword
+    default_label = "Auto-detect language" if default_keyword == "auto" else "Same as source language"
     choices = [
-        f"Use {default_keyword}",
+        f"{default_label} ({default_keyword})",
         f"Keep current: {current}",
         "Enter language manually",
         "Back",
@@ -588,7 +647,7 @@ def choose_language_value(label: str, current: str, default_keyword: str) -> str
     selected = ui.choose(label, choices, choices[1])
     if selected == "Back":
         return current
-    if selected.startswith("Use "):
+    if selected.startswith(default_label):
         return default_keyword
     if selected.startswith("Keep current"):
         return current
@@ -680,6 +739,9 @@ def run_guided(
         )
         if profile.model.execution_mode == "Back":
             return None
+        profile.model.request_timeout_seconds = choose_request_timeout(
+            profile.model.request_timeout_seconds
+        )
         profile.output_formats = choose_output_formats(profile.output_formats)
     return execute_run(profile, inputs=inputs, recursive=recursive, dry_run=dry_run)
 
@@ -723,6 +785,9 @@ def execute_run(
         ui.section("Destination")
         profile.output_dir = choose_output_folder(profile.output_dir)
         profile.language_policy = choose_language_policy(profile.language_policy)
+        profile.model.request_timeout_seconds = choose_request_timeout(
+            profile.model.request_timeout_seconds
+        )
         profile.extract_figures = ui.confirm(
             "Enable figure/image markers and page image assets for this run?", profile.extract_figures
         )
@@ -796,6 +861,7 @@ def review_run(profile: WorkflowProfile, selection) -> None:
         ["Model", profile.model.model],
         ["Mode", profile.model.execution_mode],
         ["Mode behavior", _mode_behavior(profile.model.execution_mode)],
+        ["Slow request policy", _request_timeout_display(profile.model.request_timeout_seconds)],
         ["Figure/image assets", "on" if profile.extract_figures else "off"],
         ["Generation limit", str(profile.model.generation_limit or "auto")],
         ["Outputs", ", ".join(profile.output_formats)],
@@ -825,9 +891,9 @@ def _run_with_progress(request: RunRequest):
 
 def _mode_behavior(mode: str) -> str:
     return {
-        "fast": "200 DPI, shorter prompt, heuristic figure crops",
-        "balanced": "300 DPI, default prompt, verifies first figure crop",
-        "quality": "400 DPI, more careful prompt, verifies figure crops",
+        "fast": "300 DPI, shorter prompt, heuristic figure crops",
+        "balanced": "400 DPI, default prompt, verifies first figure crop",
+        "quality": "500 DPI, more careful prompt, verifies figure crops",
     }.get(mode, "standard settings")
 
 
@@ -1116,6 +1182,7 @@ def _show_profile(profile: WorkflowProfile, show_heading: bool = True) -> None:
             ["Mode", profile.model.execution_mode],
             ["Context", str(profile.model.context_window or "auto")],
             ["Generation limit", str(profile.model.generation_limit or "auto")],
+            ["Slow request policy", _request_timeout_display(profile.model.request_timeout_seconds)],
         ]
     )
 
@@ -1183,6 +1250,9 @@ def _edit_profile_interactive(store: ConfigStore, name: str) -> None:
             )
             if selected_mode != "Back":
                 profile.model.execution_mode = selected_mode
+            profile.model.request_timeout_seconds = choose_request_timeout(
+                profile.model.request_timeout_seconds
+            )
         if section in {"Outputs", "Everything"}:
             profile.output_formats = choose_output_formats(profile.output_formats)
             profile.extract_figures = ui.confirm(
@@ -1530,14 +1600,21 @@ def export_command(run_dir: Optional[str] = None, formats: Optional[List[str]] =
     if source_text is None:
         ui.write("Could not find readable text in that run folder or output file.")
         return
-    selected = formats or choose_output_formats(["txt"])
+    selected = [item for item in (formats or []) if item in OUTPUT_FORMATS]
+    if formats and not selected:
+        ui.status("error", "No valid output formats were selected.")
+        return
+    if not selected:
+        selected = choose_output_formats(_default_export_formats(path, metadata))
+    export_metadata = dict(metadata)
+    export_metadata.pop("_default_output_formats", None)
     registry = exporter_registry()
     with ui.progress("Exporting formats...", total=len(selected)) as reporter:
         for output_format in selected:
             exporter = registry.get(output_format)
             if exporter:
                 reporter.update(f"Writing {output_format}", advance=0)
-                result = exporter.export(source_text, destination, metadata)
+                result = exporter.export(source_text, destination, export_metadata)
                 reporter.update(f"Wrote {output_format}", advance=1)
                 ui.write(f"{result.format}: {result.path}")
     _next_recommendations([["Combine run", f"akv combine {path}"], ["Run doctor", "akv doctor"]])
@@ -1611,7 +1688,25 @@ def _run_metadata_for_export(path: Path) -> dict:
     except json.JSONDecodeError:
         return {"title": path.name}
     metadata = manifest.get("metadata") if isinstance(manifest, dict) else None
-    return metadata if isinstance(metadata, dict) else {"title": path.name}
+    result = dict(metadata) if isinstance(metadata, dict) else {"title": path.name}
+    result["run_dir"] = str(path)
+    profile = manifest.get("profile") if isinstance(manifest, dict) else None
+    if isinstance(profile, dict):
+        result["_default_output_formats"] = profile.get("output_formats")
+    return result
+
+
+def _default_export_formats(path: Path, metadata: dict) -> List[str]:
+    if path.is_file():
+        return ["md"]
+    formats = metadata.get("_default_output_formats")
+    if isinstance(formats, list):
+        selected = [str(item) for item in formats if str(item) in OUTPUT_FORMATS]
+        return selected or ["txt"]
+    if isinstance(formats, str):
+        selected = [item.strip() for item in formats.split(",") if item.strip() in OUTPUT_FORMATS]
+        return selected or ["txt"]
+    return ["txt"]
 
 
 def docs_command() -> None:

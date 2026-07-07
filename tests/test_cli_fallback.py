@@ -92,6 +92,21 @@ class CliFallbackTests(unittest.TestCase):
             self.assertTrue(converted.exists())
             self.assertIn("Finished text", converted.read_text(encoding="utf-8"))
 
+    def test_export_command_respects_selected_run_format(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            run_dir.mkdir()
+            (run_dir / "akshara_output.txt").write_text("Finished text", encoding="utf-8")
+            (run_dir / "run_manifest.json").write_text(
+                '{"profile":{"output_formats":["md","html"]},"metadata":{"title":"Run"}}',
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                export_command(str(run_dir), formats=["html"])
+            self.assertTrue((run_dir / "akshara_output.html").exists())
+            self.assertIn("html:", output.getvalue())
+
     def test_resume_command_recovers_partial_run_folder(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp) / "run"

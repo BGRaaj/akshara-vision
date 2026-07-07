@@ -112,6 +112,9 @@ bleed-through, or ambiguous noise.
 When staged outputs are combined, Akshara rebuilds text from structured chunk
 records where possible, re-inserts figure markers, carries asset metadata into
 JSON/YAML exports, and renders linked figures in HTML/EPUB outputs.
+If a reviewer deletes an unwanted file from `assets/`, later HTML, EPUB, and
+Markdown exports skip that missing image instead of rendering a broken image.
+Plain text may still show the original image marker as an audit reference.
 
 For long runs, progress updates show token usage after each completed page,
 image, text chunk, or translation chunk when the provider reports usage. The

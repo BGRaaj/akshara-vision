@@ -44,28 +44,28 @@ class MonoUI:
         if self.theme == "light":
             return InquirerPyStyle(
                 {
-                    "questionmark": "#f4ecd8 bg:#3a2417 bold",
+                    "questionmark": "#f4ecd8 bg:#c45a00 bold",
                     "question": "#3a2417 bg:#f4ecd8 bold",
-                    "answer": "#3a2417 bg:#f4ecd8",
-                    "input": "#3a2417 bg:#f4ecd8",
-                    "pointer": "#f4ecd8 bg:#3a2417 bold",
-                    "highlighted": "#f4ecd8 bg:#3a2417 bold",
-                    "selected": "#3a2417 bg:#f4ecd8",
+                    "answer": "#c45a00 bg:#f4ecd8 bold",
+                    "input": "#c45a00 bg:#f4ecd8 bold",
+                    "pointer": "#f4ecd8 bg:#c45a00 bold",
+                    "highlighted": "#f4ecd8 bg:#c45a00 bold",
+                    "selected": "#c45a00 bg:#f4ecd8 bold",
                     "separator": "#3a2417 bg:#f4ecd8",
-                    "instruction": "#5f4634 bg:#f4ecd8",
+                    "instruction": "#8a4b1f bg:#f4ecd8",
                 }
             )
         return InquirerPyStyle(
             {
-                "questionmark": "black bg:white bold",
+                "questionmark": "black bg:#ff8c00 bold",
                 "question": "white bold",
-                "answer": "white",
-                "input": "white",
-                "pointer": "black bg:white bold",
-                "highlighted": "black bg:white bold",
-                "selected": "white",
+                "answer": "#ff8c00 bold",
+                "input": "#ff8c00 bold",
+                "pointer": "black bg:#ff8c00 bold",
+                "highlighted": "black bg:#ff8c00 bold",
+                "selected": "#ff8c00 bold",
                 "separator": "white",
-                "instruction": "white",
+                "instruction": "#ffb347",
             }
         )
 

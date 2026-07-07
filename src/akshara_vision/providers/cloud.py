@@ -52,7 +52,7 @@ class CloudProvider:
                 instruction=instruction,
                 text=text,
                 api_key=api_key,
-                timeout=None,
+                timeout=_request_timeout(settings),
                 media_path=media_path,
             )
         elif self.name == "anthropic":
@@ -61,7 +61,7 @@ class CloudProvider:
                 settings.model,
                 instruction,
                 text,
-                None,
+                _request_timeout(settings),
                 _generation_limit(settings, _context_limit(settings)),
                 media_path=media_path,
             )
@@ -71,7 +71,7 @@ class CloudProvider:
                 settings.model,
                 instruction,
                 text,
-                None,
+                _request_timeout(settings),
                 _generation_limit(settings, _context_limit(settings)),
                 media_path=media_path,
             )
@@ -132,7 +132,7 @@ class OpenAICompatibleCloudProvider:
             instruction=instruction,
             text=text,
             api_key=api_key,
-            timeout=None,
+            timeout=_request_timeout(settings),
             media_path=media_path,
         )
         if result and result[0]:
@@ -427,3 +427,14 @@ def _provider_timeout(execution_mode: str) -> int:
         "balanced": 240,
         "quality": 480,
     }[execution_mode]
+
+
+def _request_timeout(settings: object) -> Optional[float]:
+    value = getattr(settings, "request_timeout_seconds", None)
+    if value is None:
+        return None
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return None
+    return float(seconds) if seconds > 0 else None

@@ -14,6 +14,7 @@ class ModelSettings:
     execution_mode: str = "balanced"
     context_window: Optional[int] = None
     generation_limit: Optional[int] = None
+    request_timeout_seconds: Optional[int] = None
 
 
 @dataclass
@@ -54,6 +55,7 @@ class WorkflowProfile:
                 "execution_mode": self.model.execution_mode,
                 "context_window": self.model.context_window,
                 "generation_limit": self.model.generation_limit,
+                "request_timeout_seconds": self.model.request_timeout_seconds,
             },
         }
 
@@ -91,6 +93,10 @@ class WorkflowProfile:
                 generation_limit=int(model_data.get("generation_limit"))
                 if model_data.get("generation_limit") is not None
                 and str(model_data.get("generation_limit")).strip() not in {"", "None"}
+                else None,
+                request_timeout_seconds=int(model_data.get("request_timeout_seconds"))
+                if model_data.get("request_timeout_seconds") is not None
+                and str(model_data.get("request_timeout_seconds")).strip() not in {"", "None"}
                 else None,
             ),
         )

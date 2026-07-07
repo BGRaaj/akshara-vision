@@ -137,9 +137,9 @@ DOCUMENT_ROLE_GUIDANCE = {
 }
 
 EXECUTION_MODE_PDF_DPI = {
-    "fast": 200,
-    "balanced": 300,
-    "quality": 400,
+    "fast": 300,
+    "balanced": 400,
+    "quality": 500,
 }
 
 EXECUTION_MODE_IMAGE_PSM = {
@@ -731,7 +731,14 @@ def run_pipeline(
     }
 
     destination = run_dir / "akshara_output"
-    exports = _export_text(final_text, destination, metadata, profile.output_formats, progress)
+    exports = _export_text(
+        final_text,
+        destination,
+        metadata,
+        profile.output_formats,
+        progress,
+        run_dir=run_dir,
+    )
 
     _notify(progress, "manifest", "Writing run manifest", advance=1)
     _write_nested_folder_combines(artifacts.items_dir, profile.output_language)
@@ -853,6 +860,7 @@ def combine_stage_outputs(run_dir: Path) -> Dict[str, object]:
         run_dir / "akshara_output",
         metadata,
         output_formats,
+        run_dir=run_dir,
     )
     _write_recombined_manifest(run_manifest, effective_manifest, exports)
 
@@ -991,12 +999,26 @@ def _asset_markers(assets: object) -> str:
         if not path:
             continue
         label = str(asset.get("label") or asset.get("kind") or "figure").strip()
-        placement = str(asset.get("placement") or "").strip()
+        placement = _asset_marker_placement(asset)
         size = _asset_size_label(asset)
         detail = ", ".join(part for part in [placement, size] if part)
         suffix = f" ({detail})" if detail else ""
         markers.append(f"[image: {label}{suffix} | {path}]")
     return "\n".join(markers)
+
+
+def _asset_marker_placement(asset: Dict[str, object]) -> str:
+    layout = asset.get("layout")
+    if isinstance(layout, dict):
+        zone = str(layout.get("page_zone") or "").strip()
+        size_class = str(layout.get("size_class") or "").strip()
+        values = [item for item in [zone if zone != "unknown" else "", size_class] if item]
+        if values:
+            return ", ".join(values)
+    placement = asset.get("placement")
+    if isinstance(placement, dict):
+        return str(placement.get("recommended_width") or "").strip()
+    return str(placement or "").strip()
 
 
 def _asset_size_label(asset: Dict[str, object]) -> str:
@@ -1144,15 +1166,19 @@ def _export_text(
     metadata: Dict[str, object],
     output_formats: List[str],
     progress: Optional[ProgressCallback] = None,
+    run_dir: Optional[Path] = None,
 ) -> List[ExportResult]:
     exports: List[ExportResult] = []
     registry = exporter_registry()
+    export_metadata = dict(metadata)
+    if run_dir is not None:
+        export_metadata["run_dir"] = str(run_dir)
     for output_format in output_formats:
         exporter = registry.get(output_format)
         if exporter is None:
             continue
         _notify(progress, "export", f"Exporting {output_format}", advance=1)
-        exports.append(exporter.export(text, destination, metadata))
+        exports.append(exporter.export(text, destination, export_metadata))
     return exports
 
 

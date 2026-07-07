@@ -17,7 +17,7 @@ class SidecarExporter:
             "format": self.label,
             "note": "This sidecar is a portable placeholder until a dedicated OCR engine writes native layout data.",
             "text": text,
-            "metadata": metadata,
+            "metadata": _public_metadata(metadata),
         }
         if self.suffix.endswith(".xml") or self.name in {"hocr", "alto", "pagexml"}:
             path.write_text(_xml_payload(self.label, text), encoding="utf-8")
@@ -38,10 +38,10 @@ class ReviewExporter:
             "",
             "## Run",
             "",
-            f"- Workflow: {metadata.get('workflow')}",
-            f"- Document type: {metadata.get('document_type')}",
-            f"- Provider: {metadata.get('provider')}",
-            f"- Model: {metadata.get('model')}",
+            f"- Workflow: {_public_metadata(metadata).get('workflow')}",
+            f"- Document type: {_public_metadata(metadata).get('document_type')}",
+            f"- Provider: {_public_metadata(metadata).get('provider')}",
+            f"- Model: {_public_metadata(metadata).get('model')}",
             "",
             "## Cleaned Text Preview",
             "",
@@ -62,3 +62,11 @@ def _xml_payload(label: str, text: str) -> str:
         f"  <text>{escaped}</text>\n"
         "</akshara-sidecar>\n"
     )
+
+
+def _public_metadata(metadata: Dict[str, object]) -> Dict[str, object]:
+    return {
+        key: value
+        for key, value in metadata.items()
+        if key != "run_dir" and not str(key).startswith("_")
+    }

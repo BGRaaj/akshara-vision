@@ -69,7 +69,7 @@ class JsonExporter:
 
     def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
         path = destination.with_suffix(".json")
-        payload = {"text": text, "metadata": metadata}
+        payload = {"text": text, "metadata": _public_metadata(metadata)}
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return ExportResult(self.name, path)
 
@@ -97,7 +97,7 @@ class YamlExporter:
         lines = ["text: |"]
         lines.extend(f"  {line}" for line in text.splitlines())
         lines.append("metadata:")
-        for key, value in metadata.items():
+        for key, value in _public_metadata(metadata).items():
             lines.append(f"  {key}: {json.dumps(value, ensure_ascii=False)}")
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return ExportResult(self.name, path)
@@ -136,25 +136,34 @@ def _metadata_title(metadata: Dict[str, object]) -> str:
     return title or "Akshara Vision Output"
 
 
+def _public_metadata(metadata: Dict[str, object]) -> Dict[str, object]:
+    return {
+        key: value
+        for key, value in metadata.items()
+        if key != "run_dir" and not str(key).startswith("_")
+    }
+
+
 def _paragraphs(text: str) -> list[str]:
     return [part.strip() for part in text.split("\n\n") if part.strip()]
 
 
 def _markdown_body(text: str, metadata: Optional[Dict[str, object]] = None) -> str:
     structured = _markdown_structured_body(metadata)
-    plain = _markdown_plain_body(text)
+    plain = _markdown_plain_body(text, _export_base_dir(metadata))
     if structured:
         return (structured + "\n\n" + plain).strip() + "\n"
     return plain
 
 
-def _markdown_plain_body(text: str) -> str:
+def _markdown_plain_body(text: str, base_dir: Optional[Path] = None) -> str:
     parts = []
     for paragraph in _paragraphs(text):
         image = _parse_image_marker(paragraph)
         if image:
             alt, path = image
-            parts.append(f"![{alt}]({path})")
+            if _asset_exists(path, base_dir):
+                parts.append(f"![{alt}]({path})")
         elif paragraph.lower().startswith("[image:"):
             parts.append(f"> {paragraph}")
         else:
@@ -164,13 +173,13 @@ def _markdown_plain_body(text: str) -> str:
 
 def _html_body(text: str, metadata: Optional[Dict[str, object]] = None) -> str:
     structured = _html_structured_body(metadata)
-    plain = _html_plain_body(text)
+    plain = _html_plain_body(text, _export_base_dir(metadata))
     if structured:
         return structured + "\n" + plain
     return plain
 
 
-def _html_plain_body(text: str) -> str:
+def _html_plain_body(text: str, base_dir: Optional[Path] = None) -> str:
     body = []
     for paragraph in _paragraphs(text):
         escaped = html.escape(paragraph).replace("\n", "<br />\n")
@@ -178,12 +187,13 @@ def _html_plain_body(text: str) -> str:
         image = _parse_image_marker(stripped)
         if image:
             alt, path = image
-            body.append(
-                '<figure class="figure-marker">'
-                f'<img src="{html.escape(path, quote=True)}" alt="{html.escape(alt, quote=True)}" />'
-                f"<figcaption>{html.escape(alt)}</figcaption>"
-                "</figure>"
-            )
+            if _asset_exists(path, base_dir):
+                body.append(
+                    '<figure class="figure-marker">'
+                    f'<img src="{html.escape(path, quote=True)}" alt="{html.escape(alt, quote=True)}" />'
+                    f"<figcaption>{html.escape(alt)}</figcaption>"
+                    "</figure>"
+                )
         elif stripped.lower().startswith("[image:"):
             body.append(f'<figure class="figure-marker">{escaped}</figure>')
         elif _looks_like_page_marker(stripped):
@@ -333,6 +343,24 @@ def _parse_image_marker(text: str) -> Optional[tuple[str, str]]:
     if not path:
         return None
     return label, path
+
+
+def _export_base_dir(metadata: Optional[Dict[str, object]]) -> Optional[Path]:
+    if not metadata:
+        return None
+    run_dir = metadata.get("run_dir")
+    if isinstance(run_dir, str) and run_dir.strip():
+        return Path(run_dir)
+    return None
+
+
+def _asset_exists(path: str, base_dir: Optional[Path]) -> bool:
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return candidate.exists()
+    if base_dir is not None:
+        return (base_dir / candidate).exists()
+    return True
 
 
 def _looks_like_page_marker(text: str) -> bool:

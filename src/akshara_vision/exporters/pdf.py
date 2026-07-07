@@ -17,7 +17,7 @@ class PdfNoteExporter:
             f"{self.description}\n\n"
             "Native PDF generation requires optional PDF/OCR dependencies. "
             "Run `akshara doctor` for setup guidance.\n\n"
-            f"Run metadata: {metadata}\n",
+            f"Run metadata: {_public_metadata(metadata)}\n",
             encoding="utf-8",
         )
         return ExportResult(
@@ -26,3 +26,11 @@ class PdfNoteExporter:
             available=False,
             detail="PDF export needs optional system dependencies.",
         )
+
+
+def _public_metadata(metadata: Dict[str, object]) -> Dict[str, object]:
+    return {
+        key: value
+        for key, value in metadata.items()
+        if key != "run_dir" and not str(key).startswith("_")
+    }

@@ -11,7 +11,6 @@ from typing import List, Optional
 from akshara_vision.core.constants import EXECUTION_MODES
 from akshara_vision.core.models import ModelSettings
 from akshara_vision.providers.base import ProviderStatus
-from akshara_vision.providers.mock import MockProvider
 
 
 class OllamaProvider:
@@ -53,7 +52,7 @@ class OllamaProvider:
                 instruction,
                 text,
                 media_path,
-                None,
+                _request_timeout(settings),
             )
             if response:
                 return response, usage
@@ -67,32 +66,31 @@ class OllamaProvider:
                 instruction,
                 text,
                 None,
-                None,
+                _request_timeout(settings),
             )
         except RuntimeError:
             response, usage = "", {}
         if response:
             return response, usage
 
+        run_kwargs = {
+            "input": prompt,
+            "check": False,
+            "capture_output": True,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+        }
+        timeout = _request_timeout(settings)
+        if timeout is not None:
+            run_kwargs["timeout"] = timeout
         try:
-            result = subprocess.run(
-                ["ollama", "run", settings.model],
-                input=prompt,
-                check=False,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
+            result = subprocess.run(["ollama", "run", settings.model], **run_kwargs)
         except Exception as exc:
-            import sys
-            sys.stderr.write(f"\n[!] WARNING: Ollama connection failed ({exc}). Falling back to MockProvider.\n")
-            return MockProvider().restore_text(text, instruction, settings)
+            raise RuntimeError(f"Ollama command failed for model '{settings.model}': {exc}") from exc
         stdout = result.stdout or ""
         if result.returncode != 0 or not stdout.strip():
-            import sys
-            sys.stderr.write(f"\n[!] WARNING: Ollama command failed (exit {result.returncode}). Falling back to MockProvider.\n")
-            return MockProvider().restore_text(text, instruction, settings)
+            raise RuntimeError(f"Ollama command failed for model '{settings.model}' (exit {result.returncode}).")
         return stdout.strip() + "\n", {}
 
 
@@ -135,7 +133,7 @@ class OpenAICompatibleLocalProvider:
             instruction=instruction,
             text=text,
             api_key=os.environ.get("AKSHARA_OPENAI_COMPATIBLE_API_KEY"),
-            timeout=None,
+            timeout=_request_timeout(settings),
             media_path=media_path,
         )
         if result:
@@ -417,6 +415,17 @@ def _provider_timeout(execution_mode: str) -> int:
         "balanced": 240,
         "quality": 480,
     }[execution_mode]
+
+
+def _request_timeout(settings: object) -> Optional[float]:
+    value = getattr(settings, "request_timeout_seconds", None)
+    if value is None:
+        return None
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return None
+    return float(seconds) if seconds > 0 else None
 
 
 def _context_limit(settings: object) -> int:

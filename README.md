@@ -319,19 +319,21 @@ A profile stores:
 
 | Mode | Behavior |
 | --- | --- |
-| `fast` | 200 DPI PDF rendering, shorter prompt, heuristic figure crops |
-| `balanced` | 300 DPI PDF rendering, default prompt, verifies first figure crop |
-| `quality` | 400 DPI PDF rendering, more careful prompt, verifies figure crops |
+| `fast` | 300 DPI PDF rendering, shorter prompt, heuristic figure crops |
+| `balanced` | 400 DPI PDF rendering, default prompt, verifies first figure crop |
+| `quality` | 500 DPI PDF rendering, more careful prompt, verifies figure crops |
 
 Profile context and generation limits are passed through to compatible backends.
 The CLI offers suggested values, but does not artificially cap them. If a model
 truncates output, the run finishes with a visible warning and records the reason
 in the manifest.
 
-Actual model calls are not stopped by a fixed Akshara timeout. Use `Ctrl+C` to
-interrupt safely when you want to pause a long run. If a provider call is active,
-the CLI acknowledges the interrupt and waits for the current request to finish
-so completed checkpoints stay consistent.
+Actual model calls wait indefinitely by default. In the CLI, profiles and each
+interactive run can optionally choose a slow-page policy such as skip after 5,
+10, 20, 30, or 60 minutes. Use `Ctrl+C` to interrupt safely when you want to
+pause a long run. If a provider call is active, the CLI acknowledges the
+interrupt and waits for the current request to finish so completed checkpoints
+stay consistent.
 
 ## Run Artifacts
 

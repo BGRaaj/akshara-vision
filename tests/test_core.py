@@ -74,6 +74,12 @@ class CoreTests(unittest.TestCase):
             raw = (Path(tmp) / "profiles" / "mode-check.toml").read_text(encoding="utf-8")
             self.assertIn('execution_mode = "fast"', raw)
 
+    def test_request_timeout_round_trips_inside_model_block(self):
+        profile = WorkflowProfile(name="slow-page")
+        profile.model.request_timeout_seconds = 600
+        loaded = WorkflowProfile.from_dict(profile.to_dict())
+        self.assertEqual(loaded.model.request_timeout_seconds, 600)
+
     def test_ui_preferences_round_trip_preserves_default_profile(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = ConfigStore(Path(tmp))
@@ -661,6 +667,51 @@ class CoreTests(unittest.TestCase):
             json_payload = json.loads((run_dir / "akshara_output.json").read_text(encoding="utf-8"))
             self.assertEqual(json_payload["metadata"]["assets"][0]["label"], "plate")
 
+    def test_combine_skips_deleted_asset_images_in_rendered_exports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            run_dir.mkdir()
+            (run_dir / "run_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "profile": {"output_formats": ["txt", "html", "md"]},
+                        "metadata": {
+                            "title": "Illustrated",
+                            "output_language": "English",
+                            "restoration": [
+                                {
+                                    "label": "book.pdf",
+                                    "chunks": [
+                                        {
+                                            "index": 1,
+                                            "restored_text": "Page text",
+                                            "assets": [
+                                                {
+                                                    "kind": "figure-crop",
+                                                    "path": "assets/book/deleted.png",
+                                                    "label": "wrong crop",
+                                                    "width": 300,
+                                                    "height": 200,
+                                                }
+                                            ],
+                                        }
+                                    ],
+                                }
+                            ],
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            combine_stage_outputs(run_dir)
+            text_output = (run_dir / "akshara_output.txt").read_text(encoding="utf-8")
+            html_output = (run_dir / "akshara_output.html").read_text(encoding="utf-8")
+            md_output = (run_dir / "akshara_output.md").read_text(encoding="utf-8")
+            self.assertIn("[image: wrong crop", text_output)
+            self.assertNotIn("<img", html_output)
+            self.assertNotIn("deleted.png", md_output)
+
     def test_combine_uses_record_checkpoints_when_manifest_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp) / "run"
@@ -960,18 +1011,11 @@ class CoreTests(unittest.TestCase):
             with patch(
                 "akshara_vision.providers.local.subprocess.run", return_value=fake_result
             ) as run_mock:
-                with patch(
-                    "akshara_vision.providers.local.MockProvider.restore_text",
-                    return_value=("fallback\n", {}),
-                ) as fallback_mock:
-                    output, usage = provider.restore_text(
-                        "hello", "instruction", WorkflowProfile().model
-                    )
-        self.assertEqual(output, "fallback\n")
+                with self.assertRaises(RuntimeError):
+                    provider.restore_text("hello", "instruction", WorkflowProfile().model)
         self.assertTrue(run_mock.called)
         self.assertEqual(run_mock.call_args.kwargs["encoding"], "utf-8")
         self.assertEqual(run_mock.call_args.kwargs["errors"], "replace")
-        self.assertTrue(fallback_mock.called)
 
     def test_multimodal_ocr_pipeline_image(self):
         from akshara_vision.providers.mock import MockProvider

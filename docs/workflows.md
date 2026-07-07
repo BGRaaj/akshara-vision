@@ -28,9 +28,9 @@ Execution modes:
 
 | Mode | Tradeoff |
 | --- | --- |
-| `fast` | 200 DPI, shorter prompt, heuristic figure crops |
-| `balanced` | 300 DPI, default prompt, verifies first figure crop |
-| `quality` | 400 DPI, more careful prompt, verifies figure crops |
+| `fast` | 300 DPI, shorter prompt, heuristic figure crops |
+| `balanced` | 400 DPI, default prompt, verifies first figure crop |
+| `quality` | 500 DPI, more careful prompt, verifies figure crops |
 
 The run uses chunked restoration for long raw text inputs, so it is processed in
 smaller model batches instead of one large prompt. Progress is timer-based and indeterminate;
@@ -44,11 +44,13 @@ is still working. Pressing `Ctrl+C` during that window shows a safe-stop message
 and waits for the active request to finish before returning control, so already
 written checkpoints remain usable.
 
-Provider requests do not use a fixed restoration timeout. If a provider returns a
-transient network, rate-limit, or server error, Akshara Vision retries with
-exponential backoff and records failures in the run state instead of corrupting
-the final output. In batch runs, a failed input is written as a failed item and
-later inputs continue.
+Provider requests wait indefinitely by default. In profiles and before each
+interactive run, users may choose an explicit slow-page policy such as skip
+after 5, 10, 20, 30, or 60 minutes. If a provider returns a transient network,
+rate-limit, timeout, or server error, Akshara Vision retries with exponential
+backoff and records failures in the run state instead of corrupting the final
+output. In batch runs, a failed input is written as a failed item and later
+inputs continue.
 
 Set `AKSHARA_PROVIDER_RETRIES` if a slow cloud provider needs more retries. The
 default is `3`; the accepted range is `0` to `10`.

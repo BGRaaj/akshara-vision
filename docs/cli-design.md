@@ -90,9 +90,9 @@ Execution mode controls the OCR and model effort used by the run:
 
 | Mode | Behavior |
 | --- | --- |
-| `fast` | 200 DPI, shorter prompt, heuristic figure crops. |
-| `balanced` | 300 DPI, default prompt, verifies first figure crop. |
-| `quality` | 400 DPI, more careful prompt, verifies figure crops. |
+| `fast` | 300 DPI, shorter prompt, heuristic figure crops. |
+| `balanced` | 400 DPI, default prompt, verifies first figure crop. |
+| `quality` | 500 DPI, more careful prompt, verifies figure crops. |
 
 Restoration requests use smaller text chunks when inputs are long, and the model is
 asked to return a JSON object with the cleaned text plus uncertainty notes. The text
