@@ -41,9 +41,28 @@ Selectable:
 - `hocr`: hOCR sidecar
 - `alto`: ALTO XML sidecar
 - `pagexml`: PAGE XML sidecar
-- `searchable-pdf`: setup note until PDF OCR backend is configured
-- `image-pdf`: setup note until image PDF backend is configured
+- `searchable-pdf`: text-first PDF assembled as a clean publication
+- `image-pdf`: composed PDF with calm page styling and placed figure assets
 - `review`: run review notes and text preview
+
+Typical use:
+
+| Format | Best for |
+| --- | --- |
+| `txt` | Fast copy-paste and plain archival review |
+| `md` | Lightweight publishing, GitHub review, and human-editable output |
+| `html` | Browser reading with calm typography, figures, and visible structure |
+| `docx` | Word-based editing, editorial handoff, and print-style revisions |
+| `epub` | E-readers and calm book-style reading |
+| `json` | Complete structured handoff and reassembly |
+| `jsonl` | Chunk-by-chunk auditing and pipeline handoff |
+| `yaml` | Human-readable metadata handoff |
+| `hocr` | OCR sidecar for layout-aware tooling |
+| `alto` | Archive-side layout sidecar for OCR ecosystems |
+| `pagexml` | Page-structure sidecar for downstream OCR/layout tools |
+| `searchable-pdf` | Reading and sharing as a calm text-first PDF |
+| `image-pdf` | Reading and sharing as a composed PDF with page styling |
+| `review` | QA, diffing, and restoration inspection |
 
 The current OCR/archive sidecars are portable text sidecars. They are not full
 layout-accurate OCR exports unless a future native OCR/layout backend writes that data.
@@ -96,8 +115,9 @@ preserve repeated mixed-language patterns more consistently.
 `run_manifest.json` includes `document_structure` and `assembly_profile` fields.
 These are deterministic observations such as title candidates, section headings,
 page markers, content kind counts, layout counts, feature counts, semantic
-page/chunk roles, table-of-contents entries, footnotes, figure counts, and
-target-format assembly hints. Books, magazines, newspapers, manuscripts,
+page/chunk roles, table-of-contents entries, footnotes, contributors, publisher
+lines, repeated running headers, figure counts, and target-format assembly
+hints. Books, magazines, newspapers, manuscripts,
 journal articles, letters, and archive bundles receive different role sets so
 assembly can treat contents pages, articles, folios, references, signatures, and
 archive item boundaries differently while keeping the restored text itself clean.
@@ -111,7 +131,8 @@ bleed-through, or ambiguous noise.
 
 When staged outputs are combined, Akshara rebuilds text from structured chunk
 records where possible, re-inserts figure markers, carries asset metadata into
-JSON/YAML exports, and renders linked figures in HTML/EPUB outputs.
+JSON/YAML exports, and renders linked figures in Markdown, HTML, EPUB, DOCX,
+and composed PDF outputs.
 If a reviewer deletes an unwanted file from `assets/`, later HTML, EPUB, and
 Markdown exports skip that missing image instead of rendering a broken image.
 Plain text may still show the original image marker as an audit reference.
@@ -128,9 +149,10 @@ review prompt is constrained to fix only clear corruption while preserving
 structure and source meaning. When review changes a chunk, `pre_review_text`
 is kept in structured outputs so reviewers can audit what changed.
 
-Markdown, HTML, DOCX, and EPUB exports use the detected title where possible.
-HTML and EPUB add lightweight publication styling for paragraphs, page markers,
-and figure markers while keeping the restored text unchanged.
+Markdown, HTML, DOCX, EPUB, and PDF exports use the detected title where
+possible. Reader-facing exports avoid workflow/provider branding and are shaped
+as restored publication files. Technical run details stay in JSON, YAML,
+review files, and manifests.
 
 `akv export` can take either a run folder or a compiled output file such as
 `.txt`, `.md`, `.html`, `.json`, `.jsonl`, `.yaml`, `.hocr`, or `.xml`. It writes

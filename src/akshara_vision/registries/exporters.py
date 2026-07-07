@@ -1,7 +1,7 @@
 from typing import Dict
 
 from akshara_vision.exporters.archive import ReviewExporter, SidecarExporter
-from akshara_vision.exporters.pdf import PdfNoteExporter
+from akshara_vision.exporters.pdf import PdfExporter
 from akshara_vision.exporters.text import (
     DocxExporter,
     EpubExporter,
@@ -27,15 +27,16 @@ def exporter_registry() -> Dict[str, object]:
         "hocr": SidecarExporter("hocr", ".hocr", "hOCR"),
         "alto": SidecarExporter("alto", ".alto.xml", "ALTO XML"),
         "pagexml": SidecarExporter("pagexml", ".page.xml", "PAGE XML"),
-        "searchable-pdf": PdfNoteExporter(
+        "searchable-pdf": PdfExporter(
             "searchable-pdf",
-            ".searchable-pdf.txt",
-            "Searchable PDF export was requested.",
+            ".searchable.pdf",
+            "Searchable PDF Export",
         ),
-        "image-pdf": PdfNoteExporter(
+        "image-pdf": PdfExporter(
             "image-pdf",
-            ".image-pdf.txt",
-            "Cleaned image PDF export was requested.",
+            ".image.pdf",
+            "Cleaned Image PDF Export",
+            kind="image",
         ),
         "review": ReviewExporter(),
     }

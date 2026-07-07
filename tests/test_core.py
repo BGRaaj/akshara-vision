@@ -24,7 +24,7 @@ from akshara_vision.registries.providers import provider_registry
 class CoreTests(unittest.TestCase):
     def test_default_instruction_is_loaded(self):
         instruction = load_instruction()
-        self.assertIn("historical Indian books", instruction)
+        self.assertIn("historical books and archival documents", instruction)
         self.assertIn("obey the output format requested by the task", instruction)
 
     def test_profile_round_trip(self):
@@ -194,6 +194,7 @@ class CoreTests(unittest.TestCase):
     def test_registries_expose_planned_extensions(self):
         from akshara_vision.core.constants import OUTPUT_FORMATS
 
+        self.assertIn("sarvam", provider_registry())
         self.assertIn("ollama", provider_registry())
         self.assertIn("gemini", provider_registry())
         self.assertIn("txt", exporter_registry())
@@ -210,6 +211,8 @@ class CoreTests(unittest.TestCase):
                 self.assertEqual(result.format, name)
                 self.assertTrue(result.path.exists(), name)
                 self.assertGreaterEqual(result.path.stat().st_size, 0, name)
+                if name in {"searchable-pdf", "image-pdf"}:
+                    self.assertTrue(result.path.read_bytes().startswith(b"%PDF-"))
 
     def test_publication_exporters_style_figure_markers(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -225,7 +228,44 @@ class CoreTests(unittest.TestCase):
             md_result = exporter_registry()["md"].export(
                 "[image: plate]\n\nBody text", destination, metadata
             )
-            self.assertIn("> [image: plate]", md_result.path.read_text(encoding="utf-8"))
+            md_text = md_result.path.read_text(encoding="utf-8")
+            self.assertIn("# Book Title", md_text)
+            self.assertNotIn("Run Summary", md_text)
+            self.assertIn("> [image: plate]", md_text)
+
+            epub_result = exporter_registry()["epub"].export(
+                "Body text", destination, metadata
+            )
+            with zipfile.ZipFile(epub_result.path) as archive:
+                content = archive.read("OEBPS/content.xhtml").decode("utf-8")
+                self.assertIn("<h1>Book Title</h1>", content)
+                self.assertNotIn("Run Summary", content)
+
+    def test_contents_extraction_filters_page_numbers_from_body_like_lines(self):
+        from akshara_vision.core.pipeline import _contents_entries
+
+        lines = [
+            "Contents",
+            "Chapter One .......... 1",
+            "2 Next Chapter",
+            "Page 3",
+            "A normal body sentence that should not look like contents 12",
+            "Appendix - xiv",
+            "Introduction | vii",
+        ]
+        entries = _contents_entries(lines)
+        titles = [entry["title"] for entry in entries]
+        pages = [entry["page"] for entry in entries]
+        self.assertIn("Chapter One", titles)
+        self.assertIn("Next Chapter", titles)
+        self.assertIn("Appendix", titles)
+        self.assertIn("Introduction", titles)
+        self.assertNotIn("Page 3", titles)
+        self.assertNotIn("A normal body sentence that should not look like contents 12", titles)
+        self.assertIn("1", pages)
+        self.assertIn("2", pages)
+        self.assertIn("xiv", pages)
+        self.assertIn("vii", pages)
 
     def test_publication_exporters_use_semantic_contents_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -410,7 +450,10 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(manifest["metadata"]["document_structure"]["asset_count"], 0)
 
     def test_figure_enrichment_crops_large_picture_regions(self):
-        from PIL import Image, ImageDraw
+        try:
+            from PIL import Image, ImageDraw
+        except ModuleNotFoundError:
+            self.skipTest("Pillow is not installed in this environment")
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -557,6 +600,24 @@ class CoreTests(unittest.TestCase):
             self.assertIn("Second part", combined)
             self.assertIn("===== 0001-source =====", combined)
 
+    def test_combine_uses_neutral_title_when_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            run_dir.mkdir()
+            (run_dir / "run_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "profile": {"output_formats": ["txt"]},
+                        "metadata": {"restoration": [{"label": "source.txt", "chunks": [{"index": 1, "restored_text": "Hello"}]}]},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            result = combine_stage_outputs(run_dir)
+            manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["metadata"]["title"], "Untitled")
+
     def test_combine_prefers_final_item_outputs(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp) / "run"
@@ -631,17 +692,46 @@ class CoreTests(unittest.TestCase):
             manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
             self.assertIn("recombined_exports", manifest)
 
+    def test_combine_ignores_unknown_manifest_export_formats(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            item_one = run_dir / "items" / "0001-page-txt"
+            item_one.mkdir(parents=True)
+            (item_one / "final__english.txt").write_text("Final text\n", encoding="utf-8")
+            (run_dir / "run_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "profile": {"output_formats": ["html", "unknown-format"]},
+                        "metadata": {"title": "Combined Test", "output_language": "English"},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            result = combine_stage_outputs(run_dir)
+            export_formats = [export.format for export in result["exports"]]
+            self.assertEqual(export_formats, ["html"])
+            self.assertTrue((run_dir / "akshara_output.html").exists())
+
     def test_combine_uses_manifest_assets_in_requested_exports(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp) / "run"
             (run_dir / "assets" / "book").mkdir(parents=True)
-            (run_dir / "assets" / "book" / "0001-0001-figure-01.png").write_bytes(b"image")
+            try:
+                from PIL import Image
+
+                Image.new("RGB", (300, 200), "white").save(
+                    run_dir / "assets" / "book" / "0001-0001-figure-01.png"
+                )
+            except ModuleNotFoundError:
+                (run_dir / "assets" / "book" / "0001-0001-figure-01.png").write_bytes(b"image")
             (run_dir / "run_manifest.json").write_text(
                 json.dumps(
                     {
-                        "profile": {"output_formats": ["txt", "md", "html", "json"]},
+                        "profile": {"output_formats": ["txt", "md", "html", "docx", "epub", "json", "image-pdf"]},
                         "metadata": {
                             "title": "Illustrated",
+                            "document_type": "Book",
                             "output_language": "English",
                             "restoration": [
                                 {
@@ -657,7 +747,11 @@ class CoreTests(unittest.TestCase):
                                                     "label": "plate",
                                                     "width": 300,
                                                     "height": 200,
-                                                    "placement": "wide",
+                                                    "placement": {"recommended_width": "wide"},
+                                                    "layout": {
+                                                        "size_class": "large",
+                                                        "page_zone": "middle-center",
+                                                    },
                                                 }
                                             ],
                                         }
@@ -675,7 +769,20 @@ class CoreTests(unittest.TestCase):
             self.assertIn("[image: plate", combined)
             html_text = (run_dir / "akshara_output.html").read_text(encoding="utf-8")
             self.assertIn("<img", html_text)
+            self.assertIn("figure-large", html_text)
+            self.assertIn("zone-middle-center", html_text)
             self.assertIn("assets/book/0001-0001-figure-01.png", html_text)
+            with zipfile.ZipFile(run_dir / "akshara_output.epub") as archive:
+                names = archive.namelist()
+                self.assertTrue(any(name.startswith("OEBPS/assets/") for name in names))
+                content = archive.read("OEBPS/content.xhtml").decode("utf-8")
+                self.assertIn("assets/0001-", content)
+            with zipfile.ZipFile(run_dir / "akshara_output.docx") as archive:
+                names = archive.namelist()
+                self.assertTrue(any(name.startswith("word/media/") for name in names))
+                document = archive.read("word/document.xml").decode("utf-8")
+                self.assertIn("rIdImage", document)
+            self.assertTrue((run_dir / "akshara_output.image.pdf").read_bytes().startswith(b"%PDF-"))
             json_payload = json.loads((run_dir / "akshara_output.json").read_text(encoding="utf-8"))
             self.assertEqual(json_payload["metadata"]["assets"][0]["label"], "plate")
 

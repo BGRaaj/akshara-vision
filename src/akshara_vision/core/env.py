@@ -4,6 +4,7 @@ from typing import Dict, Iterable, List
 
 
 ENV_KEYS = [
+    "SARVAM_API_KEY",
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
     "GEMINI_API_KEY",

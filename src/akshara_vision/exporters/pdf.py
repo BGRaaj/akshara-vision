@@ -1,31 +1,447 @@
+from __future__ import annotations
+
 from pathlib import Path
-from typing import Dict
+import re
+from typing import Dict, Iterable, List
+
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ModuleNotFoundError:  # pragma: no cover - optional rendering fallback
+    Image = None
+    ImageDraw = None
+    ImageFont = None
 
 from akshara_vision.exporters.base import ExportResult
 
 
-class PdfNoteExporter:
-    def __init__(self, name: str, suffix: str, description: str) -> None:
+class PdfExporter:
+    def __init__(self, name: str, suffix: str, heading: str, kind: str = "text") -> None:
         self.name = name
         self.suffix = suffix
-        self.description = description
+        self.heading = heading
+        self.kind = kind
 
     def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
-        del text
         path = destination.with_suffix(self.suffix)
-        path.write_text(
-            f"{self.description}\n\n"
-            "Native PDF generation requires optional PDF/OCR dependencies. "
-            "Run `akshara doctor` for setup guidance.\n\n"
-            f"Run metadata: {_public_metadata(metadata)}\n",
-            encoding="utf-8",
+        if self.kind == "image" or _needs_image_pdf(text):
+            _build_image_pdf(path, self.heading, text, metadata)
+        else:
+            pdf_bytes = _build_pdf_document(self.heading, text, metadata)
+            path.write_bytes(pdf_bytes)
+        return ExportResult(self.name, path)
+
+
+def _build_pdf_document(_heading: str, text: str, metadata: Dict[str, object]) -> bytes:
+    pages = _paginate_pdf_lines(_pdf_book_lines(text, metadata))
+    return _render_pdf_pages(pages)
+
+
+def _build_image_pdf(path: Path, heading: str, text: str, metadata: Dict[str, object]) -> None:
+    if Image is None or ImageDraw is None or ImageFont is None:
+        path.write_bytes(_build_pdf_document(heading, text, metadata))
+        return
+    pages = _paginate_pdf_lines(_pdf_book_lines(text, metadata))
+    page_count = max(len(pages), 1)
+    rendered_pages = [
+        _render_image_page(page_lines, index + 1, page_count, metadata)
+        for index, page_lines in enumerate(pages)
+    ]
+    if not rendered_pages:
+        rendered_pages = [_render_image_page([""], 1, 1, metadata)]
+    rendered_pages[0].save(
+        path,
+        format="PDF",
+        save_all=True,
+        append_images=rendered_pages[1:],
+    )
+
+
+def _pdf_book_lines(text: str, metadata: Dict[str, object]) -> List[str]:
+    title = str(metadata.get("title") or "Untitled").strip() or "Untitled"
+    lines: List[str] = [
+        title,
+        "",
+    ]
+    for credit in _publication_credits(metadata):
+        lines.append(credit)
+    if len(lines) > 2:
+        lines.append("")
+    lines.append("")
+    for paragraph in _paragraphs(text):
+        if _parse_image_marker(paragraph):
+            lines.append(paragraph)
+        else:
+            lines.extend(_wrap_paragraph(paragraph))
+        lines.append("")
+    return [line.rstrip() for line in lines]
+
+
+def _paginate_pdf_lines(lines: Iterable[str]) -> List[List[str]]:
+    wrapped_pages: List[List[str]] = []
+    page: List[str] = []
+    usable_lines = 43
+    for line in lines:
+        if len(page) >= usable_lines:
+            wrapped_pages.append(page)
+            page = []
+        page.append(line)
+    if page or not wrapped_pages:
+        wrapped_pages.append(page or [""])
+    return wrapped_pages
+
+
+def _render_pdf_pages(pages: List[List[str]]) -> bytes:
+    page_count = max(len(pages), 1)
+    page_numbers = [6 + index * 2 for index in range(page_count)]
+    content_numbers = [7 + index * 2 for index in range(page_count)]
+
+    objects: Dict[int, bytes] = {
+        1: b"<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman >>",
+        2: b"<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold >>",
+        3: b"<< /Type /Font /Subtype /Type1 /BaseFont /Times-Italic >>",
+        4: (
+            f"<< /Type /Pages /Kids [{' '.join(f'{num} 0 R' for num in page_numbers)}] "
+            f"/Count {page_count} >>"
+        ).encode("utf-8"),
+        5: b"<< /Type /Catalog /Pages 4 0 R >>",
+    }
+    for index, page_lines in enumerate(pages or [[""]]):
+        content_obj = content_numbers[index]
+        page_obj = page_numbers[index]
+        objects[content_obj] = _pdf_stream_obj(
+            _page_content_stream(page_lines, index + 1, page_count)
         )
-        return ExportResult(
-            self.name,
-            path,
-            available=False,
-            detail="PDF export needs optional system dependencies.",
-        )
+        objects[page_obj] = (
+            "<< /Type /Page /Parent 4 0 R /MediaBox [0 0 595 842] "
+            f"/Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents {content_obj} 0 R >>"
+        ).encode("utf-8")
+
+    rendered: List[bytes] = [b"%PDF-1.4\n"]
+    offsets: Dict[int, int] = {}
+    for obj_num in range(1, max(objects) + 1):
+        offsets[obj_num] = sum(len(chunk) for chunk in rendered)
+        rendered.append(f"{obj_num} 0 obj\n".encode("utf-8"))
+        rendered.append(objects[obj_num])
+        rendered.append(b"\nendobj\n")
+    xref_offset = sum(len(chunk) for chunk in rendered)
+    rendered.append(f"xref\n0 {max(objects) + 1}\n".encode("utf-8"))
+    rendered.append(b"0000000000 65535 f \n")
+    for obj_num in range(1, max(objects) + 1):
+        offset = offsets[obj_num]
+        rendered.append(f"{offset:010d} 00000 n \n".encode("utf-8"))
+    rendered.append(
+        (
+            "trailer\n"
+            f"<< /Size {max(objects) + 1} /Root 5 0 R >>\n"
+            f"startxref\n{xref_offset}\n%%EOF\n"
+        ).encode("utf-8")
+    )
+    return b"".join(rendered)
+
+
+def _page_content_stream(page_lines: List[str], page_number: int, page_count: int) -> bytes:
+    safe_lines = [line for line in page_lines if line is not None]
+    commands = [
+        "BT",
+    ]
+    commands.append("72 792 Td")
+    for index, line in enumerate(safe_lines):
+        text = _escape_pdf_text(line)
+        if not text:
+            commands.append("0 -9 Td")
+            continue
+        font_name, size, gap = _pdf_line_style(line, index, page_number, page_count)
+        commands.append(f"/{font_name} {size} Tf")
+        commands.append(f"({text}) Tj")
+        commands.append(f"0 -{gap} Td")
+    commands.append("/F3 10 Tf")
+    commands.append("0 -18 Td")
+    commands.append(f"({_escape_pdf_text(str(page_number))}) Tj")
+    commands.append("ET")
+    stream = "\n".join(commands).encode("utf-8")
+    return stream
+
+
+def _pdf_line_style(line: str, line_index: int, page_number: int, page_count: int) -> tuple[str, int, int]:
+    stripped = line.strip()
+    if page_number == 1 and line_index == 0:
+        return "F2", 20, 28
+    if page_number == 1 and line_index <= 4 and stripped:
+        return "F3", 12, 18
+    if page_number == 1 and line_index <= 2:
+        return "F2", 18, 28
+    if stripped.startswith("- "):
+        return "F1", 11, 15
+    if ":" in stripped and line_index < 20:
+        return "F1", 11, 14
+    return "F1", 12, 16
+
+
+def _pdf_stream_obj(stream: bytes) -> bytes:
+    return (
+        f"<< /Length {len(stream)} >>\nstream\n".encode("utf-8")
+        + stream
+        + b"\nendstream"
+    )
+
+
+def _paragraphs(text: str) -> List[str]:
+    return [part.strip() for part in str(text).split("\n\n") if part.strip()]
+
+
+def _wrap_paragraph(paragraph: str, width: int = 76) -> List[str]:
+    words = paragraph.split()
+    if not words:
+        return [""]
+    lines: List[str] = []
+    current = words[0]
+    for word in words[1:]:
+        tentative = f"{current} {word}"
+        if len(tentative) <= width:
+            current = tentative
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines
+
+
+def _wrap_for_draw(text: str, font: ImageFont.ImageFont, max_width: int) -> List[str]:
+    words = str(text).split()
+    if not words:
+        return [""]
+    lines: List[str] = []
+    current = words[0]
+    for word in words[1:]:
+        candidate = f"{current} {word}"
+        if _draw_text_width(candidate, font) <= max_width:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines
+
+
+def _draw_text_width(text: str, font: ImageFont.ImageFont) -> int:
+    try:
+        return int(font.getlength(text))
+    except Exception:
+        try:
+            return font.getbbox(text)[2]
+        except Exception:
+            return len(text) * 12
+
+
+def _needs_image_pdf(text: str) -> bool:
+    # The dependency-free text PDF uses built-in Type1 fonts. Raster rendering is safer for
+    # Indic and other non-Latin scripts because otherwise PDF readers may show odd glyphs.
+    return any(ord(char) > 255 for char in text)
+
+
+def _escape_pdf_text(text: str) -> str:
+    return (
+        str(text)
+        .replace("\\", "\\\\")
+        .replace("(", "\\(")
+        .replace(")", "\\)")
+        .replace("\r", "")
+    )
+
+
+def _compact_json(value: object) -> str:
+    try:
+        import json
+
+        return json.dumps(value, ensure_ascii=True, separators=(",", ":"))
+    except Exception:
+        return str(value)
+
+
+def _render_image_page(
+    page_lines: List[str],
+    page_number: int,
+    page_count: int,
+    metadata: Dict[str, object],
+) -> Image.Image:
+    page_width = 1240
+    page_height = 1754
+    background = "#f4ecd8"
+    text_color = "#3a2417"
+    image = Image.new("RGB", (page_width, page_height), background)
+    draw = ImageDraw.Draw(image)
+    font = _reading_font(24)
+    title_font = _reading_font(34)
+    line_height = 34
+    x_margin = 92
+    y = 96
+    current_font = title_font
+    for line in page_lines:
+        if line == "":
+            y += line_height // 2
+            current_font = font
+            continue
+        marker = _parse_image_marker(line)
+        if marker:
+            y = _draw_asset_marker(
+                image, draw, line, marker, metadata, x_margin, y, page_width, page_height
+            )
+            current_font = font
+            continue
+        if y == 96:
+            draw.text((x_margin, y), line, fill=text_color, font=title_font)
+            y += 72
+            continue
+        wrapped = _wrap_for_draw(line, current_font, page_width - x_margin * 2)
+        for wrapped_line in wrapped:
+            draw.text((x_margin, y), wrapped_line, fill=text_color, font=current_font)
+            y += line_height
+        current_font = font
+        if y > page_height - 110:
+            break
+    footer = f"Page {page_number} of {page_count}"
+    draw.text((x_margin, page_height - 88), footer, fill=text_color, font=_reading_font(18))
+    return image
+
+
+def _draw_asset_marker(
+    canvas: Image.Image,
+    draw: ImageDraw.ImageDraw,
+    line: str,
+    marker: tuple[str, str],
+    metadata: Dict[str, object],
+    x_margin: int,
+    y: int,
+    page_width: int,
+    page_height: int,
+) -> int:
+    label, marker_path = marker
+    source = _asset_source_path(marker_path, metadata)
+    font = _reading_font(20)
+    caption_font = _reading_font(18)
+    text_color = "#3a2417"
+    if source and source.exists():
+        try:
+            with Image.open(source) as asset_image:
+                asset = asset_image.convert("RGB")
+                max_width = _asset_render_width(marker_path, metadata, page_width - x_margin * 2)
+                scale = min(max_width / max(asset.width, 1), 1.0)
+                max_height = max(page_height - 120 - y - 72, 0)
+                if max_height:
+                    scale = min(scale, max_height / max(asset.height, 1))
+                render_width = max(int(asset.width * scale), 1)
+                render_height = max(int(asset.height * scale), 1)
+                if render_height < 80 or y + render_height + 72 > page_height - 120:
+                    draw.text((x_margin, y), line, fill=text_color, font=font)
+                    return y + 34
+                asset = asset.resize((render_width, render_height))
+                x = x_margin + max((page_width - x_margin * 2 - render_width) // 2, 0)
+                canvas.paste(asset, (x, y))
+                y += render_height + 18
+        except Exception:
+            draw.text((x_margin, y), line, fill=text_color, font=font)
+            return y + 34
+    else:
+        draw.text((x_margin, y), line, fill=text_color, font=font)
+        return y + 34
+    draw.text((x_margin, y), label, fill=text_color, font=caption_font)
+    return y + 44
+
+
+def _asset_render_width(path: str, metadata: Dict[str, object], available_width: int) -> int:
+    asset = _asset_for_path(path, metadata)
+    size = ""
+    if asset:
+        layout = asset.get("layout") if isinstance(asset.get("layout"), dict) else {}
+        placement = asset.get("placement") if isinstance(asset.get("placement"), dict) else {}
+        size = str(layout.get("size_class") or placement.get("recommended_width") or "")
+    ratio = {
+        "full-width": 1.0,
+        "wide": 1.0,
+        "large": 0.82,
+        "medium": 0.64,
+        "small": 0.46,
+        "tall": 0.56,
+    }.get(size, 0.64)
+    return max(int(available_width * ratio), 160)
+
+
+def _asset_source_path(path: str, metadata: Dict[str, object]) -> Path | None:
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return candidate
+    run_dir = metadata.get("run_dir")
+    if isinstance(run_dir, str) and run_dir.strip():
+        return Path(run_dir) / candidate
+    return candidate
+
+
+def _asset_for_path(path: str, metadata: Dict[str, object]) -> Dict[str, object] | None:
+    normalized = path.replace("\\", "/")
+    for asset in metadata.get("assets") or []:
+        if not isinstance(asset, dict):
+            continue
+        candidate = str(asset.get("path") or "").replace("\\", "/")
+        if candidate == normalized:
+            return asset
+    return None
+
+
+def _parse_image_marker(text: str) -> tuple[str, str] | None:
+    match = re.match(r"^\[image:\s*(?P<label>.+?)\s*\|\s*(?P<path>[^\]]+)\]$", text.strip(), re.I)
+    if not match:
+        return None
+    label = match.group("label").strip() or "Figure"
+    path = match.group("path").strip()
+    if not path:
+        return None
+    return label, path
+
+
+def _publication_credits(metadata: Dict[str, object]) -> List[str]:
+    structure = metadata.get("document_structure")
+    if not isinstance(structure, dict):
+        return []
+    credits: List[str] = []
+    for key in ("contributors", "publishers"):
+        values = structure.get(key)
+        if isinstance(values, list):
+            credits.extend(str(value).strip() for value in values if str(value).strip())
+    seen = set()
+    result = []
+    for credit in credits:
+        key = credit.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(credit)
+        if len(result) >= 6:
+            break
+    return result
+
+
+def _reading_font(size: int) -> ImageFont.ImageFont:
+    for candidate in _font_candidates():
+        try:
+            return ImageFont.truetype(candidate, size=size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def _font_candidates() -> List[str]:
+    candidates = [
+        "/System/Library/Fonts/Supplemental/Times New Roman.ttf",
+        "/System/Library/Fonts/Supplemental/Georgia.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/Library/Fonts/Times New Roman.ttf",
+        "/Library/Fonts/Georgia.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/noto/NotoSerif-Regular.ttf",
+        "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+    ]
+    return candidates
 
 
 def _public_metadata(metadata: Dict[str, object]) -> Dict[str, object]:

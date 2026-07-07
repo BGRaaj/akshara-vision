@@ -25,7 +25,8 @@ class MarkdownExporter:
         title = _metadata_title(metadata)
         path = destination.with_suffix(".md")
         body = _markdown_body(text, metadata)
-        path.write_text(f"# {title}\n\n{body}", encoding="utf-8")
+        credits = _markdown_credits(metadata)
+        path.write_text(f"# {title}\n\n{credits}{body}", encoding="utf-8")
         return ExportResult(self.name, path)
 
 
@@ -35,6 +36,8 @@ class HtmlExporter:
     def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
         title = html.escape(_metadata_title(metadata))
         body = _html_body(text, metadata)
+        document_class = _document_class(metadata)
+        credits = _html_credits(metadata)
         path = destination.with_suffix(".html")
         path.write_text(
             "<!doctype html>\n"
@@ -46,11 +49,18 @@ class HtmlExporter:
             "<style>\n"
             "body{margin:0;background:#f8f5ed;color:#24170f;font-family:Georgia,'Times New Roman',serif;line-height:1.65;}\n"
             "main{max-width:780px;margin:0 auto;padding:56px 28px 72px;}\n"
-            "h1{text-align:center;font-size:2.1rem;line-height:1.2;margin:0 0 2.5rem;}\n"
+            ".document-magazine,.document-newspaper{max-width:920px;}\n"
+            ".document-manuscript{font-family:'Times New Roman',Georgia,serif;line-height:1.85;}\n"
+            "h1{text-align:center;font-size:2.45rem;line-height:1.15;margin:0 0 2.5rem;}\n"
+            ".credits{text-align:center;margin:-1.5rem 0 2.75rem;font-style:italic;}\n"
+            ".credits p{font-size:1rem;margin:.25rem 0;}\n"
+            "h2{font-size:1.35rem;line-height:1.25;margin:2rem 0 1rem;}\n"
             "p{font-size:1.08rem;margin:0 0 1.05rem;}\n"
             ".page-marker{text-align:center;font-variant-numeric:oldstyle-nums;margin:2rem 0 1rem;}\n"
-            ".figure-marker{border:1px solid #6f5a47;padding:.75rem 1rem;text-align:center;font-style:italic;margin:1.5rem 0;}\n"
+            ".figure-marker{break-inside:avoid;border:1px solid #6f5a47;padding:.75rem 1rem;text-align:center;font-style:italic;margin:1.5rem auto;}\n"
             ".figure-marker img{max-width:100%;height:auto;display:block;margin:0 auto .75rem;}\n"
+            ".figure-full-width{width:100%;}.figure-large{width:82%;}.figure-medium{width:64%;}.figure-small{width:46%;}.figure-wide{width:100%;}.figure-tall{width:56%;}\n"
+            ".zone-top-left,.zone-middle-left,.zone-bottom-left{margin-left:0;}.zone-top-right,.zone-middle-right,.zone-bottom-right{margin-right:0;}\n"
             ".contents table{width:100%;border-collapse:collapse;margin:1rem 0 2rem;}\n"
             ".contents td{border-bottom:1px solid #d8cdbc;padding:.35rem 0;}\n"
             ".contents td:last-child{text-align:right;white-space:nowrap;padding-left:1.5rem;}\n"
@@ -58,7 +68,7 @@ class HtmlExporter:
             "@media print{body{background:white;color:black}main{max-width:none;padding:0.75in}h1{page-break-after:avoid}}\n"
             "</style>\n"
             "</head>\n"
-            f"<body><main><h1>{title}</h1>\n{body}\n</main></body>\n</html>\n",
+            f'<body><main class="{document_class}"><h1>{title}</h1>\n{credits}{body}\n</main></body>\n</html>\n',
             encoding="utf-8",
         )
         return ExportResult(self.name, path)
@@ -108,11 +118,15 @@ class DocxExporter:
 
     def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
         path = destination.with_suffix(".docx")
-        document_xml = _docx_document_xml(text, _metadata_title(metadata))
+        media_entries = _docx_media_entries(metadata)
+        document_xml = _docx_document_xml(text, _metadata_title(metadata), metadata, media_entries)
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr("[Content_Types].xml", _docx_content_types())
-            archive.writestr("_rels/.rels", _docx_rels())
+            archive.writestr("[Content_Types].xml", _docx_content_types(media_entries))
+            archive.writestr("_rels/.rels", _docx_package_rels())
+            archive.writestr("word/_rels/document.xml.rels", _docx_document_rels(media_entries))
             archive.writestr("word/document.xml", document_xml)
+            for entry in media_entries:
+                archive.write(entry["source"], f"word/{entry['target']}")
         return ExportResult(self.name, path)
 
 
@@ -122,18 +136,26 @@ class EpubExporter:
     def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
         title = _metadata_title(metadata)
         path = destination.with_suffix(".epub")
-        body = _html_body(text, metadata)
+        epub_assets = _epub_asset_entries(metadata)
+        epub_metadata = dict(metadata)
+        epub_metadata["_asset_path_map"] = {
+            original: packaged for original, packaged, _source in epub_assets
+        }
+        body = _html_body(text, epub_metadata)
+        credits = _html_credits(metadata)
         with zipfile.ZipFile(path, "w") as archive:
             archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
             archive.writestr("META-INF/container.xml", _epub_container())
-            archive.writestr("OEBPS/content.xhtml", _epub_content(title, body))
-            archive.writestr("OEBPS/package.opf", _epub_package(title))
+            archive.writestr("OEBPS/content.xhtml", _epub_content(title, credits + body, metadata))
+            archive.writestr("OEBPS/package.opf", _epub_package(title, epub_assets))
+            for _original, packaged, source in epub_assets:
+                archive.write(source, f"OEBPS/{packaged}")
         return ExportResult(self.name, path)
 
 
 def _metadata_title(metadata: Dict[str, object]) -> str:
     title = str(metadata.get("title") or "").strip()
-    return title or "Akshara Vision Output"
+    return title or "Untitled"
 
 
 def _public_metadata(metadata: Dict[str, object]) -> Dict[str, object]:
@@ -156,6 +178,50 @@ def _markdown_body(text: str, metadata: Optional[Dict[str, object]] = None) -> s
     return plain
 
 
+def _publication_credits(metadata: Optional[Dict[str, object]]) -> list[str]:
+    if not metadata:
+        return []
+    structure = metadata.get("document_structure")
+    if not isinstance(structure, dict):
+        return []
+    credits = []
+    for key in ("contributors", "publishers"):
+        values = structure.get(key)
+        if isinstance(values, list):
+            credits.extend(str(value).strip() for value in values if str(value).strip())
+    return _unique_strings(credits, 6)
+
+
+def _markdown_credits(metadata: Optional[Dict[str, object]]) -> str:
+    credits = _publication_credits(metadata)
+    if not credits:
+        return ""
+    return "\n".join(f"*{credit}*" for credit in credits) + "\n\n"
+
+
+def _html_credits(metadata: Optional[Dict[str, object]]) -> str:
+    credits = _publication_credits(metadata)
+    if not credits:
+        return ""
+    return '<section class="credits">' + "".join(
+        f"<p>{html.escape(credit)}</p>" for credit in credits
+    ) + "</section>\n"
+
+
+def _unique_strings(values: list[str], limit: int) -> list[str]:
+    seen = set()
+    result = []
+    for value in values:
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+        if len(result) >= limit:
+            break
+    return result
+
+
 def _markdown_plain_body(text: str, base_dir: Optional[Path] = None) -> str:
     parts = []
     for paragraph in _paragraphs(text):
@@ -173,13 +239,15 @@ def _markdown_plain_body(text: str, base_dir: Optional[Path] = None) -> str:
 
 def _html_body(text: str, metadata: Optional[Dict[str, object]] = None) -> str:
     structured = _html_structured_body(metadata)
-    plain = _html_plain_body(text, _export_base_dir(metadata))
+    plain = _html_plain_body(text, metadata)
     if structured:
         return structured + "\n" + plain
     return plain
 
 
-def _html_plain_body(text: str, base_dir: Optional[Path] = None) -> str:
+def _html_plain_body(text: str, metadata_or_base_dir: Optional[object] = None) -> str:
+    metadata = metadata_or_base_dir if isinstance(metadata_or_base_dir, dict) else None
+    base_dir = _export_base_dir(metadata) if metadata else metadata_or_base_dir
     body = []
     for paragraph in _paragraphs(text):
         escaped = html.escape(paragraph).replace("\n", "<br />\n")
@@ -188,9 +256,14 @@ def _html_plain_body(text: str, base_dir: Optional[Path] = None) -> str:
         if image:
             alt, path = image
             if _asset_exists(path, base_dir):
+                asset = _asset_for_path(path, metadata)
+                render_path = _asset_render_path(path, metadata)
+                classes = " ".join(["figure-marker"] + _asset_figure_classes(asset))
+                style = _asset_figure_style(asset)
+                style_attr = f' style="{html.escape(style, quote=True)}"' if style else ""
                 body.append(
-                    '<figure class="figure-marker">'
-                    f'<img src="{html.escape(path, quote=True)}" alt="{html.escape(alt, quote=True)}" />'
+                    f'<figure class="{html.escape(classes, quote=True)}"{style_attr}>'
+                    f'<img src="{html.escape(render_path, quote=True)}" alt="{html.escape(alt, quote=True)}" />'
                     f"<figcaption>{html.escape(alt)}</figcaption>"
                     "</figure>"
                 )
@@ -371,43 +444,192 @@ def _looks_like_page_marker(text: str) -> bool:
     return normalized.isdigit() or all(char in roman for char in normalized)
 
 
-def _docx_document_xml(text: str, title: str) -> str:
+def _docx_document_xml(
+    text: str,
+    title: str,
+    metadata: Optional[Dict[str, object]] = None,
+    media_entries: Optional[list[Dict[str, object]]] = None,
+) -> str:
+    media_by_path = {
+        str(entry["original"]): entry for entry in media_entries or []
+    }
     paragraphs = [
         "<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr>"
-        "<w:r><w:rPr><w:b/><w:sz w:val=\"32\"/></w:rPr>"
+        "<w:r><w:rPr><w:b/><w:sz w:val=\"34\"/></w:rPr>"
         f"<w:t>{html.escape(title)}</w:t></w:r></w:p>"
     ]
+    for credit in _publication_credits(metadata):
+        paragraphs.append(_docx_centered_italic_paragraph(html.escape(credit)))
     for paragraph in text.split("\n\n"):
         if not paragraph.strip():
+            continue
+        marker = _parse_image_marker(paragraph.strip())
+        if marker:
+            label, path = marker
+            entry = media_by_path.get(path)
+            if entry:
+                paragraphs.append(_docx_image_paragraph(entry))
+            escaped = html.escape(label)
+            paragraphs.append(_docx_centered_italic_paragraph(escaped))
+            continue
+        if _looks_like_page_marker(paragraph.strip()):
+            escaped = html.escape(paragraph.strip())
+            paragraphs.append(
+                "<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr>"
+                f"<w:r><w:t>{escaped}</w:t></w:r></w:p>"
+            )
             continue
         escaped = html.escape(paragraph).replace("\n", "<w:br/>")
         paragraphs.append(f"<w:p><w:r><w:t>{escaped}</w:t></w:r></w:p>")
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+        'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+        'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+        'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">'
         f"<w:body>{''.join(paragraphs)}</w:body></w:document>"
     )
 
 
-def _docx_content_types() -> str:
+def _docx_content_types(media_entries: Optional[list[Dict[str, object]]] = None) -> str:
+    defaults = [
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
+        '<Default Extension="xml" ContentType="application/xml"/>',
+    ]
+    media_defaults = []
+    seen = set()
+    for entry in media_entries or []:
+        extension = str(entry["extension"]).lstrip(".")
+        if extension in seen:
+            continue
+        seen.add(extension)
+        media_defaults.append(
+            f'<Default Extension="{extension}" ContentType="{entry["content_type"]}"/>'
+        )
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
-        '<Default Extension="xml" ContentType="application/xml"/>'
+        + "".join(defaults)
+        + "".join(media_defaults)
+        +
         '<Override PartName="/word/document.xml" '
         'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
         "</Types>"
     )
 
 
-def _docx_rels() -> str:
+def _docx_package_rels() -> str:
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
         '<Relationship Id="rId1" '
         'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
         'Target="word/document.xml"/></Relationships>'
+    )
+
+
+def _docx_document_rels(media_entries: Optional[list[Dict[str, object]]] = None) -> str:
+    relationships = []
+    for entry in media_entries or []:
+        relationships.append(
+            f'<Relationship Id="{entry["rid"]}" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+            f'Target="{entry["target"]}"/>'
+        )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        + "".join(relationships)
+        + "</Relationships>"
+    )
+
+
+def _docx_media_entries(metadata: Dict[str, object]) -> list[Dict[str, object]]:
+    base_dir = _export_base_dir(metadata)
+    entries: list[Dict[str, object]] = []
+    seen = set()
+    for asset in metadata.get("assets") or []:
+        if not isinstance(asset, dict):
+            continue
+        original = str(asset.get("path") or "").strip()
+        if not original or original in seen:
+            continue
+        source = Path(original)
+        if not source.is_absolute() and base_dir is not None:
+            source = base_dir / source
+        if not source.exists() or not source.is_file():
+            continue
+        seen.add(original)
+        extension = _docx_image_extension(source)
+        target = f"media/image{len(entries) + 1}{extension}"
+        entries.append(
+            {
+                "original": original,
+                "source": source,
+                "target": target,
+                "rid": f"rIdImage{len(entries) + 1}",
+                "extension": extension,
+                "content_type": _docx_image_content_type(extension),
+                "width_emu": 4_800_000,
+                "height_emu": _docx_scaled_height_emu(asset, 4_800_000),
+            }
+        )
+    return entries
+
+
+def _docx_image_extension(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        return ".jpg"
+    if suffix == ".gif":
+        return ".gif"
+    return ".png"
+
+
+def _docx_image_content_type(extension: str) -> str:
+    if extension == ".jpg":
+        return "image/jpeg"
+    if extension == ".gif":
+        return "image/gif"
+    return "image/png"
+
+
+def _docx_scaled_height_emu(asset: Dict[str, object], width_emu: int) -> int:
+    width = asset.get("width")
+    height = asset.get("height")
+    if width and height:
+        return max(int(width_emu * (float(height) / max(float(width), 1.0))), 500_000)
+    return 3_000_000
+
+
+def _docx_centered_italic_paragraph(text: str) -> str:
+    return (
+        "<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr>"
+        "<w:r><w:rPr><w:i/><w:sz w:val=\"22\"/></w:rPr>"
+        f"<w:t>{text}</w:t></w:r></w:p>"
+    )
+
+
+def _docx_image_paragraph(entry: Dict[str, object]) -> str:
+    rid = html.escape(str(entry["rid"]))
+    width = int(entry["width_emu"])
+    height = int(entry["height_emu"])
+    return (
+        "<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr><w:r><w:drawing>"
+        "<wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\">"
+        f"<wp:extent cx=\"{width}\" cy=\"{height}\"/>"
+        "<wp:docPr id=\"1\" name=\"Figure\"/>"
+        "<a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\">"
+        "<pic:pic><pic:nvPicPr><pic:cNvPr id=\"0\" name=\"Figure\"/>"
+        "<pic:cNvPicPr/></pic:nvPicPr><pic:blipFill>"
+        f"<a:blip r:embed=\"{rid}\"/>"
+        "<a:stretch><a:fillRect/></a:stretch></pic:blipFill>"
+        "<pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/>"
+        f"<a:ext cx=\"{width}\" cy=\"{height}\"/>"
+        "</a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr>"
+        "</pic:pic></a:graphicData></a:graphic>"
+        "</wp:inline></w:drawing></w:r></w:p>"
     )
 
 
@@ -420,20 +642,135 @@ def _epub_container() -> str:
     )
 
 
-def _epub_content(title: str, body: str) -> str:
+def _epub_content(title: str, body: str, metadata: Optional[Dict[str, object]] = None) -> str:
+    document_class = _document_class(metadata)
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<html xmlns="http://www.w3.org/1999/xhtml"><head>'
-        f"<title>{html.escape(title)}</title></head><body>{body}</body></html>"
+        f"<title>{html.escape(title)}</title>"
+        "<style>"
+        "body{font-family:Georgia,'Times New Roman',serif;line-height:1.7;color:#24170f;max-width:42em;margin:0 auto;padding:2.75em 1.4em 4em;}"
+        "h1{text-align:center;font-size:2em;letter-spacing:.01em;margin:0 0 1.35em;}"
+        ".credits{text-align:center;margin:-.6em 0 2.25em;font-style:italic;}"
+        ".credits p{font-size:1em;margin:.25em 0;}"
+        "h2{font-size:1.22em;margin:2em 0 1em;}"
+        ".document-magazine,.document-newspaper{max-width:48em;}"
+        ".document-manuscript{line-height:1.85;}"
+        "p{margin:0 0 1em;}"
+        ".page-marker{text-align:center;margin:1.8em 0 1em;}"
+        ".figure-marker{text-align:center;font-style:italic;margin:1.5em auto;break-inside:avoid;}"
+        ".figure-marker img{max-width:100%;height:auto;display:block;margin:0 auto .75em;}"
+        ".figure-full-width{width:100%;}.figure-large{width:82%;}.figure-medium{width:64%;}.figure-small{width:46%;}.figure-wide{width:100%;}.figure-tall{width:56%;}"
+        ".contents table{width:100%;border-collapse:collapse;}"
+        ".contents td{border-bottom:1px solid #d8cdbc;padding:.3em 0;}"
+        ".contents td:last-child{text-align:right;white-space:nowrap;padding-left:1em;}"
+        "</style>"
+        f'</head><body class="{document_class}"><h1>{html.escape(title)}</h1>{body}</body></html>'
     )
 
 
-def _epub_package(title: str) -> str:
+def _asset_for_path(path: str, metadata: Optional[Dict[str, object]]) -> Optional[Dict[str, object]]:
+    if not metadata:
+        return None
+    normalized = path.replace("\\", "/")
+    for asset in metadata.get("assets") or []:
+        if not isinstance(asset, dict):
+            continue
+        candidate = str(asset.get("path") or "").replace("\\", "/")
+        if candidate == normalized:
+            return asset
+    return None
+
+
+def _asset_render_path(path: str, metadata: Optional[Dict[str, object]]) -> str:
+    if metadata:
+        path_map = metadata.get("_asset_path_map")
+        if isinstance(path_map, dict) and path in path_map:
+            return str(path_map[path])
+    return path
+
+
+def _asset_figure_classes(asset: Optional[Dict[str, object]]) -> list[str]:
+    if not asset:
+        return ["figure-medium"]
+    layout = asset.get("layout") if isinstance(asset.get("layout"), dict) else {}
+    placement = asset.get("placement") if isinstance(asset.get("placement"), dict) else {}
+    size = str(layout.get("size_class") or placement.get("recommended_width") or "medium").strip()
+    zone = str(layout.get("page_zone") or "").strip()
+    classes = [f"figure-{_css_slug(size)}"]
+    if zone and zone != "unknown":
+        classes.append(f"zone-{_css_slug(zone)}")
+    return classes
+
+
+def _asset_figure_style(asset: Optional[Dict[str, object]]) -> str:
+    if not asset:
+        return ""
+    width = asset.get("width")
+    height = asset.get("height")
+    if width and height:
+        return f"aspect-ratio:{width}/{height};"
+    return ""
+
+
+def _document_class(metadata: Optional[Dict[str, object]]) -> str:
+    document_type = "general"
+    if metadata:
+        document_type = str(metadata.get("document_type") or "general")
+    return f"document-{_css_slug(document_type)}"
+
+
+def _css_slug(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", str(value).lower()).strip("-")
+    return slug or "default"
+
+
+def _epub_asset_entries(metadata: Dict[str, object]) -> list[tuple[str, str, Path]]:
+    base_dir = _export_base_dir(metadata)
+    entries: list[tuple[str, str, Path]] = []
+    seen = set()
+    for asset in metadata.get("assets") or []:
+        if not isinstance(asset, dict):
+            continue
+        original = str(asset.get("path") or "").strip()
+        if not original or original in seen:
+            continue
+        source = Path(original)
+        if not source.is_absolute() and base_dir is not None:
+            source = base_dir / source
+        if not source.exists() or not source.is_file():
+            continue
+        seen.add(original)
+        packaged = f"assets/{len(entries) + 1:04d}-{_css_slug(source.stem)}{source.suffix.lower() or '.png'}"
+        entries.append((original, packaged, source))
+    return entries
+
+
+def _epub_media_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if suffix == ".webp":
+        return "image/webp"
+    if suffix == ".gif":
+        return "image/gif"
+    return "image/png"
+
+
+def _epub_package(title: str, assets: Optional[list[tuple[str, str, Path]]] = None) -> str:
+    asset_items = []
+    for index, (_original, packaged, source) in enumerate(assets or [], start=1):
+        media_type = _epub_media_type(source)
+        asset_items.append(
+            f'<item id="asset{index}" href="{html.escape(packaged, quote=True)}" media-type="{media_type}"/>'
+        )
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="3.0">'
         '<metadata><dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">'
         f"{html.escape(title)}</dc:title></metadata>"
-        '<manifest><item id="content" href="content.xhtml" media-type="application/xhtml+xml"/></manifest>'
+        '<manifest><item id="content" href="content.xhtml" media-type="application/xhtml+xml"/>'
+        + "".join(asset_items)
+        + "</manifest>"
         '<spine><itemref idref="content"/></spine></package>'
     )

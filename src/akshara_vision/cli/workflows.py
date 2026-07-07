@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 from akshara_vision.cli.ui import ui
 from akshara_vision.core.config import ConfigStore
@@ -474,6 +474,7 @@ def choose_model(current: Optional[ModelSettings] = None) -> Optional[ModelSetti
         return current
     if source == "cloud":
         provider_names = [
+            "sarvam",
             "openai",
             "anthropic",
             "gemini",
@@ -568,17 +569,56 @@ def choose_model(current: Optional[ModelSettings] = None) -> Optional[ModelSetti
     )
 
 
-def choose_output_formats(defaults: Optional[List[str]] = None) -> List[str]:
-    defaults = defaults or ["txt"]
-    choices = list(OUTPUT_FORMATS.keys()) + ["Back"]
+def choose_output_formats(
+    defaults: Optional[List[str]] = None, back_returns_defaults: bool = True
+) -> List[str]:
+    defaults = [item for item in (defaults or ["txt"]) if item in OUTPUT_FORMATS] or ["txt"]
+    selected = list(dict.fromkeys(defaults))
     while True:
-        selected = ui.checkbox("Output formats (Space selects, Enter confirms)", choices, defaults)
-        if "Back" in selected:
-            return defaults
-        selected = [item for item in selected if item in OUTPUT_FORMATS]
-        if selected:
-            return selected
-        ui.status("info", "Select at least one output format, or choose Back.")
+        labels = {
+            output_format: (
+                f"{'[x]' if output_format in selected else '[ ]'} "
+                f"{output_format} - {description}"
+            )
+            for output_format, description in OUTPUT_FORMATS.items()
+        }
+        choices = list(labels.values()) + ["Select all", "Clear selection", "Done", "Back"]
+        default_choice = "Done" if selected else choices[0]
+        choice = ui.choose(
+            "Output formats (Enter toggles, choose Done to continue)",
+            choices,
+            default_choice,
+        )
+        normalized = str(choice).strip()
+        if normalized == "Back":
+            return defaults if back_returns_defaults else []
+        if normalized == "Done":
+            if selected:
+                return selected
+            ui.status("info", "Select at least one output format, or choose Back.")
+            continue
+        if normalized == "Select all":
+            selected = list(OUTPUT_FORMATS.keys())
+            continue
+        if normalized == "Clear selection":
+            selected = []
+            continue
+        output_format = _output_format_from_choice(normalized, labels)
+        if not output_format:
+            continue
+        if output_format in selected:
+            selected.remove(output_format)
+        else:
+            selected.append(output_format)
+
+
+def _output_format_from_choice(choice: str, labels: Dict[str, str]) -> Optional[str]:
+    if choice in OUTPUT_FORMATS:
+        return choice
+    for output_format, label in labels.items():
+        if choice == label:
+            return output_format
+    return None
 
 
 def choose_request_timeout(current: Optional[int] = None) -> Optional[int]:
@@ -1384,6 +1424,7 @@ def env_command() -> None:
     ui.table(
         [
             ["Provider", "Setup"],
+            ["Sarvam", "SARVAM_API_KEY"],
             ["OpenAI / Anthropic / Gemini", "native provider key"],
             ["OpenRouter / Groq / Mistral", "OpenAI-compatible model listing when available"],
             ["Together / Fireworks / Perplexity", "OpenAI-compatible model listing when available"],
@@ -1423,6 +1464,7 @@ def doctor_command() -> None:
     for command, purpose in tools:
         rows.append([command, "found" if find_executable(command) else "missing", purpose])
     for env_name, purpose in [
+        ("SARVAM_API_KEY", "Sarvam cloud models"),
         ("OPENAI_API_KEY", "OpenAI cloud models"),
         ("ANTHROPIC_API_KEY", "Anthropic cloud models"),
         ("GEMINI_API_KEY", "Gemini cloud models"),
@@ -1629,7 +1671,12 @@ def export_command(run_dir: Optional[str] = None, formats: Optional[List[str]] =
         ui.status("error", "No valid output formats were selected.")
         return
     if not selected:
-        selected = choose_output_formats(_default_export_formats(path, metadata))
+        selected = choose_output_formats(
+            _default_export_formats(path, metadata), back_returns_defaults=False
+        )
+    if not selected:
+        ui.status("info", "Export cancelled.")
+        return
     export_metadata = dict(metadata)
     export_metadata.pop("_default_output_formats", None)
     registry = exporter_registry()
@@ -1788,6 +1835,8 @@ def clean_command(yes: bool = False) -> None:
 
 
 def _recommended_models(provider_name: str) -> List[str]:
+    if provider_name == "sarvam":
+        return ["sarvam-vision", "sarvam-105b", "sarvam-30b", "mayura", "sarvam-translate"]
     if provider_name == "ollama":
         return ["gemma4:12b", "qwen3.6:27b", "qwen3.5:4b", "llama3.2-vision:11b"]
     if provider_name in {"openai-compatible-local", "lm-studio", "jan", "llama-cpp"}:
@@ -1813,6 +1862,7 @@ def _default_endpoint(provider_name: str) -> str:
 
 def _short_detail(detail: str) -> str:
     replacements = {
+        "SARVAM_API_KEY is not set.": "set SARVAM_API_KEY",
         "ollama command not found.": "install ollama",
         "OPENAI_API_KEY is not set.": "set OPENAI_API_KEY",
         "ANTHROPIC_API_KEY is not set.": "set ANTHROPIC_API_KEY",

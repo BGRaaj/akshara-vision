@@ -702,7 +702,7 @@ def run_pipeline(
     _add_usage(translation_usage)
 
     document_structure = _document_structure(restoration_records, profile.document_type, profile)
-    detected_title = _detected_title(document_structure) or f"Akshara Vision - {profile.name}"
+    detected_title = _detected_title(document_structure) or _publication_fallback_title(profile, request.inputs.files)
     asset_manifest = _collect_assets_from_records(restoration_records)
     metadata = {
         "title": detected_title,
@@ -856,6 +856,8 @@ def combine_stage_outputs(run_dir: Path) -> Dict[str, object]:
         if isinstance(effective_manifest.get("metadata"), dict)
         else []
     ) or _collect_assets_from_record_checkpoints(stage_root / "records")
+    if isinstance(manifest.get("metadata"), dict):
+        manifest["metadata"]["title"] = metadata.get("title", "Untitled")
     output_formats = _output_formats_from_manifest(effective_manifest)
     exports = _export_text(
         combined_text + "\n",
@@ -1144,7 +1146,8 @@ def _combine_metadata(
 ) -> Dict[str, object]:
     metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
     combined = dict(metadata)
-    combined.setdefault("title", f"Akshara Vision - {run_dir.name}")
+    if not str(combined.get("title") or "").strip():
+        combined["title"] = "Untitled"
     combined["recombined"] = True
     combined["output_language"] = metadata.get("output_language") or language_suffix
     return combined
@@ -1154,10 +1157,10 @@ def _output_formats_from_manifest(manifest: Dict[str, object]) -> List[str]:
     profile = manifest.get("profile") if isinstance(manifest.get("profile"), dict) else {}
     formats = profile.get("output_formats") if isinstance(profile, dict) else None
     if isinstance(formats, list):
-        cleaned = [str(item) for item in formats if str(item).strip()]
+        cleaned = [str(item).strip() for item in formats if str(item).strip() in exporter_registry()]
         return cleaned or ["txt"]
     if isinstance(formats, str):
-        cleaned = [item.strip() for item in formats.split(",") if item.strip()]
+        cleaned = [item.strip() for item in formats.split(",") if item.strip() in exporter_registry()]
         return cleaned or ["txt"]
     return ["txt"]
 
@@ -1988,7 +1991,9 @@ def _document_type_guidance(profile: WorkflowProfile) -> str:
         "book": (
             "Book restoration skill: preserve title pages, subtitles, author/editor lines, "
             "preface/foreword sections, table of contents, chapter headings, page numbers, "
-            "footnotes, indexes, appendices, and running headers without inventing missing data. "
+            "footnotes, indexes, appendices, publisher lines, and running headers without inventing missing data. "
+            "Restore body prose as natural paragraphs for later book assembly; do not preserve artificial "
+            "scan line wrapping unless the lineation itself carries meaning. "
             "Keep the page readable in one pass; do not spend time reconstructing invisible words."
         ),
         "magazine": (
@@ -2082,6 +2087,9 @@ def _document_structure(
     section_headings = []
     contents_entries = []
     footnotes = []
+    contributors = []
+    publishers = []
+    running_headers = []
     content_kinds: Dict[str, int] = {}
     layouts: Dict[str, int] = {}
     content_features: Dict[str, int] = {}
@@ -2094,6 +2102,11 @@ def _document_structure(
         section_headings.extend(item.get("section_headings", []))
         contents_entries.extend(item.get("contents_entries", []))
         footnotes.extend(item.get("footnotes", []))
+        contributors.extend(item.get("contributors", []))
+        publishers.extend(item.get("publishers", []))
+        running_header = item.get("running_header")
+        if running_header:
+            running_headers.append(running_header)
         content_kind = str(item.get("content_kind") or "body")
         content_kinds[content_kind] = content_kinds.get(content_kind, 0) + 1
         layout = str(item.get("layout") or "single-flow")
@@ -2113,6 +2126,9 @@ def _document_structure(
         "page_markers": _unique_limited(page_markers, 24),
         "contents_entries": contents_entries[:120],
         "footnotes": footnotes[:120],
+        "contributors": _unique_limited(contributors, 12),
+        "publishers": _unique_limited(publishers, 8),
+        "running_headers": _frequent_limited(running_headers, 12),
         "content_kinds": content_kinds,
         "layouts": layouts,
         "content_features": content_features,
@@ -2155,6 +2171,9 @@ def _piece_observations(text: str, document_type: str, index: int) -> Dict[str, 
         "section_headings": headings[:6],
         "contents_entries": _contents_entries(lines) if kind == "contents" else [],
         "footnotes": _footnotes(lines),
+        "contributors": _contributors(lines),
+        "publishers": _publishers(lines),
+        "running_header": _running_header(lines),
         "has_multi_column_spacing": any(re.search(r"\S\s{4,}\S", line) for line in lines[:80]),
         "has_figure_marker": any("[image:" in line.lower() for line in lines),
     }
@@ -2180,6 +2199,9 @@ def _semantic_tags_for_chunk(
         "title_candidates": observations.get("title_candidates") or [],
         "contents_entries": observations.get("contents_entries") or [],
         "footnotes": observations.get("footnotes") or [],
+        "contributors": observations.get("contributors") or [],
+        "publishers": observations.get("publishers") or [],
+        "running_header": observations.get("running_header") or "",
         "has_figures": bool(chunk.get("assets")),
         "asset_count": len(chunk.get("assets") or []) if isinstance(chunk.get("assets"), list) else 0,
     }
@@ -2191,13 +2213,31 @@ def _contents_entries(lines: List[str]) -> List[Dict[str, str]]:
         cleaned = re.sub(r"\s+", " ", line.strip())
         if len(cleaned) < 3:
             continue
-        match = re.match(r"^(?P<title>.+?)\s*(?:\.{2,}|\s{2,}| - | -- )\s*(?P<page>[ivxlcdm\d]+)$", cleaned, re.I)
+        if re.fullmatch(r"(?:page\s*)?[ivxlcdm\d]+", cleaned, re.I):
+            continue
+        if len(cleaned) > 180:
+            continue
+        if cleaned.lower().startswith(("contents", "table of contents")):
+            continue
+        page_text = r"(?P<page>[ivxlcdm\d]+)"
+        title_text = r"(?P<title>.+?)"
+        match = re.match(
+            rf"^{title_text}\s*(?:\.{{2,}}|\s{{2,}}|[|:]\s*|-\s+)\s*{page_text}$",
+            cleaned,
+            re.I,
+        )
         if not match:
-            match = re.match(r"^(?P<page>[ivxlcdm\d]+)\s+(?P<title>.+)$", cleaned, re.I)
+            match = re.match(rf"^{page_text}\s+{title_text}$", cleaned, re.I)
         if not match:
             continue
         title = match.group("title").strip(" .-")
         page = match.group("page").strip()
+        if not title or not page:
+            continue
+        if len(title) < 2 or len(title) > 140:
+            continue
+        if re.fullmatch(r"(?:page\s*)?[ivxlcdm\d]+", title, re.I):
+            continue
         if title and page:
             entries.append({"title": title, "page": page, "raw": line.strip()})
     return entries[:80]
@@ -2215,6 +2255,37 @@ def _footnotes(lines: List[str]) -> List[Dict[str, str]]:
                 }
             )
     return notes[:40]
+
+
+def _contributors(lines: List[str]) -> List[str]:
+    contributors = []
+    for line in lines[:30]:
+        cleaned = re.sub(r"\s+", " ", line.strip())
+        if not cleaned or len(cleaned) > 140:
+            continue
+        if re.search(r"\b(by|author|edited by|editor|translated by|translator|compiled by)\b", cleaned, re.I):
+            contributors.append(cleaned)
+    return _unique_limited(contributors, 8)
+
+
+def _publishers(lines: List[str]) -> List[str]:
+    publishers = []
+    for line in lines[:50]:
+        cleaned = re.sub(r"\s+", " ", line.strip())
+        if not cleaned or len(cleaned) > 160:
+            continue
+        if re.search(r"\b(published by|publisher|press|publication|publications|printing|printer)\b", cleaned, re.I):
+            publishers.append(cleaned)
+    return _unique_limited(publishers, 6)
+
+
+def _running_header(lines: List[str]) -> str:
+    candidates = []
+    for line in lines[:3] + lines[-3:]:
+        cleaned = re.sub(r"\s+", " ", line.strip())
+        if 4 <= len(cleaned) <= 90 and not re.fullmatch(r"(?:page\s*)?[ivxlcdm\d]+", cleaned, re.I):
+            candidates.append(cleaned)
+    return candidates[0] if candidates else ""
 
 
 def _content_kind(lines: List[str], document_type: str) -> str:
@@ -2830,6 +2901,29 @@ def _unique_limited(values: List[object], limit: int) -> List[str]:
     return result
 
 
+def _frequent_limited(values: List[object], limit: int) -> List[str]:
+    counts: Dict[str, int] = {}
+    originals: Dict[str, str] = {}
+    for value in values:
+        text = str(value).strip()
+        if not text:
+            continue
+        key = text.lower()
+        counts[key] = counts.get(key, 0) + 1
+        originals.setdefault(key, text)
+    ordered = sorted(counts, key=lambda key: (-counts[key], originals[key].lower()))
+    return [originals[key] for key in ordered[:limit] if counts[key] > 1]
+
+
+def _publication_fallback_title(profile: WorkflowProfile, inputs: List[Path]) -> str:
+    if inputs:
+        first = Path(inputs[0]).stem.replace("_", " ").replace("-", " ").strip()
+        if first:
+            return first.title()
+    name = str(profile.name or "").replace("_", " ").replace("-", " ").strip()
+    return name.title() if name else "Untitled"
+
+
 def _consistency_prompt(state: Optional[Dict[str, object]]) -> str:
     if not state:
         return ""
@@ -3022,7 +3116,11 @@ def _task_text(
             + "Use only visible front-side text. Never use mirrored bleed-through, shadows, texture, "
             "stains, page cracks, or back-side impressions as source text.\n"
             + "Restoration stage only: extract ALL text visible in the image exactly as written.\n"
-            "Preserve the original language, script, spelling, line breaks, page order, and formatting.\n"
+            "Preserve original language, script, spelling, page order, headings, tables, footnotes, "
+            "page markers, captions, and meaningful layout. For normal body prose, join artificial "
+            "scan line wraps into readable paragraphs and keep paragraph breaks. Preserve exact line "
+            "breaks only for verse, tables, contents pages, manuscript lineation, addresses, captions, "
+            "and other places where lineation carries meaning.\n"
             "Do not skip non-English, Indic, Sanskrit, Kannada, Hindi, Tamil, Telugu, Malayalam, "
             "Bengali, Marathi, Urdu, or mixed-script text.\n"
             "Apply the language policy above exactly. Preserve clear mixed-language snippets only when "
@@ -3033,7 +3131,7 @@ def _task_text(
             "If any words are unclear, mark them as [unclear]. If the whole page is blank or "
             "unreadable, return an empty response, not [unclear].\n"
             "Do not perform an extended self-review or reasoning loop. Return the extraction promptly; "
-            "Akshara will run a separate repair pass only if the result appears corrupted. "
+            "a separate repair pass will run only if the result appears corrupted. "
             "Do not complete a sentence merely because it continues on the next page.\n"
             "Do not translate yet. Translation happens as a final stage after extraction.\n"
             "Return ONLY the extracted text. Do not add explanations, commentary, "

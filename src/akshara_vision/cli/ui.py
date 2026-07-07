@@ -252,15 +252,24 @@ class MonoUI:
     ) -> List[str]:
         default = default or []
         if inquirer and self.interactive():
-            return list(
-                inquirer.checkbox(
-                    message=message,
-                    choices=choices,
-                    default=default,
-                    qmark="◆",
-                    style=self.prompt_style(),
-                ).execute()
-            )
+            result = inquirer.checkbox(
+                message=message,
+                choices=choices,
+                default=default,
+                qmark="◆",
+                style=self.prompt_style(),
+            ).execute()
+            if isinstance(result, (list, tuple, set)):
+                normalized = []
+                for item in result:
+                    value = getattr(item, "value", item)
+                    if value is None:
+                        continue
+                    normalized.append(str(value))
+                return normalized
+            if result is None:
+                return []
+            return [str(getattr(result, "value", result))]
         self.write(message)
         self.write("Choose comma-separated numbers, or press Enter for default.")
         for index, choice in enumerate(choices, start=1):

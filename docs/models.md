@@ -8,6 +8,7 @@ Supported provider families:
 - LM Studio
 - Jan
 - llama.cpp or any OpenAI-compatible local server
+- Sarvam
 - OpenAI
 - Anthropic
 - Gemini
@@ -60,6 +61,7 @@ cp .env.example .env
 Cloud providers are optional. Use:
 
 ```bash
+export SARVAM_API_KEY=...
 export OPENAI_API_KEY=...
 export ANTHROPIC_API_KEY=...
 export GEMINI_API_KEY=...
@@ -106,7 +108,7 @@ Use a model that explicitly supports image or PDF inputs for scanned pages.
 
 | Runtime / Provider | Recommended Model | Notes |
 | --- | --- | --- |
-| **Ollama / Local** | `gemma4:12b` | High-fidelity multilingual and Indic script vision work |
+| **Ollama / Local** | `gemma4:12b` | High-fidelity multilingual vision work, including regional scripts |
 | **Ollama / Local** | `qwen3.6:27b` / `qwen3.5:4b` | Strong document visual parsing options |
 | **Ollama / Local** | `llama3.2-vision:11b` | Useful lighter local vision baseline |
 | **LM Studio / Jan** | GGUF variants of Gemma 4, Qwen 3.6, Qwen 3.5, or Llama 3.2 Vision | Depends on your local runtime and hardware |
@@ -134,7 +136,7 @@ passages that use unfamiliar terminology.
 
 ### Context Window & Token Limits
 
-For successful Indic transcription and reasoning-based manuscript parsing, use a
+For successful multilingual transcription and reasoning-based manuscript parsing, use a
 vision model with enough context for image tokens and page text. Akshara passes
 profile context/output limits through to compatible backends and does not
 artificially cap them. Suggested starting points:

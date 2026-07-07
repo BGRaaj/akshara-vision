@@ -104,7 +104,7 @@ The CLI also asks how to handle languages:
 
 Dense pages and non-English scripts still depend heavily on the chosen vision
 model. Quality mode gives the model stronger page-order, region-by-region, and
-Indic-script instructions. If a model hits its output limit, the run is marked
+script-specific instructions. If a model hits its output limit, the run is marked
 partial with `model context or output limit reached`.
 
 Interrupted runs can be rebuilt later with:

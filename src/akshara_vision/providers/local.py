@@ -292,6 +292,8 @@ def openai_compatible_chat(
     api_key: Optional[str] = None,
     timeout: Optional[float] = None,
     media_path: Optional[Path] = None,
+    headers_override: Optional[dict] = None,
+    payload_override: Optional[dict] = None,
 ) -> tuple[str, dict]:
     url = endpoint.rstrip("/") + "/chat/completions"
 
@@ -338,9 +340,13 @@ def openai_compatible_chat(
         "messages": messages,
         "max_tokens": max_tokens,
     }
+    if payload_override:
+        payload.update(payload_override)
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+    if headers_override:
+        headers.update(headers_override)
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),

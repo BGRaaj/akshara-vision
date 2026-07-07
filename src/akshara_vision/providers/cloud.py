@@ -19,6 +19,55 @@ from akshara_vision.providers.local import (
 )
 
 
+class SarvamProvider:
+    def __init__(self) -> None:
+        self.name = "sarvam"
+        self.env_var = "SARVAM_API_KEY"
+        self.base_url = "https://api.sarvam.ai/v1"
+        self.default_models = ["sarvam-vision", "sarvam-105b", "sarvam-30b", "mayura", "sarvam-translate"]
+
+    def status(self) -> ProviderStatus:
+        api_key = os.environ.get(self.env_var)
+        if not api_key:
+            return ProviderStatus(self.name, False, f"{self.env_var} is not set.", [])
+        models = _fetch_sarvam_models(self.base_url, api_key)
+        detail = f"Connected to {self.base_url}." if models else f"{self.env_var} is configured."
+        return ProviderStatus(self.name, True, detail, models or self.default_models)
+
+    def restore_text(
+        self,
+        text: str,
+        instruction: str,
+        settings: ModelSettings,
+        media_path: Optional[Path] = None,
+    ) -> tuple[str, dict]:
+        api_key = os.environ.get(self.env_var)
+        if not api_key:
+            raise RuntimeError(
+                f"Cloud provider '{self.name}' requires environment variable '{self.env_var}'."
+            )
+        result = openai_compatible_chat(
+            endpoint=self.base_url,
+            settings=settings,
+            instruction=instruction,
+            text=text,
+            api_key=api_key,
+            timeout=_request_timeout(settings),
+            media_path=media_path,
+            headers_override={"api-subscription-key": api_key},
+        )
+        if result and result[0]:
+            return result
+        if media_path:
+            raise RuntimeError(
+                f"Failed to obtain response from cloud provider '{self.name}' "
+                f"using model '{settings.model}'."
+            )
+        raise RuntimeError(
+            f"Cloud provider '{self.name}' returned an empty response using model '{settings.model}'."
+        )
+
+
 class CloudProvider:
     def __init__(self, name: str, env_var: str, default_models: list) -> None:
         self.name = name
@@ -150,6 +199,32 @@ class OpenAICompatibleCloudProvider:
 def _endpoint_env_var(provider_name: str) -> str:
     normalized = provider_name.upper().replace("-", "_")
     return f"AKSHARA_{normalized}_BASE_URL"
+
+
+def _fetch_sarvam_models(endpoint: str, api_key: str) -> list:
+    url = endpoint.rstrip("/") + "/models"
+    headers = {
+        "Accept": "application/json",
+        "api-subscription-key": api_key,
+        "Authorization": f"Bearer {api_key}",
+    }
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=4) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        return []
+    if isinstance(data, dict):
+        items = data.get("data") or data.get("models") or []
+    else:
+        items = []
+    models = []
+    for item in items:
+        if isinstance(item, dict):
+            name = item.get("id") or item.get("name")
+            if name:
+                models.append(str(name))
+    return models
 
 
 def _fetch_native_models(provider_name: str, api_key: str) -> list:

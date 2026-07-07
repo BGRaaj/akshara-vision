@@ -34,7 +34,7 @@ class ReviewExporter:
     def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
         path = destination.with_suffix(".review.md")
         content = [
-            "# Akshara Vision Review",
+            "# Restoration Review",
             "",
             "## Run",
             "",
@@ -58,9 +58,9 @@ def _xml_payload(label: str, text: str) -> str:
     )
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
-        f'<akshara-sidecar format="{label}">\n'
+        f'<ocr-sidecar format="{label}">\n'
         f"  <text>{escaped}</text>\n"
-        "</akshara-sidecar>\n"
+        "</ocr-sidecar>\n"
     )
 
 

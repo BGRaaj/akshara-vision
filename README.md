@@ -27,14 +27,14 @@ model, provider, scan quality, script complexity, and document damage.
 | --- | --- |
 | Interactive CLI | Monochrome terminal UI with orange accent branding, home board, dropdowns, checkboxes, confirmations, profile manager, model setup, doctor checks |
 | Restoration | Text cleanup, OCR error correction, uncertainty markers, chunked long-text processing, raw OCR preservation |
-| Vision input | Direct multimodal processing for scanned images and rendered PDF pages with dense-page and Indic-script extraction guidance |
+| Vision input | Direct multimodal processing for scanned images and rendered PDF pages with dense-page and multilingual-script extraction guidance |
 | Document intelligence | Document-type-specific extraction guidance plus semantic roles, layout hints, and detected structure metadata for books, manuscripts, magazines, newspapers, articles, letters, and archive bundles |
 | Assembly enrichment | Optional figure markers plus candidate figure crops with bounding boxes, page zones, relative positions, size, DPI, and placement metadata |
 | Language handling | Per-run choice to preserve all readable detected languages/scripts or strictly extract only the declared source language |
 | Translation | Automatic final-pass translation when output language differs from source language; manual modes for translate, bilingual, transliterate, and metadata-only workflows |
 | Batch processing | Files, folders, recursive folders, globs, ZIP archives, CSV manifests, and JSON manifests |
 | Profiles | Portable TOML profiles with defaults for workflow, languages, translation mode, model, output formats, destination, and locked quick runs |
-| Models | Ollama, LM Studio, Jan, llama.cpp/OpenAI-compatible local servers, native cloud providers, OpenRouter, and other OpenAI-compatible cloud APIs |
+| Models | Ollama, LM Studio, Jan, llama.cpp/OpenAI-compatible local servers, Sarvam, native cloud providers, OpenRouter, and other OpenAI-compatible cloud APIs |
 | Reliability | Long model calls wait for completion, transient provider failures retry with backoff, and failed batch items are tracked without corrupting later outputs |
 | Exports | Text, Markdown, HTML, DOCX, EPUB, JSON, JSONL, YAML, OCR sidecars, review files, and PDF request notes |
 | Auditability | Live token metrics during long runs, raw OCR file, restored checkpoint, JSON sidecars, staged per-page/per-chunk outputs, copied source inputs, structured run manifest, model usage metadata, truncation warnings, and failure reasons |
@@ -133,7 +133,7 @@ processed.
 | Structured | `.json`, `.jsonl`, `.yaml` |
 | OCR sidecars | `.hocr`, `.alto.xml`, `.page.xml` sidecar placeholders with restored text |
 | Review | `.review.md`, `raw_ocr.txt`, copied source files, `run_manifest.json` |
-| PDF requests | `.searchable-pdf.txt`, `.image-pdf.txt` notes when optional PDF assembly dependencies are not available |
+| PDF exports | `.searchable.pdf`, `.image.pdf` structured PDF reports built from restored text and run metadata |
 
 The `.txt` export is the primary default. Structured exports include metadata
 for inputs, provider, model, workflow, translation state, usage, restoration

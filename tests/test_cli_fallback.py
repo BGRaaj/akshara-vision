@@ -10,7 +10,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from akshara_vision.cli.app import main
-from akshara_vision.cli.workflows import clean_command, export_command, resume_command
+from akshara_vision.cli.workflows import (
+    choose_output_formats,
+    clean_command,
+    export_command,
+    resume_command,
+)
+from akshara_vision.core.constants import OUTPUT_FORMATS
 from akshara_vision.core.config import ConfigStore
 from akshara_vision.core.models import WorkflowProfile
 
@@ -107,6 +113,65 @@ class CliFallbackTests(unittest.TestCase):
                 export_command(str(run_dir), formats=["html"])
             self.assertTrue((run_dir / "akshara_output.html").exists())
             self.assertIn("html:", output.getvalue())
+
+    def test_export_command_writes_every_supported_format(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            run_dir.mkdir()
+            (run_dir / "akshara_output.txt").write_text("Finished text", encoding="utf-8")
+            (run_dir / "run_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "profile": {"output_formats": list(OUTPUT_FORMATS)},
+                        "metadata": {"title": "Export All"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with redirect_stdout(io.StringIO()):
+                export_command(str(run_dir), formats=list(OUTPUT_FORMATS))
+            expected_suffixes = [
+                ".txt",
+                ".md",
+                ".html",
+                ".docx",
+                ".epub",
+                ".json",
+                ".jsonl",
+                ".yaml",
+                ".hocr",
+                ".alto.xml",
+                ".page.xml",
+                ".searchable.pdf",
+                ".image.pdf",
+                ".review.md",
+            ]
+            for suffix in expected_suffixes:
+                self.assertTrue((run_dir / f"akshara_output{suffix}").exists(), suffix)
+            self.assertTrue((run_dir / "akshara_output.searchable.pdf").read_bytes().startswith(b"%PDF-"))
+
+    def test_choose_output_formats_toggles_and_handles_back(self):
+        with patch("akshara_vision.cli.workflows.ui.choose", return_value="Back"):
+            self.assertEqual(choose_output_formats(["md"]), ["md"])
+        with patch("akshara_vision.cli.workflows.ui.choose", return_value="Back"):
+            self.assertEqual(choose_output_formats(["md"], back_returns_defaults=False), [])
+        with patch(
+            "akshara_vision.cli.workflows.ui.choose",
+            side_effect=["txt", "md", "review", "Done"],
+        ):
+            self.assertEqual(choose_output_formats(["review"]), ["txt", "md"])
+
+    def test_export_command_back_selection_cancels_interactive_export(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            run_dir.mkdir()
+            (run_dir / "akshara_output.txt").write_text("Finished text", encoding="utf-8")
+            with patch("akshara_vision.cli.workflows.ui.choose", return_value="Back"):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    export_command(str(run_dir))
+            self.assertIn("Export cancelled", output.getvalue())
+            self.assertFalse((run_dir / "akshara_output.md").exists())
 
     def test_resume_command_recovers_partial_run_folder(self):
         with tempfile.TemporaryDirectory() as tmp:
