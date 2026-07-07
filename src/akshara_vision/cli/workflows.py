@@ -1470,10 +1470,11 @@ def resume_command(run_dir: Optional[str] = None) -> None:
         ui.status("error", "No folder selected.")
         return
     run_path = Path(target).expanduser()
-    state_path = run_path / "run_state.json"
-    if not state_path.exists():
-        ui.status("error", f"No run_state.json found in {run_path}")
+    run_path = _resolve_run_folder(run_path)
+    if run_path is None:
+        ui.status("error", f"No run_state.json found in {Path(target).expanduser()}")
         return
+    state_path = run_path / "run_state.json"
 
     try:
         state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -1483,6 +1484,7 @@ def resume_command(run_dir: Optional[str] = None) -> None:
     status = state.get("status", "unknown")
     completed = state.get("completed_inputs") if isinstance(state.get("completed_inputs"), list) else []
     total_inputs = state.get("total_inputs", len(completed))
+    input_paths = state.get("input_paths") if isinstance(state.get("input_paths"), list) else []
     input_files = state.get("input_files", [])
 
     ui.status("info", f"State: {status}")
@@ -1498,15 +1500,25 @@ def resume_command(run_dir: Optional[str] = None) -> None:
         combine_command(str(run_path))
         return
 
-    if input_files:
+    if input_paths or input_files:
         ui.status("info", "Found original input path(s).")
         if ui.confirm("Resume this run in the same run folder?", True):
             profile_dict = state.get("profile", {})
             profile = WorkflowProfile.from_dict(profile_dict)
             profile.output_dir = str(run_path.parent)
-            selection = discover_inputs([str(path) for path in input_files], recursive=True)
+            selection = discover_inputs(
+                [str(path) for path in (input_paths or input_files)], recursive=True
+            )
             if not selection.files:
-                ui.status("warning", "Original inputs were not found. Combining completed checkpoints instead.")
+                sources_dir = run_path / "sources"
+                if sources_dir.exists():
+                    ui.status("warning", "Original inputs were not found. Trying copied sources instead.")
+                    selection = discover_inputs([str(sources_dir)], recursive=True)
+            if not selection.files:
+                ui.status(
+                    "warning",
+                    "Input files were not found. Combining completed checkpoints instead.",
+                )
                 combine_command(str(run_path))
                 return
             result = _run_with_progress(
@@ -1522,6 +1534,18 @@ def resume_command(run_dir: Optional[str] = None) -> None:
 
     ui.write("Combining already completed checkpoints into final outputs.")
     combine_command(str(run_path))
+
+
+def _resolve_run_folder(path: Path) -> Optional[Path]:
+    if (path / "run_state.json").exists():
+        return path
+    candidates = [child for child in path.iterdir() if child.is_dir() and (child / "run_state.json").exists()] if path.exists() and path.is_dir() else []
+    if len(candidates) == 1:
+        ui.status("info", f"Using interrupted run folder: {candidates[0]}")
+        return candidates[0]
+    if len(candidates) > 1:
+        ui.write("Multiple interrupted runs found below that folder. Please point at one run folder directly.")
+    return None
 
 
 def check_command() -> int:

@@ -25,7 +25,7 @@ model, provider, scan quality, script complexity, and document damage.
 
 | Area | Support |
 | --- | --- |
-| Interactive CLI | Monochrome terminal UI, home board, dropdowns, checkboxes, confirmations, profile manager, model setup, doctor checks |
+| Interactive CLI | Monochrome terminal UI with orange accent branding, home board, dropdowns, checkboxes, confirmations, profile manager, model setup, doctor checks |
 | Restoration | Text cleanup, OCR error correction, uncertainty markers, chunked long-text processing, raw OCR preservation |
 | Vision input | Direct multimodal processing for scanned images and rendered PDF pages with dense-page and Indic-script extraction guidance |
 | Document intelligence | Document-type-specific extraction guidance plus semantic roles, layout hints, and detected structure metadata for books, manuscripts, magazines, newspapers, articles, letters, and archive bundles |

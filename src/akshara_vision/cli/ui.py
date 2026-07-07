@@ -24,7 +24,7 @@ except ModuleNotFoundError:  # pragma: no cover - dependency fallback
 
 
 class MonoUI:
-    """Black-and-white terminal helpers with dependency-light fallbacks."""
+    """Monochrome terminal helpers with orange accent branding and fallbacks."""
 
     def __init__(self) -> None:
         self.console = Console() if Console else None
@@ -37,6 +37,11 @@ class MonoUI:
         if self.theme == "light":
             return "#3a2417 on #f4ecd8"
         return "white"
+
+    def accent_style(self) -> str:
+        if self.theme == "light":
+            return "#c45a00 bold"
+        return "#ff8c00 bold"
 
     def prompt_style(self):
         if not InquirerPyStyle:
@@ -107,20 +112,20 @@ class MonoUI:
     def heading(self, title: str, subtitle: Optional[str] = None) -> None:
         width = self.width()
         line = "=" * width
-        self.write(line)
-        self.write(title.upper().center(width))
+        self._print_colored(line, self.accent_style())
+        self._print_colored(title.upper().center(width), self.accent_style())
         if subtitle:
-            self.write(subtitle.center(width))
-        self.write(line)
+            self._print_colored(subtitle.center(width), self.accent_style())
+        self._print_colored(line, self.accent_style())
 
     def hero(self, guide: str = "balanced") -> None:
         width = self.width()
         line = "=" * width
-        self.write(line)
+        self._print_colored(line, self.accent_style())
         for row in _inscription_hero(width):
-            self.write(row.center(width))
-        self.write("Restore. Read. Preserve.".center(width))
-        self.write(line)
+            self._print_colored(row.center(width), self.accent_style())
+        self._print_colored("Restore. Read. Preserve.".center(width), self.accent_style())
+        self._print_colored(line, self.accent_style())
         self.write("Use /help for every command and /menu to open the action picker.".center(width))
         if guide == "full":
             self.write("Use /guide to choose how much guidance Akshara Vision shows.".center(width))
@@ -147,8 +152,8 @@ class MonoUI:
 
     def section(self, title: str) -> None:
         self.write("")
-        self.write(title)
-        self.write("-" * len(title))
+        self._print_colored(title, self.accent_style())
+        self._print_colored("-" * len(title), self.accent_style())
 
     def note(self, message: str) -> None:
         self.write(f"  {message}")
@@ -308,6 +313,14 @@ class MonoUI:
 
     def progress(self, title: str, total: int = 0):
         return ProgressReporter(self, title, total)
+
+    def _print_colored(self, message: str, style: str) -> None:
+        if self.console:
+            if self.theme == "light":
+                message = self._fill_background(message)
+            self.console.print(message, style=style, markup=False, highlight=False)
+        else:
+            print(message)
 
 
 ui = MonoUI()

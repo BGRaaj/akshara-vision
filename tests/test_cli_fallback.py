@@ -1,3 +1,4 @@
+import json
 import io
 import os
 import subprocess
@@ -122,6 +123,66 @@ class CliFallbackTests(unittest.TestCase):
                 resume_command(str(run_dir))
             self.assertTrue((run_dir / "akshara_output.txt").exists())
             self.assertIn("Completed inputs: 1", output.getvalue())
+
+    def test_resume_command_finds_nested_run_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Detective"
+            run_dir = root / "default-20260707-161119"
+            run_dir.mkdir(parents=True)
+            source = Path(tmp) / "source.txt"
+            source.write_text("Hello", encoding="utf-8")
+            (run_dir / "run_state.json").write_text(
+                json.dumps(
+                    {
+                        "status": "running",
+                        "total_inputs": 1,
+                        "profile": {"output_formats": ["txt"], "output_dir": str(root)},
+                        "completed_inputs": [],
+                        "input_paths": [str(source)],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            called = {"run": False, "combine": False}
+
+            with patch("akshara_vision.cli.workflows._run_with_progress", return_value={"run_dir": run_dir, "exports": [], "manifest": {}}) as run_mock:
+                with patch("akshara_vision.cli.workflows.combine_command") as combine_mock:
+                    with redirect_stdout(io.StringIO()):
+                        resume_command(str(root))
+            called["run"] = run_mock.called
+            called["combine"] = combine_mock.called
+            self.assertTrue(called["run"])
+            self.assertFalse(called["combine"])
+
+    def test_resume_command_uses_sources_fallback_when_original_inputs_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            sources = run_dir / "sources"
+            sources.mkdir(parents=True)
+            copied = sources / "0001-source.txt"
+            copied.write_text("Recovered from sources", encoding="utf-8")
+            missing = Path(tmp) / "missing-source.txt"
+            (run_dir / "run_state.json").write_text(
+                json.dumps(
+                    {
+                        "status": "running",
+                        "total_inputs": 1,
+                        "profile": {"output_formats": ["txt"], "output_dir": str(Path(tmp) / "out")},
+                        "completed_inputs": [],
+                        "input_paths": [str(missing)],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch(
+                "akshara_vision.cli.workflows._run_with_progress",
+                return_value={"run_dir": run_dir, "exports": [], "manifest": {}},
+            ) as run_mock:
+                with patch("akshara_vision.cli.workflows.combine_command") as combine_mock:
+                    with redirect_stdout(io.StringIO()):
+                        resume_command(str(run_dir))
+            self.assertTrue(run_mock.called)
+            self.assertFalse(combine_mock.called)
 
 
 if __name__ == "__main__":

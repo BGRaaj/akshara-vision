@@ -4,7 +4,7 @@ Akshara Vision is a terminal product first.
 
 Design rules:
 
-- Black-and-white only.
+- Monochrome base with orange accent branding.
 - Keyboard-first selection.
 - Short commands for repeated work.
 - Responsive first: the opening board adapts to narrow, normal, and wide terminals.
@@ -80,9 +80,10 @@ Display options:
 | Theme | `dark`, `light` |
 | Execution mode | `fast`, `balanced`, `quality` |
 
-`dark` is the default monochrome terminal. `light` applies an ivory background
-and dark brown text through Rich and InquirerPy where the terminal supports ANSI
-color. After changing the theme, the home board redraws immediately.
+`dark` is the default monochrome terminal with orange accents. `light` applies
+an ivory background with dark brown text and matching accent styling through
+Rich and InquirerPy where the terminal supports ANSI color. After changing the
+theme, the home board redraws immediately.
 
 Guidance level is managed separately with `akv guide` or `/guide`.
 

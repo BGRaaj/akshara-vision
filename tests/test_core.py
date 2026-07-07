@@ -145,6 +145,18 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(selection.supported_count, 1)
             self.assertEqual(selection.files[0], source.resolve())
 
+    def test_input_discovery_handles_windows_style_manifest_separators(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "nested" / "sample.txt"
+            source.parent.mkdir(parents=True)
+            source.write_text("hello", encoding="utf-8")
+            manifest = root / "sample.manifest.csv"
+            manifest.write_text("path\nnested\\sample.txt\n", encoding="utf-8")
+            selection = discover_inputs([str(root)])
+            self.assertEqual(selection.supported_count, 1)
+            self.assertEqual(selection.files[0], source.resolve())
+
     def test_input_discovery_labels_nested_folder_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

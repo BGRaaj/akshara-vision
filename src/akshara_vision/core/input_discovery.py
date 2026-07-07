@@ -1,6 +1,7 @@
 import csv
 import glob
 import json
+import os
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
@@ -54,11 +55,12 @@ def is_supported_input(path: Path) -> bool:
 
 
 def _expand_one(item: str, recursive: bool) -> List[Path]:
-    expanded = Path(item).expanduser()
-    if any(token in item for token in ["*", "?", "["]):
+    normalized = _normalize_path_value(item)
+    expanded = Path(normalized).expanduser()
+    if any(token in normalized for token in ["*", "?", "["]):
         return [
             Path(match).expanduser()
-            for match in sorted(glob.glob(item, recursive=recursive))
+            for match in sorted(glob.glob(normalized, recursive=recursive))
         ]
     if expanded.exists():
         return [expanded]
@@ -96,7 +98,7 @@ def _looks_like_manifest(path: Path) -> bool:
 
 def _read_manifest(path: Path) -> List[str]:
     def resolve_manifest_value(value: str) -> str:
-        candidate = Path(value).expanduser()
+        candidate = Path(_normalize_path_value(value)).expanduser()
         if candidate.is_absolute():
             return str(candidate)
         return str(path.parent / candidate)
@@ -156,3 +158,12 @@ def _unique_existing(paths: Iterable[Path], labels: Dict[str, str]) -> Tuple[Lis
         label = labels.get(str(resolved), resolved.name)
         unique_labels[str(resolved)] = label
     return unique, unique_labels
+
+
+def _normalize_path_value(value: str) -> str:
+    text = str(value or "").strip().strip('"').strip("'")
+    if not text:
+        return text
+    if os.name == "nt":
+        return text.replace("/", "\\")
+    return text.replace("\\", "/")

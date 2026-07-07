@@ -529,6 +529,7 @@ def run_pipeline(
             "created_at": timestamp,
             "total_inputs": len(request.inputs.files),
             "input_files": [_safe_path(p) for p in request.inputs.files],
+            "input_paths": [str(p.expanduser().resolve()) for p in request.inputs.files],
             "completed_inputs": [],
             "consistency": consistency_state,
             "next_action": "Run can be recovered with `akv resume <run-folder>` or `akv combine <run-folder>`.",
@@ -672,6 +673,7 @@ def run_pipeline(
                 ],
                 "consistency": consistency_state,
                 "assets": _collect_assets_from_records(restoration_records),
+                "input_paths": [str(p.expanduser().resolve()) for p in request.inputs.files],
             },
         )
         cleaned_parts.append(f"===== {source_label} =====\n{output_cleaned}".strip())
