@@ -21,9 +21,10 @@ class MarkdownExporter:
     name = "md"
 
     def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
-        title = metadata.get("title") or "Akshara Vision Output"
+        title = _metadata_title(metadata)
         path = destination.with_suffix(".md")
-        path.write_text(f"# {title}\n\n{text}", encoding="utf-8")
+        body = _markdown_body(text)
+        path.write_text(f"# {title}\n\n{body}", encoding="utf-8")
         return ExportResult(self.name, path)
 
 
@@ -31,16 +32,27 @@ class HtmlExporter:
     name = "html"
 
     def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
-        title = html.escape(str(metadata.get("title") or "Akshara Vision Output"))
-        body = "\n".join(
-            f"<p>{html.escape(part)}</p>" for part in text.split("\n\n") if part.strip()
-        )
+        title = html.escape(_metadata_title(metadata))
+        body = _html_body(text)
         path = destination.with_suffix(".html")
         path.write_text(
             "<!doctype html>\n"
             '<html lang="en">\n'
-            '<head><meta charset="utf-8"><title>'
-            f"{title}</title></head>\n<body>\n{body}\n</body>\n</html>\n",
+            "<head>\n"
+            '<meta charset="utf-8">\n'
+            '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+            f"<title>{title}</title>\n"
+            "<style>\n"
+            "body{margin:0;background:#f8f5ed;color:#24170f;font-family:Georgia,'Times New Roman',serif;line-height:1.65;}\n"
+            "main{max-width:780px;margin:0 auto;padding:56px 28px 72px;}\n"
+            "h1{text-align:center;font-size:2.1rem;line-height:1.2;margin:0 0 2.5rem;}\n"
+            "p{font-size:1.08rem;margin:0 0 1.05rem;}\n"
+            ".page-marker{text-align:center;font-variant-numeric:oldstyle-nums;margin:2rem 0 1rem;}\n"
+            ".figure-marker{border:1px solid #6f5a47;padding:.75rem 1rem;text-align:center;font-style:italic;margin:1.5rem 0;}\n"
+            "@media print{body{background:white;color:black}main{max-width:none;padding:0.75in}h1{page-break-after:avoid}}\n"
+            "</style>\n"
+            "</head>\n"
+            f"<body><main><h1>{title}</h1>\n{body}\n</main></body>\n</html>\n",
             encoding="utf-8",
         )
         return ExportResult(self.name, path)
@@ -89,9 +101,8 @@ class DocxExporter:
     name = "docx"
 
     def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
-        del metadata
         path = destination.with_suffix(".docx")
-        document_xml = _docx_document_xml(text)
+        document_xml = _docx_document_xml(text, _metadata_title(metadata))
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("[Content_Types].xml", _docx_content_types())
             archive.writestr("_rels/.rels", _docx_rels())
@@ -103,11 +114,9 @@ class EpubExporter:
     name = "epub"
 
     def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
-        title = str(metadata.get("title") or "Akshara Vision Output")
+        title = _metadata_title(metadata)
         path = destination.with_suffix(".epub")
-        body = "\n".join(
-            f"<p>{html.escape(part)}</p>" for part in text.split("\n\n") if part.strip()
-        )
+        body = _html_body(text)
         with zipfile.ZipFile(path, "w") as archive:
             archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
             archive.writestr("META-INF/container.xml", _epub_container())
@@ -116,9 +125,56 @@ class EpubExporter:
         return ExportResult(self.name, path)
 
 
-def _docx_document_xml(text: str) -> str:
-    paragraphs = []
+def _metadata_title(metadata: Dict[str, object]) -> str:
+    title = str(metadata.get("title") or "").strip()
+    return title or "Akshara Vision Output"
+
+
+def _paragraphs(text: str) -> list[str]:
+    return [part.strip() for part in text.split("\n\n") if part.strip()]
+
+
+def _markdown_body(text: str) -> str:
+    parts = []
+    for paragraph in _paragraphs(text):
+        if paragraph.lower().startswith("[image:"):
+            parts.append(f"> {paragraph}")
+        else:
+            parts.append(paragraph)
+    return "\n\n".join(parts).strip() + "\n"
+
+
+def _html_body(text: str) -> str:
+    body = []
+    for paragraph in _paragraphs(text):
+        escaped = html.escape(paragraph).replace("\n", "<br />\n")
+        stripped = paragraph.strip()
+        if stripped.lower().startswith("[image:"):
+            body.append(f'<figure class="figure-marker">{escaped}</figure>')
+        elif _looks_like_page_marker(stripped):
+            body.append(f'<p class="page-marker">{escaped}</p>')
+        else:
+            body.append(f"<p>{escaped}</p>")
+    return "\n".join(body)
+
+
+def _looks_like_page_marker(text: str) -> bool:
+    normalized = text.strip().lower().replace("page ", "")
+    if not normalized:
+        return False
+    roman = set("ivxlcdm")
+    return normalized.isdigit() or all(char in roman for char in normalized)
+
+
+def _docx_document_xml(text: str, title: str) -> str:
+    paragraphs = [
+        "<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr>"
+        "<w:r><w:rPr><w:b/><w:sz w:val=\"32\"/></w:rPr>"
+        f"<w:t>{html.escape(title)}</w:t></w:r></w:p>"
+    ]
     for paragraph in text.split("\n\n"):
+        if not paragraph.strip():
+            continue
         escaped = html.escape(paragraph).replace("\n", "<w:br/>")
         paragraphs.append(f"<w:p><w:r><w:t>{escaped}</w:t></w:r></w:p>")
     return (

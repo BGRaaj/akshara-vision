@@ -180,6 +180,10 @@ if typer:
     def docs():
         docs_command()
 
+    @app.command("home")
+    def home():
+        show_home(interactive=_interactive_allowed())
+
     @app.command("shell")
     @app.command("s")
     def shell():
@@ -214,7 +218,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             return
         _fallback_main(argv if argv is not None else sys.argv[1:])
     except (KeyboardInterrupt, EOFError):
-        print("\nGoodbye.")
+        print("\nNamaskara.")
         sys.exit(1)
 
 

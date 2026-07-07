@@ -55,6 +55,7 @@ class StageWriter:
         self.translated_dir = self.stages_dir / "translated"
         self.combined_dir = self.stages_dir / "combined"
         self.items_dir = self.run_dir / "items"
+        self.assets_dir = self.run_dir / "assets"
         self.restored_dir.mkdir(parents=True, exist_ok=True)
         self.translated_dir.mkdir(parents=True, exist_ok=True)
         self.combined_dir.mkdir(parents=True, exist_ok=True)
@@ -102,7 +103,17 @@ class StageWriter:
     def write_item_restored(self, source_index: int, source_name: str, text: str) -> Path:
         item_dir = self._item_dir(source_index, source_name)
         path = item_dir / f"restored__{_language_slug(self.source_language)}.txt"
-        path.write_text(text, encoding="utf-8")
+        self._write_text_with_json(
+            path,
+            text,
+            {
+                "kind": "item",
+                "stage": "restored",
+                "source_index": source_index,
+                "source_name": source_name,
+                "language": self.source_language,
+            },
+        )
         return path
 
     def write_item_translated(self, source_index: int, source_name: str, text: str) -> Path:
@@ -110,13 +121,34 @@ class StageWriter:
         source = _language_slug(self.source_language)
         target = _language_slug(self.output_language)
         path = item_dir / f"translated__{source}-to-{target}.txt"
-        path.write_text(text, encoding="utf-8")
+        self._write_text_with_json(
+            path,
+            text,
+            {
+                "kind": "item",
+                "stage": "translated",
+                "source_index": source_index,
+                "source_name": source_name,
+                "source_language": self.source_language,
+                "output_language": self.output_language,
+            },
+        )
         return path
 
     def write_item_final(self, source_index: int, source_name: str, text: str) -> Path:
         item_dir = self._item_dir(source_index, source_name)
         path = item_dir / f"final__{_language_slug(self.output_language)}.txt"
-        path.write_text(text, encoding="utf-8")
+        self._write_text_with_json(
+            path,
+            text,
+            {
+                "kind": "item",
+                "stage": "final",
+                "source_index": source_index,
+                "source_name": source_name,
+                "language": self.output_language,
+            },
+        )
         return path
 
     def write_archive_item_restored(
@@ -124,7 +156,18 @@ class StageWriter:
     ) -> Path:
         item_dir = self._archive_item_dir(source_index, source_name, archive_label)
         path = item_dir / f"restored__{_language_slug(self.source_language)}.txt"
-        path.write_text(text, encoding="utf-8")
+        self._write_text_with_json(
+            path,
+            text,
+            {
+                "kind": "archive-item",
+                "stage": "restored",
+                "source_index": source_index,
+                "source_name": source_name,
+                "archive_label": archive_label,
+                "language": self.source_language,
+            },
+        )
         return path
 
     def archive_item_restored_path(
@@ -138,7 +181,18 @@ class StageWriter:
     ) -> Path:
         item_dir = self._archive_item_dir(source_index, source_name, archive_label)
         path = item_dir / f"final__{_language_slug(self.output_language)}.txt"
-        path.write_text(text, encoding="utf-8")
+        self._write_text_with_json(
+            path,
+            text,
+            {
+                "kind": "archive-item",
+                "stage": "final",
+                "source_index": source_index,
+                "source_name": source_name,
+                "archive_label": archive_label,
+                "language": self.output_language,
+            },
+        )
         return path
 
     def write_archive_folder_combined(
@@ -146,7 +200,18 @@ class StageWriter:
     ) -> Path:
         folder_dir = self._archive_folder_dir(source_index, source_name, folder_label)
         path = folder_dir / f"combined__{_language_slug(self.output_language)}.txt"
-        path.write_text(text, encoding="utf-8")
+        self._write_text_with_json(
+            path,
+            text,
+            {
+                "kind": "archive-folder",
+                "stage": "combined",
+                "source_index": source_index,
+                "source_name": source_name,
+                "folder_label": folder_label,
+                "language": self.output_language,
+            },
+        )
         return path
 
     def write_final_output_aliases(self, text: str) -> List[Path]:
@@ -157,7 +222,7 @@ class StageWriter:
         ]
         written = []
         for path in aliases:
-            path.write_text(text, encoding="utf-8")
+            self._write_text_with_json(path, text, {"kind": "run-alias", "stage": "final"})
             written.append(path)
         return written
 
@@ -165,6 +230,30 @@ class StageWriter:
         path = self.stages_dir / "stage_manifest.json"
         path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return path
+
+    def write_image_asset(
+        self,
+        source_index: int,
+        source_name: str,
+        image_path: Path,
+        piece_index: int,
+        kind: str,
+        dpi: Optional[int] = None,
+    ) -> Dict[str, object]:
+        asset_dir = self.assets_dir / _slugify(source_name)
+        asset_dir.mkdir(parents=True, exist_ok=True)
+        suffix = image_path.suffix.lower() or ".png"
+        asset_path = asset_dir / f"{source_index:04d}-{piece_index:04d}-{_slugify(kind)}{suffix}"
+        shutil.copy2(image_path, asset_path)
+        width, height = _image_dimensions(asset_path)
+        return {
+            "kind": kind,
+            "path": _safe_path(asset_path),
+            "width": width,
+            "height": height,
+            "dpi": dpi,
+            "placement": _asset_placement(width, height),
+        }
 
     def _item_dir(self, source_index: int, source_name: str) -> Path:
         parts = _archive_label_parts(source_name)
@@ -205,8 +294,29 @@ class StageWriter:
         source_dir = _numbered_label_dir(stage_dir, source_index, source_name)
         source_dir.mkdir(parents=True, exist_ok=True)
         path = self._piece_path(stage_dir, source_index, source_name, piece_index, stage_name)
-        path.write_text(text, encoding="utf-8")
+        language = self.output_language if stage_name == "translated" else self.source_language
+        self._write_text_with_json(
+            path,
+            text,
+            {
+                "kind": "stage-piece",
+                "stage": stage_name,
+                "source_index": source_index,
+                "source_name": source_name,
+                "piece_index": piece_index,
+                "language": language,
+            },
+        )
         return path
+
+    def _write_text_with_json(self, path: Path, text: str, metadata: Dict[str, object]) -> None:
+        path.write_text(text, encoding="utf-8")
+        payload = dict(metadata)
+        payload["text"] = text
+        path.with_name(path.name + ".json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
 
     def _piece_path(
         self,
@@ -432,13 +542,16 @@ def run_pipeline(
     translation_usage = translation_result["usage"]
     _add_usage(translation_usage)
 
+    document_structure = _document_structure(restoration_records, profile.document_type, profile)
+    detected_title = _detected_title(document_structure) or f"Akshara Vision - {profile.name}"
     metadata = {
-        "title": f"Akshara Vision - {profile.name}",
+        "title": detected_title,
         "created_at": timestamp,
         "workflow": profile.workflow,
         "document_type": profile.document_type,
         "source_language": profile.source_language,
         "output_language": profile.output_language,
+        "language_policy": profile.language_policy,
         "translation_mode": profile.translation_mode,
         "translation_mode_effective": profile.effective_translation_mode(),
         "provider": profile.model.provider,
@@ -454,6 +567,8 @@ def run_pipeline(
         "unsupported": [_safe_path(path) for path in request.inputs.unsupported],
         "usage": total_usage,
         "consistency": consistency_state,
+        "document_structure": document_structure,
+        "assembly_profile": _assembly_profile(profile.document_type, profile.output_formats),
     }
 
     destination = run_dir / "akshara_output"
@@ -485,6 +600,7 @@ def run_pipeline(
             "run_dir": _safe_path(run_dir),
             "source_language": profile.source_language,
             "output_language": profile.output_language,
+            "language_policy": profile.language_policy,
             "translation_mode": profile.translation_mode,
             "translation_mode_effective": profile.effective_translation_mode(),
             "inputs": [
@@ -582,7 +698,7 @@ def _combined_parts_from_items(items_root: Path) -> List[str]:
         return []
     combined_parts: List[str] = []
     for output_path in _preferred_item_outputs(items_root):
-        text = output_path.read_text(encoding="utf-8", errors="replace").strip()
+        text = _read_structured_output_text(output_path).strip()
         if text:
             label = str(output_path.parent.relative_to(items_root)).replace("\\", "/")
             combined_parts.append(f"===== {label} =====\n{text}")
@@ -590,11 +706,30 @@ def _combined_parts_from_items(items_root: Path) -> List[str]:
 
 
 def _preferred_item_outputs(items_root: Path) -> List[Path]:
-    for pattern in ("final__*.txt", "translated__*.txt", "restored__*.txt"):
+    for pattern in (
+        "final__*.json",
+        "translated__*.json",
+        "restored__*.json",
+        "final__*.txt",
+        "translated__*.txt",
+        "restored__*.txt",
+    ):
         paths = sorted(path for path in items_root.rglob(pattern) if path.is_file())
         if paths:
             return paths
     return []
+
+
+def _read_structured_output_text(path: Path) -> str:
+    if path.suffix.lower() == ".json":
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return path.read_text(encoding="utf-8", errors="replace")
+        if isinstance(data, dict):
+            return str(data.get("text") or data.get("restored_text") or "")
+        return ""
+    return path.read_text(encoding="utf-8", errors="replace")
 
 
 def _write_nested_folder_combines(items_root: Path, language_suffix: str) -> List[Path]:
@@ -606,7 +741,7 @@ def _write_nested_folder_combines(items_root: Path, language_suffix: str) -> Lis
 
     folder_parts: Dict[Path, List[tuple[str, str]]] = {}
     for output_path in output_paths:
-        text = output_path.read_text(encoding="utf-8", errors="replace").strip()
+        text = _read_structured_output_text(output_path).strip()
         if not text:
             continue
         label = str(output_path.parent.relative_to(items_root)).replace("\\", "/")
@@ -997,6 +1132,10 @@ def _provider_retry_limit() -> int:
         return DEFAULT_PROVIDER_RETRIES
 
 
+def _figure_extraction_enabled(profile: Optional[WorkflowProfile] = None) -> bool:
+    return bool(profile and profile.extract_figures)
+
+
 def _is_retryable_provider_error(exc: Exception) -> bool:
     message = str(exc).lower()
     non_retryable = [
@@ -1341,12 +1480,261 @@ def _estimate_input_words(path: Path) -> int:
 def _new_consistency_state(profile: WorkflowProfile) -> Dict[str, object]:
     return {
         "document_type": profile.document_type,
+        "language_policy": profile.language_policy,
         "observed_pages": 0,
         "paragraph_style": "",
         "heading_style": "",
         "page_marker_style": "",
         "layout_notes": [],
+        "encountered_scripts": [],
     }
+
+
+def _document_type_guidance(profile: WorkflowProfile) -> str:
+    document_type = profile.document_type
+    kind = str(document_type or "general").strip().lower()
+    guidance = {
+        "book": (
+            "Book restoration skill: preserve title pages, subtitles, author/editor lines, "
+            "preface/foreword sections, table of contents, chapter headings, page numbers, "
+            "footnotes, indexes, appendices, and running headers without inventing missing data."
+        ),
+        "magazine": (
+            "Magazine restoration skill: identify columns, article boundaries, headlines, decks, "
+            "captions, bylines, page numbers, advertisements, and sidebars. Do not merge text from "
+            "different columns or adjacent articles."
+        ),
+        "newspaper": (
+            "Newspaper restoration skill: preserve column order, article boundaries, headlines, "
+            "datelines, bylines, captions, advertisements, and continuation markers. Avoid mixing "
+            "rows across columns."
+        ),
+        "manuscript": (
+            "Manuscript restoration skill: preserve folio/page markers, marginalia, corrections, "
+            "scribal marks, uncertain readings, line breaks, and damaged text honestly."
+        ),
+        "journal article": (
+            "Article restoration skill: preserve title, authors, abstract, section headings, "
+            "citations, footnotes, tables, figures, captions, and bibliography structure."
+        ),
+        "letter": (
+            "Letter restoration skill: preserve salutation, date, place, body paragraphs, "
+            "postscript, signature, and address marks."
+        ),
+        "archive bundle": (
+            "Archive bundle skill: preserve each item boundary, original ordering, labels, dates, "
+            "identifiers, and folder-like grouping."
+        ),
+    }
+    selected = guidance.get(kind, "General restoration skill: preserve document order, headings, labels, notes, page markers, and uncertain text.")
+    if _figure_extraction_enabled(profile):
+        selected += (
+            " If a non-text image, illustration, plate, map, table image, seal, or diagram is clearly "
+            "present, insert a concise marker like [image: brief description] at its position."
+        )
+    return selected + "\n"
+
+
+def _language_policy_guidance(profile: WorkflowProfile) -> str:
+    source = str(profile.source_language or "auto").strip() or "auto"
+    policy = str(profile.language_policy or "preserve-detected").strip().lower()
+    if policy == "strict-source" and source.lower() not in {"", "auto", "detect"}:
+        return (
+            "Language policy: strict source language only.\n"
+            f"Extract only text that is clearly in the declared source language or script: {source}.\n"
+            "Ignore unrelated visible text in other languages or scripts unless it is part of a name, "
+            "citation, title, quoted phrase, table label, or technical term needed to preserve the source. "
+            "Do not translate ignored text. Do not invent replacements for ignored text.\n"
+        )
+    if policy == "strict-source":
+        return (
+            "Language policy: strict source language was requested, but source language is auto. "
+            "Use cautious detection and do not force uncertain language labels into the output.\n"
+        )
+    return (
+        "Language policy: preserve detected readable languages and scripts.\n"
+        "If the page contains clear mixed-language text, preserve each snippet in its original script "
+        "and position. Do not translate during restoration. Do not label a language unless it is already "
+        "visible in the source or needed for structure. If a script or language is uncertain, preserve the "
+        "visible characters when readable, otherwise mark [unclear].\n"
+    )
+
+
+def _document_structure(
+    records: List[Dict[str, object]], document_type: str, profile: Optional[WorkflowProfile] = None
+) -> Dict[str, object]:
+    chunks = []
+    for record in records:
+        for chunk in record.get("chunks", []):
+            if isinstance(chunk, dict):
+                chunks.append(chunk)
+    observations = [
+        _piece_observations(str(chunk.get("restored_text") or ""), document_type, int(chunk.get("index") or 0))
+        for chunk in chunks
+    ]
+    title_candidates = []
+    page_markers = []
+    section_headings = []
+    content_kinds: Dict[str, int] = {}
+    asset_count = 0
+    for item in observations:
+        title_candidates.extend(item.get("title_candidates", []))
+        page_marker = item.get("page_marker")
+        if page_marker:
+            page_markers.append(page_marker)
+        section_headings.extend(item.get("section_headings", []))
+        content_kind = str(item.get("content_kind") or "body")
+        content_kinds[content_kind] = content_kinds.get(content_kind, 0) + 1
+    for chunk in chunks:
+        chunk_assets = chunk.get("assets")
+        if isinstance(chunk_assets, list):
+            asset_count += len(chunk_assets)
+    return {
+        "document_type": document_type,
+        "page_count_observed": len(chunks),
+        "title_candidates": _unique_limited(title_candidates, 8),
+        "section_headings": _unique_limited(section_headings, 24),
+        "page_markers": _unique_limited(page_markers, 24),
+        "content_kinds": content_kinds,
+        "figure_extraction_enabled": _figure_extraction_enabled(profile),
+        "asset_count": asset_count,
+    }
+
+
+def _piece_observations(text: str, document_type: str, index: int) -> Dict[str, object]:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    first_lines = lines[:12]
+    headings = [
+        line
+        for line in first_lines
+        if 2 <= len(line) <= 90
+        and (
+            line == line.upper()
+            or re.match(r"^(chapter|section|part|book|preface|contents|index|appendix)\b", line, re.I)
+        )
+    ]
+    page_marker = ""
+    for line in first_lines + lines[-6:]:
+        if re.fullmatch(r"(?:page\s*)?[ivxlcdm\d]+", line, flags=re.I):
+            page_marker = line
+            break
+    kind = _content_kind(lines, document_type)
+    return {
+        "index": index,
+        "content_kind": kind,
+        "page_marker": page_marker,
+        "title_candidates": first_lines[:2] if index <= 2 else [],
+        "section_headings": headings[:6],
+        "has_multi_column_spacing": any(re.search(r"\S\s{4,}\S", line) for line in lines[:80]),
+        "has_figure_marker": any("[image:" in line.lower() for line in lines),
+    }
+
+
+def _content_kind(lines: List[str], document_type: str) -> str:
+    joined = "\n".join(lines[:40]).lower()
+    kind = str(document_type or "").lower()
+    if "contents" in joined or "table of contents" in joined:
+        return "contents"
+    if "preface" in joined or "foreword" in joined:
+        return "preface"
+    if "index" in joined and kind == "book":
+        return "index"
+    if re.search(r"\b(chapter|section|part)\b", joined):
+        return "section"
+    if kind in {"magazine", "newspaper"} and any(re.search(r"\S\s{4,}\S", line) for line in lines[:80]):
+        return "multi-column"
+    if any("[image:" in line.lower() for line in lines):
+        return "illustrated"
+    return "body"
+
+
+def _assembly_profile(document_type: str, output_formats: List[str]) -> Dict[str, object]:
+    kind = str(document_type or "General").lower()
+    if kind == "book":
+        layout = "book-like: title matter, contents, chapters, appendices, index when detected"
+    elif kind in {"magazine", "newspaper"}:
+        layout = "periodical-like: preserve article and column boundaries when detected"
+    elif kind == "manuscript":
+        layout = "manuscript-like: preserve folios, marginalia, uncertain readings, and lineation"
+    else:
+        layout = "document-like: preserve detected headings, page markers, and item order"
+    return {
+        "layout": layout,
+        "target_formats": list(output_formats),
+        "uses_structured_sidecars": True,
+    }
+
+
+def _detected_title(document_structure: Dict[str, object]) -> str:
+    candidates = document_structure.get("title_candidates")
+    if not isinstance(candidates, list):
+        return ""
+    for candidate in candidates:
+        text = str(candidate).strip()
+        if 3 <= len(text) <= 120 and not re.fullmatch(r"(?:page\s*)?[ivxlcdm\d]+", text, re.I):
+            return text
+    return ""
+
+
+def _image_dimensions(path: Path) -> tuple[Optional[int], Optional[int]]:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None, None
+    if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24:
+        return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+    if data.startswith(b"\xff\xd8"):
+        index = 2
+        while index + 9 < len(data):
+            if data[index] != 0xFF:
+                index += 1
+                continue
+            marker = data[index + 1]
+            index += 2
+            if marker in {0xD8, 0xD9}:
+                continue
+            if index + 2 > len(data):
+                break
+            length = int.from_bytes(data[index : index + 2], "big")
+            if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+                if index + 7 <= len(data):
+                    height = int.from_bytes(data[index + 3 : index + 5], "big")
+                    width = int.from_bytes(data[index + 5 : index + 7], "big")
+                    return width, height
+                break
+            index += max(length, 2)
+    return None, None
+
+
+def _asset_placement(width: Optional[int], height: Optional[int]) -> Dict[str, object]:
+    if not width or not height:
+        return {"role": "source-image", "recommended_width": "auto", "aspect_ratio": None}
+    aspect_ratio = round(width / height, 4) if height else None
+    if width > height * 1.4:
+        recommended_width = "full-width"
+    elif height > width * 1.4:
+        recommended_width = "half-width"
+    else:
+        recommended_width = "medium"
+    return {
+        "role": "source-image",
+        "recommended_width": recommended_width,
+        "aspect_ratio": aspect_ratio,
+    }
+
+
+def _unique_limited(values: List[object], limit: int) -> List[str]:
+    seen = set()
+    result = []
+    for value in values:
+        text = str(value).strip()
+        if not text or text.lower() in seen:
+            continue
+        seen.add(text.lower())
+        result.append(text)
+        if len(result) >= limit:
+            break
+    return result
 
 
 def _consistency_prompt(state: Optional[Dict[str, object]]) -> str:
@@ -1359,11 +1747,13 @@ def _consistency_prompt(state: Optional[Dict[str, object]]) -> str:
     ][:4]
     values = {
         "document_type": state.get("document_type") or "",
+        "language_policy": state.get("language_policy") or "preserve-detected",
         "observed_pages": state.get("observed_pages") or 0,
         "paragraph_style": state.get("paragraph_style") or "",
         "heading_style": state.get("heading_style") or "",
         "page_marker_style": state.get("page_marker_style") or "",
         "layout_notes": notes,
+        "encountered_scripts": state.get("encountered_scripts") or [],
     }
     if not any(values[key] for key in ("paragraph_style", "heading_style", "page_marker_style", "layout_notes")):
         return (
@@ -1406,6 +1796,35 @@ def _update_consistency_state(state: Optional[Dict[str, object]], text: str) -> 
         if note not in notes:
             notes.append(note)
     state["layout_notes"] = notes[:6]
+    encountered = list(state.get("encountered_scripts") or [])
+    for script in _detect_scripts(sample):
+        if script not in encountered:
+            encountered.append(script)
+    state["encountered_scripts"] = encountered[:8]
+
+
+def _detect_scripts(text: str) -> List[str]:
+    ranges = [
+        ("Latin", "\u0041", "\u007a"),
+        ("Devanagari", "\u0900", "\u097f"),
+        ("Bengali", "\u0980", "\u09ff"),
+        ("Gurmukhi", "\u0a00", "\u0a7f"),
+        ("Gujarati", "\u0a80", "\u0aff"),
+        ("Oriya", "\u0b00", "\u0b7f"),
+        ("Tamil", "\u0b80", "\u0bff"),
+        ("Telugu", "\u0c00", "\u0c7f"),
+        ("Kannada", "\u0c80", "\u0cff"),
+        ("Malayalam", "\u0d00", "\u0d7f"),
+        ("Sinhala", "\u0d80", "\u0dff"),
+        ("Arabic", "\u0600", "\u06ff"),
+    ]
+    found = []
+    for name, start, end in ranges:
+        start_ord = ord(start)
+        end_ord = ord(end)
+        if any(start_ord <= ord(char) <= end_ord and char.isalpha() for char in text):
+            found.append(name)
+    return found
 
 
 def _detect_paragraph_style(text: str) -> str:
@@ -1469,6 +1888,8 @@ def _task_text(
         f"Output language: {profile.output_language}\n"
         f"Translation mode: {profile.normalized_translation_mode()}\n"
         f"Execution mode: {execution_mode}\n\n"
+        + _document_type_guidance(profile)
+        + _language_policy_guidance(profile)
         + consistency_context
     )
 
@@ -1500,6 +1921,8 @@ def _task_text(
             "Preserve the original language, script, spelling, line breaks, page order, and formatting.\n"
             "Do not skip non-English, Indic, Sanskrit, Kannada, Hindi, Tamil, Telugu, Malayalam, "
             "Bengali, Marathi, Urdu, or mixed-script text.\n"
+            "Apply the language policy above exactly. Preserve clear mixed-language snippets only when "
+            "they are visible and readable; never force a language guess into the output.\n"
             "If the page is dense, prioritize complete extraction over perfect cleanup.\n"
             "If any words are unclear, mark them as [unclear].\n"
             "Do not translate yet. Translation happens as a final stage after extraction.\n"
@@ -1520,6 +1943,8 @@ def _task_text(
         + ", ".join(TRANSLATION_FAILURE_REASONS)
         + " or an empty string.\n"
         "Do not include markdown, code fences, or commentary.\n"
+        "Apply the language policy exactly. Preserve readable mixed-language snippets only when present "
+        "in the source; never invent or normalize language labels.\n"
         "If the chunk is empty or unreadable, return "
         '{"restored_text":"[missing text]","uncertain":[],"notes":"unreadable source","status":"failed","failure_reason":"source unreadable or too blurry"}.\n'
         + context
@@ -1554,6 +1979,10 @@ def _restore_multimodal_image(
     # Try JSON parsing first (in case the model does return structured data).
     restored_text = _extract_multimodal_text(result)
     failure_reason = ""
+    label = source_label or path.name
+    assets = []
+    if _figure_extraction_enabled(profile):
+        assets.append(artifacts.write_image_asset(source_index, label, path, 1, "source-image"))
 
     if not restored_text:
         restored_text = ""
@@ -1561,7 +1990,6 @@ def _restore_multimodal_image(
     elif usage and usage.get("truncated"):
         failure_reason = "model context or output limit reached"
     _update_consistency_state(consistency_state, restored_text)
-    label = source_label or path.name
     artifacts.write_restored_piece(source_index, label, 1, restored_text + "\n")
 
     record = {
@@ -1575,6 +2003,7 @@ def _restore_multimodal_image(
                 "notes": "",
                 "status": _restoration_status(failure_reason),
                 "failure_reason": failure_reason,
+                "assets": assets,
             }
         ],
         "failure_reason": failure_reason,
@@ -2031,6 +2460,14 @@ def _restore_multimodal_pdf(
                     raise RuntimeError(f"No image rendered for {label} page {idx}.")
                 break
 
+            page_assets = []
+            if _figure_extraction_enabled(profile):
+                page_assets.append(
+                    artifacts.write_image_asset(
+                        source_index, label, page_img, idx, "page-image", dpi=dpi
+                    )
+                )
+
             _notify(
                 progress,
                 "clean",
@@ -2081,6 +2518,7 @@ def _restore_multimodal_pdf(
                     "notes": "",
                     "status": _restoration_status(failure_reason),
                     "failure_reason": failure_reason,
+                    "assets": page_assets,
                 }
             )
             if idx not in [f[0] for f in failed_pages]:
@@ -2412,6 +2850,13 @@ def _restore_multimodal_zip(
                     chunk_idx += 1
                     continue
                 prompt = _task_text("", profile, consistency_state)
+                assets = []
+                if _figure_extraction_enabled(profile):
+                    assets.append(
+                        artifacts.write_image_asset(
+                            source_index, f"{label}/{archive_label}", ext_file, chunk_idx, "archive-image"
+                        )
+                    )
                 result, usage = _restore_with_retry(
                     provider,
                     prompt,
@@ -2454,6 +2899,7 @@ def _restore_multimodal_zip(
                         "notes": "",
                         "status": _restoration_status(failure_reason),
                         "failure_reason": failure_reason,
+                        "assets": assets,
                     }
                 )
                 chunk_idx += 1

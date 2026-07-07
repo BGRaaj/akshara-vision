@@ -42,7 +42,7 @@ class CliFallbackTests(unittest.TestCase):
                 output = io.StringIO()
                 with redirect_stdout(output):
                     main([])
-                self.assertIn("AKSHARA VISION", output.getvalue())
+                self.assertIn("V I S I O N", output.getvalue())
                 self.assertIn("Restore. Read. Preserve.", output.getvalue())
 
     def test_quick_dry_run_uses_profile_and_input(self):

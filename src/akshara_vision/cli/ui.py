@@ -117,20 +117,13 @@ class MonoUI:
         width = self.width()
         line = "=" * width
         self.write(line)
-        compact_title = width < 68
-        if compact_title:
-            self.write("AKSHARA VISION".center(width))
-        else:
-            for row in _inscription_hero(width):
-                self.write(row.center(width))
-        if not compact_title:
-            self.write("AKSHARA VISION".center(width))
+        for row in _inscription_hero(width):
+            self.write(row.center(width))
         self.write("Restore. Read. Preserve.".center(width))
-        if guide == "full":
-            self.write(
-                "Choose a workflow, inspect the plan, then run only when ready.".center(width)
-            )
         self.write(line)
+        self.write("Use /help for every command and /menu to open the action picker.".center(width))
+        if guide == "full":
+            self.write("Use /guide to choose how much guidance Akshara Vision shows.".center(width))
 
     def status(self, level: str, message: str) -> None:
         """Minimal monochrome status marker."""

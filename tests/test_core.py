@@ -25,7 +25,7 @@ class CoreTests(unittest.TestCase):
     def test_default_instruction_is_loaded(self):
         instruction = load_instruction()
         self.assertIn("historical Indian books", instruction)
-        self.assertIn("The only allowed output is the JSON object", instruction)
+        self.assertIn("obey the output format requested by the task", instruction)
 
     def test_profile_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -35,6 +35,8 @@ class CoreTests(unittest.TestCase):
             )
             profile.model.execution_mode = "quality"
             profile.model.generation_limit = 16384
+            profile.extract_figures = True
+            profile.language_policy = "strict-source"
             store.save_profile(profile)
             loaded = store.load_profile("book-cleanup")
             self.assertEqual(loaded.name, "book-cleanup")
@@ -42,6 +44,8 @@ class CoreTests(unittest.TestCase):
             self.assertTrue(loaded.locked)
             self.assertEqual(loaded.model.execution_mode, "quality")
             self.assertEqual(loaded.model.generation_limit, 16384)
+            self.assertTrue(loaded.extract_figures)
+            self.assertEqual(loaded.language_policy, "strict-source")
 
     def test_profile_delete_updates_default(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -189,6 +193,22 @@ class CoreTests(unittest.TestCase):
                 self.assertTrue(result.path.exists(), name)
                 self.assertGreaterEqual(result.path.stat().st_size, 0, name)
 
+    def test_publication_exporters_style_figure_markers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "akshara_output"
+            metadata = {"title": "Book Title", "output_language": "English"}
+            html_result = exporter_registry()["html"].export(
+                "i\n\n[image: map of region]\n\nBody text", destination, metadata
+            )
+            html_text = html_result.path.read_text(encoding="utf-8")
+            self.assertIn("<h1>Book Title</h1>", html_text)
+            self.assertIn('class="page-marker"', html_text)
+            self.assertIn('class="figure-marker"', html_text)
+            md_result = exporter_registry()["md"].export(
+                "[image: plate]\n\nBody text", destination, metadata
+            )
+            self.assertIn("> [image: plate]", md_result.path.read_text(encoding="utf-8"))
+
     def test_mock_pipeline_exports_text_manifest_and_markdown(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -283,6 +303,7 @@ class CoreTests(unittest.TestCase):
             profile.output_language = "Kannada"
             profile.translation_mode = "auto"
             profile.model.model = "gemma4:12b"
+            profile.extract_figures = True
             selection = discover_inputs([str(kannada), str(english)])
 
             class MixedVisionProvider:
@@ -333,6 +354,10 @@ class CoreTests(unittest.TestCase):
             output_text = (run_dir / "akshara_output.txt").read_text(encoding="utf-8")
             self.assertIn("===== kannada-page.png =====", output_text)
             self.assertIn("===== english-page.png =====", output_text)
+            self.assertTrue((run_dir / "assets" / "kannada-page-png").exists())
+            self.assertTrue((run_dir / "assets" / "english-page-png").exists())
+            manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["metadata"]["document_structure"]["asset_count"], 2)
 
     def test_combine_stage_outputs_rebuilds_final_text(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -367,6 +392,21 @@ class CoreTests(unittest.TestCase):
             self.assertIn("===== 0002-second-page-png =====", combined)
             self.assertIn("Final second", combined)
             self.assertNotIn("Restored first", combined)
+
+    def test_combine_prefers_structured_json_sidecars(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            item_one = run_dir / "items" / "0001-page-png"
+            item_one.mkdir(parents=True)
+            (item_one / "final__english.txt").write_text("Old text\n", encoding="utf-8")
+            (item_one / "final__english.txt.json").write_text(
+                json.dumps({"text": "Structured text"}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            result = combine_stage_outputs(run_dir)
+            combined = result["output_path"].read_text(encoding="utf-8")
+            self.assertIn("Structured text", combined)
+            self.assertNotIn("Old text", combined)
 
     def test_combine_rebuilds_nested_item_outputs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -596,11 +636,17 @@ class CoreTests(unittest.TestCase):
         self.assertIn("Execution mode: quality", _task_text("source", quality_profile))
         self.assertIn("Do not skip non-English", _task_text("", quality_profile))
         self.assertIn("dense", _task_text("", quality_profile))
+        quality_profile.language_policy = "strict-source"
+        quality_profile.source_language = "Kannada"
+        self.assertIn("strict source language only", _task_text("", quality_profile))
+        self.assertIn("Kannada", _task_text("", quality_profile))
         consistency = _new_consistency_state(quality_profile)
         consistency["paragraph_style"] = "blank line between paragraphs"
         consistency["heading_style"] = "short uppercase headings preserved"
+        consistency["encountered_scripts"] = ["Kannada", "Latin"]
         guided_prompt = _task_text("", quality_profile, consistency)
         self.assertIn("Local consistency guide", guided_prompt)
+        self.assertIn("encountered_scripts", guided_prompt)
         self.assertIn("Do not override the main restoration rules", guided_prompt)
         self.assertEqual(_generation_limit(fast_profile.model, 32768), 20000)
 
@@ -894,6 +940,7 @@ class CoreTests(unittest.TestCase):
             )
             self.assertIn("Already restored page 1", output_text)
             self.assertIn("Restored resumed page", output_text)
+            self.assertTrue((run_dir / "akshara_output.txt.json").exists())
 
     def test_zip_archive_preserves_same_named_files(self):
         from akshara_vision.providers.mock import MockProvider

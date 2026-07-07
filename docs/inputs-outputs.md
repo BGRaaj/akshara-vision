@@ -54,9 +54,12 @@ Every run also writes:
 - `restored_text.txt`
 - `items/` with one numbered folder per input, such as `0001-page-one-png`
 - `items/<input>/restored__LANG.txt`
+- `items/<input>/restored__LANG.txt.json`
 - `items/<input>/translated__SOURCE-to-TARGET.txt` when translation runs
 - `items/<input>/final__LANG.txt`
+- `items/<input>/final__LANG.txt.json`
 - `stages/` with per-page and per-chunk checkpoint files
+- `assets/` with opt-in source/page image assets and sizing metadata in chunk records
 - `run_state.json` with interruption/recovery state while a run is active
 - `run_manifest.json`
 - `sources/`
@@ -74,18 +77,35 @@ their archive-relative paths, and the same folder structure is mirrored under
 final export still combines the selected inputs into one document, but the
 `items/` folder keeps each input easy to inspect separately.
 
-`akv combine` rebuilds from `items/<input>/final__*.txt` first. If those files
-are not present, it falls back to translated stage pieces, then restored stage
-pieces. When the original manifest is available, combine also rebuilds the run's
-selected export formats.
+`akv combine` rebuilds from structured item JSON first, then falls back to text
+files. The priority is final JSON, translated JSON, restored JSON, final text,
+translated text, and restored text. When the original manifest is available,
+combine also rebuilds the run's selected export formats.
 
 `akv resume <run-folder>` is the friendlier recovery command for interrupted
-runs. It reads `run_state.json` when present, reports completed inputs, and then
-rebuilds completed checkpoints through the combine path.
+runs. It reads `run_state.json` when present, reports completed inputs, resumes
+inside the original run folder when source inputs are available, and skips
+already staged PDF pages, archive entries, and text chunks.
 
 `run_state.json` may also contain a compact internal consistency guide. It is
 used only to keep formatting uniform across similar pages in a local batch or
-document and is not added to restored text outputs.
+document and is not added to restored text outputs. The guide may record
+encountered scripts such as Latin, Devanagari, or Kannada to help later pages
+preserve repeated mixed-language patterns more consistently.
+
+`run_manifest.json` includes `document_structure` and `assembly_profile` fields.
+These are deterministic observations such as title candidates, section headings,
+page markers, content kind counts, and target-format assembly hints. They improve
+final assembly while keeping the restored text itself clean.
+
+If figure/image enrichment is enabled, chunk records may also include `assets`
+entries with path, width, height, DPI, aspect ratio, and recommended placement.
+This supports later publication assembly without pretending to crop figures
+automatically.
+
+Markdown, HTML, DOCX, and EPUB exports use the detected title where possible.
+HTML and EPUB add lightweight publication styling for paragraphs, page markers,
+and figure markers while keeping the restored text unchanged.
 
 `akv export` can take either a run folder or a compiled output file such as
 `.txt`, `.md`, `.html`, `.json`, `.jsonl`, `.yaml`, `.hocr`, or `.xml`. It writes

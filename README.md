@@ -28,13 +28,16 @@ model, provider, scan quality, script complexity, and document damage.
 | Interactive CLI | Monochrome terminal UI, home board, dropdowns, checkboxes, confirmations, profile manager, model setup, doctor checks |
 | Restoration | Text cleanup, OCR error correction, uncertainty markers, chunked long-text processing, raw OCR preservation |
 | Vision input | Direct multimodal processing for scanned images and rendered PDF pages with dense-page and Indic-script extraction guidance |
+| Document intelligence | Document-type-specific extraction guidance plus detected structure metadata for books, manuscripts, magazines, newspapers, articles, letters, and archive bundles |
+| Assembly enrichment | Optional figure markers plus page/source image assets with size and placement metadata for later publication assembly |
+| Language handling | Per-run choice to preserve all readable detected languages/scripts or strictly extract only the declared source language |
 | Translation | Automatic final-pass translation when output language differs from source language; manual modes for translate, bilingual, transliterate, and metadata-only workflows |
 | Batch processing | Files, folders, recursive folders, globs, ZIP archives, CSV manifests, and JSON manifests |
 | Profiles | Portable TOML profiles with defaults for workflow, languages, translation mode, model, output formats, destination, and locked quick runs |
 | Models | Ollama, LM Studio, Jan, llama.cpp/OpenAI-compatible local servers, native cloud providers, OpenRouter, and other OpenAI-compatible cloud APIs |
 | Reliability | Long model calls wait for completion, transient provider failures retry with backoff, and failed batch items are tracked without corrupting later outputs |
 | Exports | Text, Markdown, HTML, DOCX, EPUB, JSON, JSONL, YAML, OCR sidecars, review files, and PDF request notes |
-| Auditability | Raw OCR file, restored checkpoint, staged per-page/per-chunk outputs, copied source inputs, structured run manifest, model usage metadata, truncation warnings, and failure reasons |
+| Auditability | Raw OCR file, restored checkpoint, JSON sidecars, staged per-page/per-chunk outputs, copied source inputs, structured run manifest, model usage metadata, truncation warnings, and failure reasons |
 
 ## Install
 
@@ -136,10 +139,25 @@ The `.txt` export is the primary default. Structured exports include metadata
 for inputs, provider, model, workflow, translation state, usage, restoration
 chunks, uncertainty notes, and failure reasons.
 
+Markdown, HTML, DOCX, and EPUB exports use the detected title and simple
+publication-oriented structure. HTML and EPUB preserve paragraph breaks, center
+page-marker-like lines, and style figure markers separately when present.
+
 Each run also writes `items/` for human-friendly per-input outputs and `stages/`
 for recoverable page/chunk checkpoints. Interrupted runs can be recombined later
 without reprocessing completed pages or chunks. Recombine restores the run's
 selected export formats when the original manifest is available.
+
+When figure/image enrichment is enabled in the CLI, Akshara may add concise
+`[image: ...]` markers for visible figures and saves source/page image assets
+under `assets/` with width, height, DPI, aspect ratio, and recommended placement
+metadata. Automatic image cropping is intentionally not enabled yet; that needs a
+layout segmentation layer to avoid cutting the wrong part of archival pages.
+
+Language handling is selected in the CLI before each run. `preserve-detected`
+keeps readable mixed-language snippets in their original script. `strict-source`
+asks the model to extract only the declared source language while preserving
+necessary names, citations, and technical terms.
 
 A run folder is the timestamped folder created inside your chosen output folder,
 for example `akshara-output/default-20260706-120000`. It is not the folder that

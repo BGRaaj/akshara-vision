@@ -29,6 +29,8 @@ class WorkflowProfile:
     model: ModelSettings = field(default_factory=ModelSettings)
     locked: bool = False
     output_dir: str = "akshara-output"
+    extract_figures: bool = False
+    language_policy: str = "preserve-detected"
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -42,6 +44,8 @@ class WorkflowProfile:
             "instruction_preset": self.instruction_preset,
             "locked": self.locked,
             "output_dir": self.output_dir,
+            "extract_figures": self.extract_figures,
+            "language_policy": normalize_language_policy(self.language_policy),
             "model": {
                 "provider": self.model.provider,
                 "model": self.model.model,
@@ -72,6 +76,8 @@ class WorkflowProfile:
             instruction_preset=str(data.get("instruction_preset") or "book_restoration_default"),
             locked=bool(data.get("locked") or False),
             output_dir=str(data.get("output_dir") or "akshara-output"),
+            extract_figures=bool(data.get("extract_figures") or False),
+            language_policy=normalize_language_policy(data.get("language_policy")),
             model=ModelSettings(
                 provider=str(model_data.get("provider") or "mock"),
                 model=str(model_data.get("model") or "offline-restoration-preview"),
@@ -210,3 +216,20 @@ def normalized_profile_translation_mode(
     if mode == "auto" and not translation_required_for_languages(source_language, output_language, "auto"):
         return "auto"
     return mode
+
+
+def normalize_language_policy(value: object) -> str:
+    policy = str(value or "preserve-detected").strip().lower().replace("_", "-")
+    aliases = {
+        "all": "preserve-detected",
+        "mixed": "preserve-detected",
+        "preserve": "preserve-detected",
+        "preserve-detected": "preserve-detected",
+        "detect": "preserve-detected",
+        "detected": "preserve-detected",
+        "strict": "strict-source",
+        "source-only": "strict-source",
+        "strict-source": "strict-source",
+        "input-only": "strict-source",
+    }
+    return aliases.get(policy, "preserve-detected")

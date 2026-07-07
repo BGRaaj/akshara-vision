@@ -40,25 +40,26 @@ load_env_files()
 
 
 HOME_ACTIONS = [
-    "Run workflow",
-    "Quick run",
-    "Batch process",
-    "Guided setup",
-    "Choose guide",
-    "Choose mode",
-    "Customize UI",
-    "Profiles",
-    "Models",
-    "API keys",
-    "Instructions",
-    "Doctor",
-    "Combine outputs",
-    "Resume run",
-    "Install dependencies",
-    "Status",
-    "Run checks",
-    "Docs",
-    "Clean local outputs",
+    "Core - Run workflow",
+    "Core - Quick run",
+    "Core - Batch process",
+    "Core - Guided setup",
+    "Core - Profiles",
+    "Core - Models",
+    "Core - Instructions",
+    "Extended - Resume run",
+    "Extended - Combine outputs",
+    "Extended - Export existing output",
+    "Extended - Docs",
+    "Interface - Choose guide",
+    "Interface - Choose mode",
+    "Interface - Customize UI",
+    "Setup - API keys",
+    "Setup - Doctor",
+    "Setup - Install dependencies",
+    "Maintenance - Status",
+    "Maintenance - Run checks",
+    "Maintenance - Clean local outputs",
     "Exit",
 ]
 
@@ -82,23 +83,41 @@ def _render_home() -> None:
     ui.set_theme(prefs["theme"])
     ui.apply_terminal_theme()
     ui.hero(guide=prefs["guide"])
-    ui.section("Board")
+    ui.section("Core Workflows")
     ui.board(
         [
             ("Run", "/run", "Full guided workflow"),
             ("Quick", "/quick", "Use saved defaults"),
             ("Batch", "/batch", "Folders and manifests"),
             ("Setup", "/init", "Create your workflow"),
-            ("Guide", "/guide", "Choose assistance level"),
-            ("Modes", "/mode", "Speed and quality tradeoffs"),
-            ("Models", "/models", "Local and cloud status"),
-            ("API Keys", "/env", "Configure providers"),
             ("Profiles", "/profiles", "Defaults and locks"),
+            ("Models", "/models", "Local and cloud choices"),
+            ("Instructions", "/instructions", "Restoration prompt presets"),
+        ],
+        compact=prefs["density"] == "compact",
+    )
+    ui.section("Extended Tools")
+    ui.board(
+        [
+            ("Resume", "/resume", "Continue interrupted work"),
+            ("Combine", "/combine", "Assemble staged outputs"),
+            ("Export", "/export", "Convert existing outputs"),
+            ("Docs", "/docs", "Open project guides"),
+            ("Guide", "/guide", "Adjust CLI guidance"),
+            ("Modes", "/mode", "Speed and quality tradeoffs"),
+            ("Customize", "/ui", "Light/dark terminal theme"),
+        ],
+        compact=prefs["density"] == "compact",
+    )
+    ui.section("Setup And Maintenance")
+    ui.board(
+        [
+            ("API Keys", "/env", "Provider key status"),
             ("Doctor", "/doctor", "System readiness"),
-            ("Install", "/install", "PDF and image tools"),
+            ("Install", "/install", "PDF/image dependencies"),
             ("Status", "/status", "Current configuration"),
             ("Checks", "/check", "Compile and test"),
-            ("Customize", "/ui", "Theme and guide"),
+            ("Clean", "/clean", "Remove generated artifacts"),
         ],
         compact=prefs["density"] == "compact",
     )
@@ -138,32 +157,33 @@ def interactive_session() -> None:
             if _dispatch_session_command(raw) is False:
                 return
         except KeyboardInterrupt:
-            ui.write("\nGoodbye.")
+            ui.write("\nNamaskara.")
             return
 
 
 def _menu_command() -> str:
-    action = ui.choose("Action", HOME_ACTIONS, "Run workflow")
+    action = ui.choose("Action", HOME_ACTIONS, "Core - Run workflow")
     return {
-        "Run workflow": "/run",
-        "Quick run": "/quick",
-        "Batch process": "/batch",
-        "Guided setup": "/init",
-        "Choose guide": "/guide",
-        "Choose mode": "/mode",
-        "Customize UI": "/ui",
-        "Profiles": "/profiles",
-        "Models": "/models",
-        "API keys": "/env",
-        "Instructions": "/instructions",
-        "Doctor": "/doctor",
-        "Combine outputs": "/combine",
-        "Resume run": "/resume",
-        "Install dependencies": "/install",
-        "Status": "/status",
-        "Run checks": "/check",
-        "Docs": "/docs",
-        "Clean local outputs": "/clean",
+        "Core - Run workflow": "/run",
+        "Core - Quick run": "/quick",
+        "Core - Batch process": "/batch",
+        "Core - Guided setup": "/init",
+        "Core - Profiles": "/profiles",
+        "Core - Models": "/models",
+        "Core - Instructions": "/instructions",
+        "Extended - Resume run": "/resume",
+        "Extended - Combine outputs": "/combine",
+        "Extended - Export existing output": "/export",
+        "Extended - Docs": "/docs",
+        "Interface - Choose guide": "/guide",
+        "Interface - Choose mode": "/mode",
+        "Interface - Customize UI": "/ui",
+        "Setup - API keys": "/env",
+        "Setup - Doctor": "/doctor",
+        "Setup - Install dependencies": "/install",
+        "Maintenance - Status": "/status",
+        "Maintenance - Run checks": "/check",
+        "Maintenance - Clean local outputs": "/clean",
         "Exit": "/exit",
     }[action]
 
@@ -197,7 +217,7 @@ def _dispatch_session_command(raw: str) -> bool:
         ui.write("Try /run, /quick, /batch, /doctor, /models, /profiles, or /help.")
         return True
     if command in {"/exit", "/quit", "/q!"}:
-        ui.write("Goodbye.")
+        ui.write("Namaskara.")
         return False
     if command in {"/help", "/?"}:
         _session_help()
@@ -247,6 +267,8 @@ def _dispatch_session_command(raw: str) -> bool:
         combine_command(args[0] if args else None)
     elif command in {"/resume", "/recover"}:
         resume_command(args[0] if args else None)
+    elif command in {"/export", "/x"}:
+        export_command(args[0] if args else None)
     elif command in {"/install", "/setup"}:
         install_command()
     elif command in {"/check", "/checks", "/test", "/t"}:
@@ -294,6 +316,7 @@ def _session_help() -> None:
             ["/doctor", "Check local setup"],
             ["/combine [run-folder]", "Rebuild staged outputs into one document"],
             ["/resume [run-folder]", "Recover completed checkpoints from an interrupted run"],
+            ["/export [path]", "Convert a run folder or existing output to another format"],
             ["/install", "Install PDF/image system dependencies"],
             ["/check, /test", "Compile and run unit tests"],
             ["/clean", "Remove local generated outputs"],
@@ -391,6 +414,7 @@ def onboard(
         "Output language (for example: English, Hindi, Kannada)",
         profile.output_language,
     )
+    profile.language_policy = choose_language_policy(profile.language_policy)
     ui.write("Translation will switch on automatically when the output language differs.")
     profile.translation_mode = ui.choose(
         "Translation mode",
@@ -412,6 +436,9 @@ def onboard(
         "Execution mode", EXECUTION_MODES, profile.model.execution_mode
     )
     profile.output_formats = choose_output_formats(profile.output_formats)
+    profile.extract_figures = ui.confirm(
+        "Enable figure/image markers and page image assets for assembly?", profile.extract_figures
+    )
     profile.instruction_preset = DEFAULT_PRESET
     profile.output_dir = choose_output_folder(profile.output_dir)
     profile.locked = ui.confirm("Lock this profile as the default quick-run workflow?", True)
@@ -539,6 +566,16 @@ def choose_output_formats(defaults: Optional[List[str]] = None) -> List[str]:
     return selected or ["txt"]
 
 
+def choose_language_policy(default: str = "preserve-detected") -> str:
+    choices = [
+        "preserve-detected - keep all readable languages/scripts",
+        "strict-source - extract only the declared source language",
+    ]
+    default_label = choices[1] if default == "strict-source" else choices[0]
+    selected = ui.choose("Language handling", choices, default_label)
+    return selected.split(" ", 1)[0]
+
+
 def choose_output_folder(default: str = "akshara-output") -> str:
     while True:
         entered = ui.text("Path to output folder", default)
@@ -607,6 +644,10 @@ def execute_run(
     if ui.interactive():
         ui.section("Destination")
         profile.output_dir = choose_output_folder(profile.output_dir)
+        profile.language_policy = choose_language_policy(profile.language_policy)
+        profile.extract_figures = ui.confirm(
+            "Enable figure/image markers and page image assets for this run?", profile.extract_figures
+        )
     review_run(profile, selection)
     if dry_run:
         ui.write("Dry run complete. No outputs were written.")
@@ -671,11 +712,13 @@ def review_run(profile: WorkflowProfile, selection) -> None:
         ["Document type", profile.document_type],
         ["Source language", profile.source_language],
         ["Output language", profile.output_language],
+        ["Language handling", profile.language_policy],
         ["Translation", _translation_label(profile)],
         ["Provider", profile.model.provider],
         ["Model", profile.model.model],
         ["Mode", profile.model.execution_mode],
         ["Mode behavior", _mode_behavior(profile.model.execution_mode)],
+        ["Figure/image assets", "on" if profile.extract_figures else "off"],
         ["Generation limit", str(profile.model.generation_limit or "auto")],
         ["Outputs", ", ".join(profile.output_formats)],
         ["Destination", profile.output_dir],
@@ -979,10 +1022,12 @@ def _show_profile(profile: WorkflowProfile) -> None:
             ["Document type", profile.document_type],
             ["Source language", profile.source_language],
             ["Output language", profile.output_language],
+            ["Language handling", profile.language_policy],
             ["Translation", _translation_label(profile)],
             ["Outputs", ", ".join(profile.output_formats)],
             ["Instruction", profile.instruction_preset],
             ["Output folder", profile.output_dir],
+            ["Figure/image assets", "on" if profile.extract_figures else "off"],
             ["Locked", "yes" if profile.locked else "no"],
             ["Provider", profile.model.provider],
             ["Model", profile.model.model],
@@ -1022,6 +1067,7 @@ def _edit_profile_interactive(store: ConfigStore, name: str) -> None:
             "Output language (for example: English, Hindi, Kannada)",
             profile.output_language,
         )
+        profile.language_policy = choose_language_policy(profile.language_policy)
         ui.write("Translation will switch on automatically when the output language differs.")
         profile.translation_mode = ui.choose(
             "Translation mode",
@@ -1044,6 +1090,9 @@ def _edit_profile_interactive(store: ConfigStore, name: str) -> None:
         )
     if section in {"Outputs", "Everything"}:
         profile.output_formats = choose_output_formats(profile.output_formats)
+        profile.extract_figures = ui.confirm(
+            "Enable figure/image markers and page image assets for assembly?", profile.extract_figures
+        )
     if section in {"Output folder", "Everything"}:
         profile.output_dir = choose_output_folder(profile.output_dir)
     if section in {"Lock/default", "Everything"}:
@@ -1235,6 +1284,13 @@ def combine_command(run_dir: Optional[str] = None) -> None:
         for item in exports:
             state = "available" if item.available else "setup note"
             ui.write(f"  {item.format}: {item.path} ({state})")
+    _next_recommendations(
+        [
+            ["Review output", str(result["output_path"])],
+            ["Export another format", f"akv export {result['run_dir']}"],
+            ["Run checks", "akv check"],
+        ]
+    )
 
 
 def resume_command(run_dir: Optional[str] = None) -> None:
@@ -1339,8 +1395,10 @@ def check_command() -> int:
         ui.section(f"Failure in {failed_label}")
         ui.write(failed_output.strip())
         ui.status("error", "Checks did not pass.")
+        _next_recommendations([["Inspect failure", "Read the output above"], ["Retry", "akv check"]])
         return failed
     ui.status("success", "Compile and unit tests passed.")
+    _next_recommendations([["Run workflow", "akv run"], ["Review setup", "akv doctor"]])
     return 0
 
 
@@ -1361,7 +1419,12 @@ def provider_status_rows() -> List[List[str]]:
     return rows
 
 
-def export_command(run_dir: str, formats: Optional[List[str]] = None) -> None:
+def export_command(run_dir: Optional[str] = None, formats: Optional[List[str]] = None) -> None:
+    if not run_dir:
+        run_dir = ui.text("Path to run folder or compiled output file")
+    if not run_dir:
+        ui.status("info", "Export cancelled.")
+        return
     path = Path(run_dir).expanduser()
     source_text, destination, metadata = _export_source(path)
     if source_text is None:
@@ -1377,6 +1440,12 @@ def export_command(run_dir: str, formats: Optional[List[str]] = None) -> None:
                 result = exporter.export(source_text, destination, metadata)
                 reporter.update(f"Wrote {output_format}", advance=1)
                 ui.write(f"{result.format}: {result.path}")
+    _next_recommendations([["Combine run", f"akv combine {path}"], ["Run doctor", "akv doctor"]])
+
+
+def _next_recommendations(rows: List[List[str]]) -> None:
+    ui.section("Next")
+    ui.table([["Action", "Command / path"]] + rows)
 
 
 def _export_source(path: Path) -> tuple[Optional[str], Path, dict]:

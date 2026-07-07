@@ -59,6 +59,28 @@ guide as context so similar pages are formatted consistently. It does not add
 facts, does not override the restoration instructions, and is not emitted into
 the final text.
 
+The selected document type also changes extraction guidance. Books emphasize
+title matter, contents, chapters, page numbers, prefaces, indexes, and footnotes.
+Magazines and newspapers emphasize column order, article boundaries, headlines,
+captions, and sidebars. Manuscripts emphasize folios, marginalia, uncertain
+readings, corrections, and damaged text. The run manifest records deterministic
+structure observations for later assembly.
+
+The CLI asks whether to enable figure/image enrichment before a run. When
+enabled, prompts may insert concise `[image: ...]` markers for visible
+illustrations, maps, plates, or diagrams, and Akshara stores page/source image
+assets with size and placement metadata. This is disabled by default so normal
+restored text remains clean. Automatic cropping of figures is not enabled yet
+because it needs a layout segmentation layer to avoid cutting the wrong page
+region.
+
+The CLI also asks how to handle languages:
+
+| Mode | Behavior |
+| --- | --- |
+| `preserve-detected` | Default. Preserve every readable language/script visible in the source, without forcing labels or translation. |
+| `strict-source` | Extract only the declared source language/script, while preserving necessary names, citations, and technical terms. |
+
 Dense pages and non-English scripts still depend heavily on the chosen vision
 model. Quality mode gives the model stronger page-order, region-by-region, and
 Indic-script instructions. If a model hits its output limit, the run is marked

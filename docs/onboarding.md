@@ -57,6 +57,7 @@ Recommended first profile:
 - Document type: `Book`
 - Source language: `auto`
 - Output language: `same`
+- Language handling: `preserve-detected`
 - Translation mode: `auto`
 - Provider: `ollama` if installed, otherwise `mock`
 - Execution mode: `balanced`
@@ -67,6 +68,10 @@ Recommended first profile:
 `auto` means translation switches on when the output language differs from the
 source language.
 
+`preserve-detected` keeps readable mixed-language snippets in their original
+script. Use `strict-source` only when you want the run to ignore text outside the
+declared source language.
+
 Once locked, run:
 
 ```bash
@@ -74,7 +79,8 @@ akv q path/to/book.pdf
 ```
 
 Quick run uses the saved defaults and, in an interactive terminal, still lets you
-confirm the output folder for that run.
+confirm the output folder, language handling, and figure/image enrichment for
+that run.
 
 Use `/mode` later if you want to switch between faster prompting execution,
 balanced defaults, or the slower quality-focused analysis path.

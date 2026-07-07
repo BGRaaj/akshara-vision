@@ -75,6 +75,6 @@ Import a shared profile:
 akv p import --source shared-profile.toml
 ```
 
-Profiles store workflow choices, language settings, output formats, model provider,
-model name, execution mode, context window, generation limit, instruction preset,
-and output folder.
+Profiles store workflow choices, language settings, language handling policy,
+output formats, model provider, model name, execution mode, context window,
+generation limit, instruction preset, figure/image enrichment, and output folder.
