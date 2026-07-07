@@ -98,11 +98,15 @@ class ConfigStore:
     def load_ui_preferences(self) -> Dict[str, str]:
         settings = self.load_settings()
         ui_settings = settings.get("ui") if isinstance(settings.get("ui"), dict) else {}
+        theme = str(ui_settings.get("theme") or "dark").strip().lower()
+        if theme not in {"dark", "light"}:
+            theme = "dark"
         return {
-            "hero": str(ui_settings.get("hero") or "inscription"),
+            "theme": theme,
+            "hero": "inscription",
             "guide": str(ui_settings.get("guide") or "balanced"),
-            "density": str(ui_settings.get("density") or "comfortable"),
-            "prompt": str(ui_settings.get("prompt") or "adaptive"),
+            "density": "comfortable",
+            "prompt": "adaptive",
         }
 
     def save_ui_preferences(self, preferences: Dict[str, str]) -> None:

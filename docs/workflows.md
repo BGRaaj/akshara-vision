@@ -28,13 +28,22 @@ Execution modes:
 
 | Mode | Tradeoff |
 | --- | --- |
-| `fast` | Faster runs with shorter model timeouts and a more throughput-focused prompt |
+| `fast` | Faster runs with lower PDF render DPI and a more throughput-focused prompt |
 | `balanced` | Default balance of speed and fidelity |
-| `quality` | Slower runs with longer model timeouts and a more fidelity-focused deep analysis prompt |
+| `quality` | Slower runs with higher PDF render DPI and a more fidelity-focused deep analysis prompt |
 
 The run uses chunked restoration for long raw text inputs, so it is processed in
 smaller model batches instead of one large prompt. Progress is timer-based and indeterminate;
 it shows the active step and elapsed time rather than a fake percentage.
+
+Provider requests do not use a fixed restoration timeout. If a provider returns a
+transient network, rate-limit, or server error, Akshara Vision retries with
+exponential backoff and records failures in the run state instead of corrupting
+the final output. In batch runs, a failed input is written as a failed item and
+later inputs continue.
+
+Set `AKSHARA_PROVIDER_RETRIES` if a slow cloud provider needs more retries. The
+default is `3`; the accepted range is `0` to `10`.
 
 For image and PDF vision runs, each image or rendered page is sent as its own
 model request. PDFs are rendered one page at a time, so large books start

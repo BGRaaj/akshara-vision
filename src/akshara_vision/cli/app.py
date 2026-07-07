@@ -8,6 +8,7 @@ except ModuleNotFoundError:  # pragma: no cover - dependency fallback
     typer = None
 
 from akshara_vision.cli.workflows import (
+    apply_saved_ui_theme,
     batch_run,
     check_command,
     clean_command,
@@ -43,6 +44,7 @@ if typer:
 
     @app.callback()
     def root(ctx: typer.Context):
+        apply_saved_ui_theme()
         if ctx.invoked_subcommand is None:
             show_home(interactive=_interactive_allowed())
 
@@ -221,6 +223,7 @@ def _interactive_allowed() -> bool:
 
 
 def _fallback_main(argv: List[str]) -> None:
+    apply_saved_ui_theme()
     parser = argparse.ArgumentParser(
         prog="akshara",
         description="Akshara Vision: restore, read, and preserve archival books.",

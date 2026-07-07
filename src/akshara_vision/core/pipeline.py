@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -28,7 +29,7 @@ ProgressCallback = Callable[[str, str, int], None]
 RESTORATION_CHUNK_CHARS = 5000
 TRANSLATION_CHUNK_CHARS = 5000
 BLANK_PAGE_REASON = "blank page or no readable text"
-MAX_PROVIDER_RETRIES = 1
+DEFAULT_PROVIDER_RETRIES = 3
 
 EXECUTION_MODE_PDF_DPI = {
     "fast": 200,
@@ -237,7 +238,7 @@ def run_pipeline(
             "profile": profile.to_dict(),
             "created_at": timestamp,
             "total_inputs": len(request.inputs.files),
-            "input_files": [str(p.resolve()) for p in request.inputs.files],
+            "input_files": [_safe_path(p) for p in request.inputs.files],
             "completed_inputs": [],
             "consistency": consistency_state,
             "next_action": "Run can be recovered with `akv resume <run-folder>` or `akv combine <run-folder>`.",
@@ -256,67 +257,86 @@ def run_pipeline(
     for index, path in enumerate(request.inputs.files, start=1):
         suffix = path.suffix.lower()
         source_label = request.inputs.label_for(path)
-
-        if suffix not in TEXT_EXTENSIONS:
-            if not _is_vision_model(profile.model.model):
-                raise RuntimeError(
-                    f"Processing {source_label} requires a multimodal vision model. "
-                    f"The selected model '{profile.model.model}' is text-only."
-                )
-            _notify(progress, "decode", f"Preparing multimodal {source_label}", advance=1)
-            if suffix == ".pdf":
-                cleaned, restoration_record, usage = _restore_multimodal_pdf(
-                    path,
-                    instruction,
-                    profile,
-                    provider,
-                    progress,
-                    artifacts,
-                    index,
-                    source_label=source_label,
-                    consistency_state=consistency_state,
-                )
-            elif suffix == ".zip":
-                cleaned, restoration_record, usage = _restore_multimodal_zip(
-                    path,
-                    instruction,
-                    profile,
-                    provider,
-                    progress,
-                    artifacts,
-                    index,
-                    source_label=source_label,
-                    consistency_state=consistency_state,
-                )
+        try:
+            if suffix not in TEXT_EXTENSIONS:
+                if not _is_vision_model(profile.model.model):
+                    raise RuntimeError(
+                        f"Processing {source_label} requires a multimodal vision model. "
+                        f"The selected model '{profile.model.model}' is text-only."
+                    )
+                _notify(progress, "decode", f"Preparing multimodal {source_label}", advance=1)
+                if suffix == ".pdf":
+                    cleaned, restoration_record, usage = _restore_multimodal_pdf(
+                        path,
+                        instruction,
+                        profile,
+                        provider,
+                        progress,
+                        artifacts,
+                        index,
+                        source_label=source_label,
+                        consistency_state=consistency_state,
+                    )
+                elif suffix == ".zip":
+                    cleaned, restoration_record, usage = _restore_multimodal_zip(
+                        path,
+                        instruction,
+                        profile,
+                        provider,
+                        progress,
+                        artifacts,
+                        index,
+                        source_label=source_label,
+                        consistency_state=consistency_state,
+                    )
+                else:
+                    cleaned, restoration_record, usage = _restore_multimodal_image(
+                        path,
+                        instruction,
+                        profile,
+                        provider,
+                        artifacts,
+                        index,
+                        source_label=source_label,
+                        consistency_state=consistency_state,
+                        progress=progress,
+                    )
+                raw_text = f"[Multimodal Input: {source_label}]"
+                _add_usage(usage)
             else:
-                cleaned, restoration_record, usage = _restore_multimodal_image(
-                    path,
+                _notify(progress, "decode", f"Reading text from {source_label}", advance=1)
+                raw_text = path.read_text(encoding="utf-8", errors="replace")
+                _notify(progress, "clean", f"Restoring text from {source_label}", advance=1)
+                cleaned, restoration_record, usage = _restore_text(
+                    raw_text,
                     instruction,
                     profile,
                     provider,
                     artifacts,
                     index,
+                    path,
                     source_label=source_label,
                     consistency_state=consistency_state,
                 )
-            raw_text = f"[Multimodal Input: {source_label}]"
-            _add_usage(usage)
-        else:
-            _notify(progress, "decode", f"Reading text from {source_label}", advance=1)
-            raw_text = path.read_text(encoding="utf-8", errors="replace")
-            _notify(progress, "clean", f"Restoring text from {source_label}", advance=1)
-            cleaned, restoration_record, usage = _restore_text(
-                raw_text,
-                instruction,
-                profile,
-                provider,
-                artifacts,
-                index,
-                path,
-                source_label=source_label,
-                consistency_state=consistency_state,
-            )
-            _add_usage(usage)
+                _add_usage(usage)
+        except Exception as exc:
+            failure_reason = _infer_failure_reason("", exception=exc)
+            cleaned = ""
+            raw_text = f"[Failed Input: {source_label}] {exc}"
+            restoration_record = {
+                "status": "failed",
+                "chunks": [
+                    {
+                        "index": 1,
+                        "source": source_label,
+                        "restored_text": "",
+                        "status": "failed",
+                        "failure_reason": failure_reason,
+                    }
+                ],
+                "failure_reason": failure_reason,
+            }
+            _notify(progress, "error", f"Recorded failed source {source_label}: {failure_reason}", advance=1)
 
         raw_parts.append(f"===== {source_label} =====\n{raw_text}".strip())
         source_text = cleaned.strip() + "\n"
@@ -345,9 +365,19 @@ def run_pipeline(
                     {
                         "index": item["index"],
                         "name": item["name"],
-                        "path": str(Path(item["path"]).resolve()),
+                        "path": str(item["path"]),
                     }
                     for item in restored_sources
+                ],
+                "failed_inputs": [
+                    {
+                        "source": record["source"],
+                        "label": record["label"],
+                        "failure_reason": record.get("failure_reason", ""),
+                    }
+                    for record in restoration_records
+                    if record.get("status") == "failed"
+                    or (record.get("failure_reason") and record.get("status") != "restored")
                 ],
                 "consistency": consistency_state,
             },
@@ -450,9 +480,19 @@ def run_pipeline(
                 {
                     "index": item["index"],
                     "name": item["name"],
-                    "path": str(Path(item["path"]).resolve()),
+                    "path": str(item["path"]),
                 }
                 for item in restored_sources
+            ],
+            "failed_inputs": [
+                {
+                    "source": record["source"],
+                    "label": record["label"],
+                    "failure_reason": record.get("failure_reason", ""),
+                }
+                for record in restoration_records
+                if record.get("status") == "failed"
+                or (record.get("failure_reason") and record.get("status") != "restored")
             ],
             "consistency": consistency_state,
             "next_action": "Run complete.",
@@ -715,6 +755,7 @@ def _restore_text(
     media_path: Optional[Path] = None,
     source_label: Optional[str] = None,
     consistency_state: Optional[Dict[str, object]] = None,
+    progress: Optional[ProgressCallback] = None,
 ) -> tuple:
     chunks = _split_text_chunks(raw_text)
     restored_chunks: List[str] = []
@@ -728,7 +769,12 @@ def _restore_text(
     for index, chunk in enumerate(chunks, start=1):
         prompt = _task_text(chunk, profile, consistency_state)
         result, usage = _restore_with_retry(
-            provider, prompt, instruction, profile.model, media_path=media_path
+            provider,
+            prompt,
+            instruction,
+            profile.model,
+            media_path=media_path,
+            progress=progress,
         )
         if usage:
             total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
@@ -851,11 +897,13 @@ def _restore_with_retry(
     instruction: str,
     settings,
     media_path: Optional[Path] = None,
+    progress: Optional[ProgressCallback] = None,
 ) -> tuple[str, dict]:
     last_response = ""
     last_usage: dict = {}
     last_error: Optional[Exception] = None
-    for attempt in range(MAX_PROVIDER_RETRIES + 1):
+    max_retries = _provider_retry_limit()
+    for attempt in range(max_retries + 1):
         retry_prompt = prompt
         if attempt:
             retry_prompt = (
@@ -870,16 +918,91 @@ def _restore_with_retry(
             )
         except Exception as exc:
             last_error = exc
-            if attempt < MAX_PROVIDER_RETRIES:
+            if not _is_retryable_provider_error(exc):
+                raise
+            if attempt < max_retries:
+                delay = _retry_delay(attempt)
+                _notify(
+                    progress,
+                    "retry",
+                    f"Provider delayed or unavailable; retrying in {delay:g}s ({attempt + 1}/{max_retries})",
+                    advance=0,
+                )
+                _sleep_before_retry(attempt)
                 continue
             raise
         last_response = response
         last_usage = usage or {}
         if not _response_needs_retry(response):
             return response, last_usage
+        if attempt < max_retries:
+            delay = _retry_delay(attempt)
+            _notify(
+                progress,
+                "retry",
+                f"Provider returned unusable output; retrying in {delay:g}s ({attempt + 1}/{max_retries})",
+                advance=0,
+            )
+            _sleep_before_retry(attempt)
     if last_error:
         raise last_error
     return last_response, last_usage
+
+
+def _sleep_before_retry(attempt: int) -> None:
+    time.sleep(_retry_delay(attempt))
+
+
+def _retry_delay(attempt: int) -> float:
+    return min(0.5 * (2**attempt), 8)
+
+
+def _provider_retry_limit() -> int:
+    raw_value = os.environ.get("AKSHARA_PROVIDER_RETRIES")
+    if not raw_value:
+        return DEFAULT_PROVIDER_RETRIES
+    try:
+        return min(max(int(raw_value), 0), 10)
+    except ValueError:
+        return DEFAULT_PROVIDER_RETRIES
+
+
+def _is_retryable_provider_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    non_retryable = [
+        "does not support",
+        "api key",
+        "not configured",
+        "invalid api key",
+        "unauthorized",
+        "forbidden",
+        "http 400",
+        "http 401",
+        "http 403",
+        "not found",
+    ]
+    if any(item in message for item in non_retryable):
+        return False
+    retryable = [
+        "timeout",
+        "timed out",
+        "temporarily",
+        "rate limit",
+        "too many requests",
+        "http 408",
+        "http 409",
+        "http 425",
+        "http 429",
+        "http 500",
+        "http 502",
+        "http 503",
+        "http 504",
+        "network",
+        "connection",
+        "remote end closed",
+        "empty response",
+    ]
+    return any(item in message for item in retryable) or not message
 
 
 def _response_needs_retry(response: str) -> bool:
@@ -1384,6 +1507,7 @@ def _restore_multimodal_image(
     source_index: int,
     source_label: Optional[str] = None,
     consistency_state: Optional[Dict[str, object]] = None,
+    progress: Optional[ProgressCallback] = None,
 ) -> tuple:
     """Send an image directly to the vision model and use its raw text output.
 
@@ -1394,7 +1518,7 @@ def _restore_multimodal_image(
     """
     prompt = _task_text("", profile, consistency_state)
     result, usage = _restore_with_retry(
-        provider, prompt, instruction, profile.model, media_path=path
+        provider, prompt, instruction, profile.model, media_path=path, progress=progress
     )
 
     # Try JSON parsing first (in case the model does return structured data).
@@ -1708,7 +1832,7 @@ def _apply_translation_stage(
             )
             prompt = _translation_prompt(chunk, profile)
             result, usage = _restore_with_retry(
-                provider, prompt, translation_instruction, profile.model
+                provider, prompt, translation_instruction, profile.model, progress=progress
             )
             if usage:
                 total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
@@ -1864,7 +1988,12 @@ def _restore_multimodal_pdf(
             prompt = _task_text("", profile, consistency_state)
             try:
                 result, usage = _restore_with_retry(
-                    provider, prompt, instruction, profile.model, media_path=page_img
+                    provider,
+                    prompt,
+                    instruction,
+                    profile.model,
+                    media_path=page_img,
+                    progress=progress,
                 )
                 if usage:
                     total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
@@ -1927,7 +2056,12 @@ def _restore_multimodal_pdf(
                 )
                 try:
                     result, usage = _restore_with_retry(
-                        provider, prompt, instruction, profile.model, media_path=page_img
+                        provider,
+                        prompt,
+                        instruction,
+                        profile.model,
+                        media_path=page_img,
+                        progress=progress,
                     )
                     if usage:
                         total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
@@ -2093,7 +2227,7 @@ def _restore_multimodal_zip(
                 for sub_chunk in sub_chunks:
                     prompt = _task_text(sub_chunk, profile, consistency_state)
                     result, usage = _restore_with_retry(
-                        provider, prompt, instruction, profile.model
+                        provider, prompt, instruction, profile.model, progress=progress
                     )
                     if usage:
                         total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
@@ -2169,7 +2303,12 @@ def _restore_multimodal_zip(
             elif suffix in {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}:
                 prompt = _task_text("", profile, consistency_state)
                 result, usage = _restore_with_retry(
-                    provider, prompt, instruction, profile.model, media_path=ext_file
+                    provider,
+                    prompt,
+                    instruction,
+                    profile.model,
+                    media_path=ext_file,
+                    progress=progress,
                 )
                 if usage:
                     total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)

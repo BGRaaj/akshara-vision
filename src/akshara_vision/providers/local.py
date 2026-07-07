@@ -53,7 +53,7 @@ class OllamaProvider:
                 instruction,
                 text,
                 media_path,
-                _provider_timeout(settings.execution_mode),
+                None,
             )
             if response:
                 return response, usage
@@ -67,7 +67,7 @@ class OllamaProvider:
                 instruction,
                 text,
                 None,
-                _provider_timeout(settings.execution_mode),
+                None,
             )
         except RuntimeError:
             response, usage = "", {}
@@ -135,19 +135,15 @@ class OpenAICompatibleLocalProvider:
             instruction=instruction,
             text=text,
             api_key=os.environ.get("AKSHARA_OPENAI_COMPATIBLE_API_KEY"),
-            timeout=_provider_timeout(settings.execution_mode),
+            timeout=None,
             media_path=media_path,
         )
         if result:
             return result, usage
-        if media_path:
-            raise RuntimeError(
-                f"Failed to obtain response from OpenAI-compatible local server at {endpoint} "
-                f"using model '{settings.model}'."
-            )
-        import sys
-        sys.stderr.write(f"\n[!] WARNING: Local server at {endpoint} failed. Falling back to MockProvider.\n")
-        return MockProvider().restore_text(text, instruction, ModelSettings())
+        raise RuntimeError(
+            f"Failed to obtain response from OpenAI-compatible local server at {endpoint} "
+            f"using model '{settings.model}'."
+        )
 
 
 def _media_mime_type(path: Path) -> str:
@@ -178,9 +174,12 @@ def parse_openai_compatible_models(payload: str) -> List[str]:
     return [str(item.get("id")) for item in values if isinstance(item, dict) and item.get("id")]
 
 
-def _fetch_openai_compatible_models(endpoint: str) -> List[str]:
+def _fetch_openai_compatible_models(endpoint: str, api_key: Optional[str] = None) -> List[str]:
     url = endpoint.rstrip("/") + "/models"
-    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=1.5) as response:
             return parse_openai_compatible_models(response.read().decode("utf-8"))
@@ -384,9 +383,7 @@ def openai_compatible_chat(
             )
         raise RuntimeError(f"OpenAI-compatible API error (HTTP {exc.code}): {msg}")
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
-        if media_path:
-            raise RuntimeError(f"Failed to connect to local/cloud endpoint at {url}: {exc}")
-        return "", {}
+        raise RuntimeError(f"Failed to connect to local/cloud endpoint at {url}: {exc}")
     finally:
         if media_path:
             media_bytes = None

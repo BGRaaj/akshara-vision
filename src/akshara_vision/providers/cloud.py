@@ -12,11 +12,11 @@ from akshara_vision.core.models import ModelSettings
 from akshara_vision.providers.base import ProviderStatus
 from akshara_vision.providers.local import (
     _context_limit,
+    _fetch_openai_compatible_models,
     _generation_limit,
     _media_mime_type,
     openai_compatible_chat,
 )
-from akshara_vision.providers.mock import MockProvider
 
 
 class CloudProvider:
@@ -28,7 +28,10 @@ class CloudProvider:
     def status(self) -> ProviderStatus:
         has_key = bool(os.environ.get(self.env_var))
         detail = f"{self.env_var} is configured." if has_key else f"{self.env_var} is not set."
-        return ProviderStatus(self.name, has_key, detail, self.default_models if has_key else [])
+        models = []
+        if has_key:
+            models = _fetch_native_models(self.name, os.environ[self.env_var])
+        return ProviderStatus(self.name, has_key, detail, models or (self.default_models if has_key else []))
 
     def restore_text(
         self,
@@ -39,12 +42,9 @@ class CloudProvider:
     ) -> tuple[str, dict]:
         api_key = os.environ.get(self.env_var)
         if not api_key:
-            if media_path:
-                raise RuntimeError(
-                    f"Cloud provider '{self.name}' requested for multimodal vision, "
-                    f"but environment variable '{self.env_var}' is not configured."
-                )
-            return MockProvider().restore_text(text, instruction, ModelSettings())
+            raise RuntimeError(
+                f"Cloud provider '{self.name}' requires environment variable '{self.env_var}'."
+            )
         if self.name == "openai":
             result = openai_compatible_chat(
                 endpoint="https://api.openai.com/v1",
@@ -52,7 +52,7 @@ class CloudProvider:
                 instruction=instruction,
                 text=text,
                 api_key=api_key,
-                timeout=_provider_timeout(settings.execution_mode),
+                timeout=None,
                 media_path=media_path,
             )
         elif self.name == "anthropic":
@@ -86,7 +86,120 @@ class CloudProvider:
                 f"Failed to obtain response from cloud provider '{self.name}' "
                 f"using model '{settings.model}'."
             )
-        return MockProvider().restore_text(text, instruction, ModelSettings())
+        raise RuntimeError(
+            f"Cloud provider '{self.name}' returned an empty response using model '{settings.model}'."
+        )
+
+
+class OpenAICompatibleCloudProvider:
+    def __init__(
+        self,
+        name: str,
+        env_var: str,
+        default_endpoint: str,
+        default_models: Optional[list] = None,
+    ) -> None:
+        self.name = name
+        self.env_var = env_var
+        self.default_endpoint = default_endpoint
+        self.default_models = default_models or []
+
+    def status(self) -> ProviderStatus:
+        api_key = os.environ.get(self.env_var)
+        endpoint = os.environ.get(_endpoint_env_var(self.name)) or self.default_endpoint
+        if not api_key:
+            return ProviderStatus(self.name, False, f"{self.env_var} is not set.", [])
+        models = _fetch_openai_compatible_models(endpoint, api_key)
+        detail = f"Connected to {endpoint}." if models else f"{self.env_var} is configured."
+        return ProviderStatus(self.name, True, detail, models or self.default_models)
+
+    def restore_text(
+        self,
+        text: str,
+        instruction: str,
+        settings: ModelSettings,
+        media_path: Optional[Path] = None,
+    ) -> tuple[str, dict]:
+        api_key = os.environ.get(self.env_var)
+        endpoint = settings.endpoint or os.environ.get(_endpoint_env_var(self.name)) or self.default_endpoint
+        if not api_key:
+            raise RuntimeError(
+                f"Cloud provider '{self.name}' requires environment variable '{self.env_var}'."
+            )
+        result = openai_compatible_chat(
+            endpoint=endpoint,
+            settings=settings,
+            instruction=instruction,
+            text=text,
+            api_key=api_key,
+            timeout=None,
+            media_path=media_path,
+        )
+        if result and result[0]:
+            return result
+        if media_path:
+            raise RuntimeError(
+                f"Failed to obtain response from cloud provider '{self.name}' "
+                f"using model '{settings.model}'."
+            )
+        raise RuntimeError(
+            f"Cloud provider '{self.name}' returned an empty response using model '{settings.model}'."
+        )
+
+
+def _endpoint_env_var(provider_name: str) -> str:
+    normalized = provider_name.upper().replace("-", "_")
+    return f"AKSHARA_{normalized}_BASE_URL"
+
+
+def _fetch_native_models(provider_name: str, api_key: str) -> list:
+    if provider_name == "openai":
+        return _fetch_openai_compatible_models("https://api.openai.com/v1", api_key)
+    if provider_name == "gemini":
+        return _fetch_gemini_models(api_key)
+    if provider_name == "anthropic":
+        return _fetch_anthropic_models(api_key)
+    return []
+
+
+def _fetch_gemini_models(api_key: str) -> list:
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models"
+        f"?key={urllib.parse.quote(api_key, safe='')}"
+    )
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=4) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        return []
+    models = []
+    for item in data.get("models", []):
+        name = item.get("name") if isinstance(item, dict) else ""
+        if name:
+            models.append(str(name).removeprefix("models/"))
+    return models
+
+
+def _fetch_anthropic_models(api_key: str) -> list:
+    request = urllib.request.Request(
+        "https://api.anthropic.com/v1/models",
+        headers={
+            "Accept": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=4) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        return []
+    return [
+        str(item.get("id"))
+        for item in data.get("data", [])
+        if isinstance(item, dict) and item.get("id")
+    ]
 
 
 def _anthropic_message(

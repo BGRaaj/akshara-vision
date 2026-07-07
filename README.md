@@ -31,7 +31,8 @@ model, provider, scan quality, script complexity, and document damage.
 | Translation | Automatic final-pass translation when output language differs from source language; manual modes for translate, bilingual, transliterate, and metadata-only workflows |
 | Batch processing | Files, folders, recursive folders, globs, ZIP archives, CSV manifests, and JSON manifests |
 | Profiles | Portable TOML profiles with defaults for workflow, languages, translation mode, model, output formats, destination, and locked quick runs |
-| Models | Ollama, LM Studio, Jan, llama.cpp/OpenAI-compatible local servers, OpenAI, Anthropic, Gemini, and mock/offline preview |
+| Models | Ollama, LM Studio, Jan, llama.cpp/OpenAI-compatible local servers, native cloud providers, OpenRouter, and other OpenAI-compatible cloud APIs |
+| Reliability | Long model calls wait for completion, transient provider failures retry with backoff, and failed batch items are tracked without corrupting later outputs |
 | Exports | Text, Markdown, HTML, DOCX, EPUB, JSON, JSONL, YAML, OCR sidecars, review files, and PDF request notes |
 | Auditability | Raw OCR file, restored checkpoint, staged per-page/per-chunk outputs, copied source inputs, structured run manifest, model usage metadata, truncation warnings, and failure reasons |
 
@@ -222,6 +223,8 @@ Cloud providers:
 - OpenAI
 - Anthropic
 - Gemini
+- OpenRouter, Groq, Mistral, Together, Fireworks, Perplexity, DeepSeek, xAI, Cerebras
+- Any custom OpenAI-compatible cloud endpoint
 
 Create a private `.env` from the template:
 
@@ -235,6 +238,11 @@ Then fill only what you use:
 OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 GEMINI_API_KEY=
+OPENROUTER_API_KEY=
+GROQ_API_KEY=
+MISTRAL_API_KEY=
+AKSHARA_CUSTOM_API_KEY=
+AKSHARA_CUSTOM_OPENAI_COMPATIBLE_BASE_URL=https://api.example.com/v1
 AKSHARA_OPENAI_COMPATIBLE_BASE_URL=http://localhost:1234/v1
 AKSHARA_OPENAI_COMPATIBLE_API_KEY=
 ```
@@ -251,6 +259,7 @@ Recommended vision-capable models include:
 | Gemini | `gemini-3.5-flash`, `gemini-3.5-pro`, `gemini-3.1-flash-lite` |
 | OpenAI | `gpt-5.5`, `gpt-5.4` |
 | Anthropic | `claude-sonnet-5`, `claude-fable-5` |
+| OpenAI-compatible clouds | Detected from `/models` when available, or entered manually as an exact provider model id |
 
 For scanned images and PDFs, choose a vision-capable model. If the selected
 model does not support image input, the pipeline fails with a clear explanation
@@ -276,13 +285,16 @@ A profile stores:
 
 | Mode | Behavior |
 | --- | --- |
-| `fast` | Shorter provider timeout and faster extraction prompt |
+| `fast` | Lower PDF render DPI and faster extraction prompt |
 | `balanced` | Default balance between speed and fidelity |
-| `quality` | Longer provider timeout and more careful extraction prompt |
+| `quality` | Higher PDF render DPI and more careful extraction prompt |
 
-Akshara Vision requests up to 16,384 output tokens for compatible local and
-OpenAI-compatible providers. If a model still truncates output, the run finishes
-with a visible warning and records the reason in the manifest.
+Akshara Vision uses the selected context and generation limits where the backend
+supports them. If a model still truncates output, the run finishes with a visible
+warning and records the reason in the manifest.
+
+Actual model calls are not stopped by a fixed Akshara timeout. Use `Ctrl+C` to
+interrupt safely when you want to pause a long run.
 
 ## Run Artifacts
 

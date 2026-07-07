@@ -76,18 +76,17 @@ class CoreTests(unittest.TestCase):
             store.set_default_profile("book-cleanup")
             store.save_ui_preferences(
                 {
-                    "hero": "classic",
+                    "theme": "light",
                     "guide": "minimal",
-                    "density": "compact",
-                    "prompt": "short",
                 }
             )
             prefs = store.load_ui_preferences()
             self.assertEqual(store.default_profile_name(), "book-cleanup")
-            self.assertEqual(prefs["hero"], "classic")
+            self.assertEqual(prefs["theme"], "light")
+            self.assertEqual(prefs["hero"], "inscription")
             self.assertEqual(prefs["guide"], "minimal")
-            self.assertEqual(prefs["density"], "compact")
-            self.assertEqual(prefs["prompt"], "short")
+            self.assertEqual(prefs["density"], "comfortable")
+            self.assertEqual(prefs["prompt"], "adaptive")
 
     def test_output_directory_validator_accepts_folders_and_rejects_files(self):
         from akshara_vision.cli.workflows import _validate_output_dir

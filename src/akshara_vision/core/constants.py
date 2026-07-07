@@ -102,6 +102,16 @@ PROVIDER_TYPES = [
     "openai",
     "anthropic",
     "gemini",
+    "openrouter",
+    "groq",
+    "mistral",
+    "together",
+    "fireworks",
+    "perplexity",
+    "deepseek",
+    "xai",
+    "cerebras",
+    "custom-openai-compatible",
     "mock",
 ]
 

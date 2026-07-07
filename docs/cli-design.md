@@ -77,19 +77,22 @@ Display options:
 
 | Option | Values |
 | --- | --- |
-| Hero | `inscription`, `classic`, `minimal` |
-| Guide | `balanced`, `full`, `minimal` |
+| Theme | `dark`, `light` |
 | Execution mode | `fast`, `balanced`, `quality` |
-| Density | `comfortable`, `compact` |
-| Prompt | `adaptive`, `full`, `short` |
+
+`dark` is the default monochrome terminal. `light` applies an ivory background
+and dark brown text through Rich and InquirerPy where the terminal supports ANSI
+color. After changing the theme, the home board redraws immediately.
+
+Guidance level is managed separately with `akv guide` or `/guide`.
 
 Execution mode controls the OCR and model effort used by the run:
 
 | Mode | Behavior |
 | --- | --- |
-| `fast` | Lower OCR DPI, shorter provider timeouts, and a throughput-first prompt. |
+| `fast` | Lower OCR DPI and a throughput-first prompt. |
 | `balanced` | Default settings for most runs. |
-| `quality` | Higher OCR DPI, longer provider timeouts, and a fidelity-first prompt. |
+| `quality` | Higher OCR DPI and a fidelity-first prompt. |
 
 Restoration requests use smaller text chunks when inputs are long, and the model is
 asked to return a JSON object with the cleaned text plus uncertainty notes. The text

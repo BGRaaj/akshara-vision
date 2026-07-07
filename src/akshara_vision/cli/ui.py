@@ -7,8 +7,10 @@ from typing import Iterable, List, Optional
 
 try:
     from InquirerPy import inquirer  # type: ignore
+    from InquirerPy.utils import InquirerPyStyle  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover - dependency fallback
     inquirer = None
+    InquirerPyStyle = None
 
 try:
     from rich.console import Console  # type: ignore
@@ -25,17 +27,82 @@ class MonoUI:
     """Black-and-white terminal helpers with dependency-light fallbacks."""
 
     def __init__(self) -> None:
-        self.console = Console(color_system=None) if Console else None
+        self.console = Console() if Console else None
+        self.theme = "dark"
+
+    def set_theme(self, theme: str) -> None:
+        self.theme = "light" if str(theme).strip().lower() == "light" else "dark"
+
+    def style(self) -> str:
+        if self.theme == "light":
+            return "#3a2417 on #f4ecd8"
+        return "white"
+
+    def prompt_style(self):
+        if not InquirerPyStyle:
+            return None
+        if self.theme == "light":
+            return InquirerPyStyle(
+                {
+                    "questionmark": "#3a2417 bg:#f4ecd8 bold",
+                    "question": "#3a2417 bg:#f4ecd8 bold",
+                    "answer": "#3a2417 bg:#f4ecd8",
+                    "input": "#3a2417 bg:#f4ecd8",
+                    "pointer": "#3a2417 bg:#f4ecd8 bold",
+                    "highlighted": "#3a2417 bg:#e7dcc3 bold",
+                    "selected": "#3a2417 bg:#f4ecd8",
+                    "separator": "#3a2417 bg:#f4ecd8",
+                    "instruction": "#5f4634 bg:#f4ecd8",
+                }
+            )
+        return InquirerPyStyle(
+            {
+                "questionmark": "white bold",
+                "question": "white bold",
+                "answer": "white",
+                "input": "white",
+                "pointer": "white bold",
+                "highlighted": "white bold",
+                "selected": "white",
+                "separator": "white",
+                "instruction": "white",
+            }
+        )
+
+    def apply_terminal_theme(self, clear: bool = False) -> None:
+        if not self.interactive():
+            return
+        if self.theme == "light":
+            sequence = (
+                "\033]10;#3a2417\007"
+                "\033]11;#f4ecd8\007"
+                "\033[48;2;244;236;216m\033[38;2;58;36;23m"
+            )
+        else:
+            sequence = "\033]10;#ffffff\007\033]11;#000000\007\033[40m\033[37m"
+        if clear:
+            sequence += "\033[2J\033[H"
+        sys.stdout.write(sequence)
+        sys.stdout.flush()
 
     def width(self) -> int:
         columns = shutil.get_terminal_size((78, 20)).columns
         return min(max(columns - 2, 54), 118)
 
     def write(self, message: str = "") -> None:
+        if self.console and self.theme == "light":
+            message = self._fill_background(message)
         if self.console:
-            self.console.print(message, style="white", markup=False, highlight=False)
+            self.console.print(message, style=self.style(), markup=False, highlight=False)
         else:
             print(message)
+
+    def _fill_background(self, message: str) -> str:
+        width = shutil.get_terminal_size((78, 20)).columns
+        if not message:
+            return " " * width
+        lines = str(message).splitlines() or [""]
+        return "\n".join(line.ljust(width) for line in lines)
 
     def heading(self, title: str, subtitle: Optional[str] = None) -> None:
         width = self.width()
@@ -46,16 +113,13 @@ class MonoUI:
             self.write(subtitle.center(width))
         self.write(line)
 
-    def hero(self, variant: str = "inscription", guide: str = "balanced") -> None:
+    def hero(self, guide: str = "balanced") -> None:
         width = self.width()
         line = "=" * width
         self.write(line)
-        compact_title = variant == "minimal" or width < 68
+        compact_title = width < 68
         if compact_title:
             self.write("AKSHARA VISION".center(width))
-        elif variant == "classic":
-            for row in _classic_hero():
-                self.write(row.center(width))
         else:
             for row in _inscription_hero(width):
                 self.write(row.center(width))
@@ -170,7 +234,8 @@ class MonoUI:
                     message=message,
                     choices=choices,
                     default=default or choices[0],
-                    qmark="›",
+                    qmark=">",
+                    style=self.prompt_style(),
                 ).execute()
             )
         self.write(message)
@@ -194,7 +259,8 @@ class MonoUI:
                     message=message,
                     choices=choices,
                     default=default,
-                    qmark="›",
+                    qmark=">",
+                    style=self.prompt_style(),
                 ).execute()
             )
         self.write(message)
@@ -216,14 +282,28 @@ class MonoUI:
 
     def text(self, message: str, default: str = "") -> str:
         if inquirer and self.interactive():
-            return str(inquirer.text(message=message, default=default, qmark="›").execute())
+            return str(
+                inquirer.text(
+                    message=message,
+                    default=default,
+                    qmark=">",
+                    style=self.prompt_style(),
+                ).execute()
+            )
         suffix = f" [{default}]" if default else ""
         raw = self.safe_input(f"{message}{suffix}: ")
         return raw or default
 
     def confirm(self, message: str, default: bool = True) -> bool:
         if inquirer and self.interactive():
-            return bool(inquirer.confirm(message=message, default=default, qmark="›").execute())
+            return bool(
+                inquirer.confirm(
+                    message=message,
+                    default=default,
+                    qmark=">",
+                    style=self.prompt_style(),
+                ).execute()
+            )
         suffix = "Y/n" if default else "y/N"
         if not self.interactive():
             self.write(f"{message} ({suffix}): {'yes' if default else 'no'}")
@@ -289,17 +369,6 @@ class ProgressReporter:
         if self._progress is not None:
             self._progress.__exit__(exc_type, exc, tb)
         return False
-
-
-def _classic_hero() -> List[str]:
-    return [
-        "     _    _  __ ____  _   _    _    ____      _    ",
-        "    / \\  | |/ // ___|| | | |  / \\  |  _ \\    / \\   ",
-        "   / _ \\ | ' / \\___ \\| |_| | / _ \\ | |_) |  / _ \\  ",
-        "  / ___ \\| . \\  ___) |  _  |/ ___ \\|  _ <  / ___ \\ ",
-        " /_/   \\_\\_|\\_\\|____/|_| |_/_/   \\_\\_| \\_\\/_/   \\_\\",
-        "                    V I S I O N",
-    ]
 
 
 def _inscription_hero(width: int) -> List[str]:

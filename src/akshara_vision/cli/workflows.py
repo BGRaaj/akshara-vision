@@ -3,6 +3,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import shutil
 import subprocess
 import sys
@@ -68,11 +69,19 @@ def show_home(interactive: bool = False) -> None:
         interactive_session()
 
 
+def apply_saved_ui_theme(clear: bool = False) -> None:
+    prefs = ConfigStore().load_ui_preferences()
+    ui.set_theme(prefs["theme"])
+    ui.apply_terminal_theme(clear=clear)
+
+
 def _render_home() -> None:
     store = ConfigStore()
     profile = store.load_default_profile()
     prefs = store.load_ui_preferences()
-    ui.hero(variant=prefs["hero"], guide=prefs["guide"])
+    ui.set_theme(prefs["theme"])
+    ui.apply_terminal_theme()
+    ui.hero(guide=prefs["guide"])
     ui.section("Board")
     ui.board(
         [
@@ -89,7 +98,7 @@ def _render_home() -> None:
             ("Install", "/install", "PDF and image tools"),
             ("Status", "/status", "Current configuration"),
             ("Checks", "/check", "Compile and test"),
-            ("Customize", "/ui", "Prompt and hero design"),
+            ("Customize", "/ui", "Theme and guide"),
         ],
         compact=prefs["density"] == "compact",
     )
@@ -119,6 +128,8 @@ def interactive_session() -> None:
     while True:
         try:
             prefs = store.load_ui_preferences()
+            ui.set_theme(prefs["theme"])
+            ui.apply_terminal_theme()
             raw = ui.text(ui.prompt_label(prefs["prompt"]), "").strip()
             if not raw:
                 raw = _menu_command()
@@ -279,7 +290,7 @@ def _session_help() -> None:
             ["/instructions", "View or edit prompts"],
             ["/guide", "Choose guidance level"],
             ["/mode", "Choose speed versus quality mode"],
-            ["/ui", "Customize hero, density, prompt"],
+            ["/ui", "Customize theme and guidance"],
             ["/doctor", "Check local setup"],
             ["/combine [run-folder]", "Rebuild staged outputs into one document"],
             ["/resume [run-folder]", "Recover completed checkpoints from an interrupted run"],
@@ -295,6 +306,7 @@ def _status_panel() -> None:
     store = ConfigStore()
     profile = store.load_default_profile()
     prefs = store.load_ui_preferences()
+    ui.set_theme(prefs["theme"])
     ui.section("Status")
     ui.table(
         [
@@ -305,10 +317,8 @@ def _status_panel() -> None:
             ["Model", profile.model.model],
             ["Mode", profile.model.execution_mode],
             ["Output folder", profile.output_dir],
-            ["Hero", prefs["hero"]],
+            ["Theme", prefs["theme"]],
             ["Guide", prefs["guide"]],
-            ["Density", prefs["density"]],
-            ["Prompt", prefs["prompt"]],
         ]
     )
 
@@ -316,6 +326,7 @@ def _status_panel() -> None:
 def guide_command() -> None:
     store = ConfigStore()
     current = store.load_ui_preferences()
+    ui.set_theme(current["theme"])
     ui.heading("Akshara Vision", "Guide")
     guide = ui.choose(
         "How much guidance should the CLI show?",
@@ -347,36 +358,19 @@ def mode_command() -> None:
 def ui_command() -> None:
     store = ConfigStore()
     current = store.load_ui_preferences()
+    ui.set_theme(current["theme"])
+    ui.apply_terminal_theme()
     ui.heading("Akshara Vision", "Customize")
-    hero = ui.choose(
-        "Opening hero",
-        ["inscription", "classic", "minimal"],
-        current["hero"],
-    )
-    density = ui.choose(
-        "Layout density",
-        ["comfortable", "compact"],
-        current["density"],
-    )
-    prompt = ui.choose(
-        "Prompt label",
-        ["adaptive", "full", "short"],
-        current["prompt"],
-    )
-    guide = ui.choose(
-        "Guide level",
-        ["balanced", "full", "minimal"],
-        current["guide"],
-    )
+    theme = ui.choose("Theme", ["dark", "light"], current["theme"])
+    ui.set_theme(theme)
+    ui.apply_terminal_theme(clear=True)
     store.save_ui_preferences(
         {
-            "hero": hero,
-            "density": density,
-            "prompt": prompt,
-            "guide": guide,
+            "theme": theme,
         }
     )
-    ui.write("UI preferences saved. Use /home to redraw the board.")
+    ui.status("success", "UI preferences saved.")
+    _render_home()
 
 
 def onboard(
@@ -435,7 +429,21 @@ def choose_model(current: Optional[ModelSettings] = None) -> ModelSettings:
         reporter.finish("Finished analyzing providers.")
     source = ui.choose("Model source", ["local", "cloud"], _provider_source(current.provider))
     if source == "cloud":
-        provider_names = ["openai", "anthropic", "gemini"]
+        provider_names = [
+            "openai",
+            "anthropic",
+            "gemini",
+            "openrouter",
+            "groq",
+            "mistral",
+            "together",
+            "fireworks",
+            "perplexity",
+            "deepseek",
+            "xai",
+            "cerebras",
+            "custom-openai-compatible",
+        ]
         default_provider = current.provider if current.provider in provider_names else "openai"
     else:
         provider_names = ["ollama", "openai-compatible-local", "lm-studio", "jan", "llama-cpp"]
@@ -458,16 +466,33 @@ def choose_model(current: Optional[ModelSettings] = None) -> ModelSettings:
     provider_name = selected_label.split(" ", 1)[0]
     status = statuses.get(provider_name)
     model_choices = status.models if status and status.models else _recommended_models(provider_name)
-    if not model_choices:
-        model_choices = ["offline-restoration-preview"]
-    model = ui.choose(
-        "Model",
-        model_choices,
-        current.model if current.model in model_choices else model_choices[0],
-    )
+    manual_choice = "Enter exact model name manually"
+    if model_choices:
+        model_choices = list(dict.fromkeys(model_choices + [manual_choice]))
+        model = ui.choose(
+            "Model",
+            model_choices,
+            current.model if current.model in model_choices else model_choices[0],
+        )
+    else:
+        model = manual_choice
+    if model == manual_choice:
+        hint = _model_name_hint(provider_name)
+        ui.write(hint)
+        default_model = "" if current.model == "offline-restoration-preview" else current.model
+        model = ui.text("Exact model id accepted by this provider", default_model)
+        if not model:
+            model = current.model or "offline-restoration-preview"
     endpoint = current.endpoint or ""
-    if provider_name in {"openai-compatible-local", "lm-studio", "jan", "llama-cpp"}:
-        endpoint = ui.text("Local endpoint", endpoint or _default_endpoint(provider_name))
+    if provider_name in {
+        "openai-compatible-local",
+        "lm-studio",
+        "jan",
+        "llama-cpp",
+        "custom-openai-compatible",
+    }:
+        endpoint_label = "Local endpoint" if source == "local" else "Cloud endpoint"
+        endpoint = ui.text(endpoint_label, endpoint or _default_endpoint(provider_name))
 
     context_window = current.context_window
     generation_limit = current.generation_limit
@@ -576,7 +601,9 @@ def execute_run(
     if not input_values:
         entered = ui.text("Path(s) to input files, folders, globs, or manifests")
         input_values = [item.strip() for item in entered.split(",") if item.strip()]
-    selection = discover_inputs(input_values, recursive=recursive)
+    with ui.progress("Scanning input paths...") as reporter:
+        selection = discover_inputs(input_values, recursive=recursive)
+        reporter.finish(f"Found {selection.supported_count} supported input(s)")
     if ui.interactive():
         ui.section("Destination")
         profile.output_dir = choose_output_folder(profile.output_dir)
@@ -590,7 +617,16 @@ def execute_run(
     if not ui.confirm("Start this run?", True):
         ui.status("info", "Run cancelled.")
         return None
+    previous_handler = signal.getsignal(signal.SIGINT)
+
+    def _interrupt_handler(signum, frame):
+        del signum, frame
+        ui.status("warning", "Safe interruption requested. Preserving completed outputs...")
+        ui.status("info", "If a model request is active, Akshara will stop as soon as Python regains control.")
+        raise KeyboardInterrupt
+
     try:
+        signal.signal(signal.SIGINT, _interrupt_handler)
         pid = os.getpid()
         if sys.platform == "win32":
             ui.status("info", f"Press Ctrl+C to interrupt safely and preserve progress. (PID: {pid})")
@@ -613,6 +649,8 @@ def execute_run(
         ui.status("error", f"{exc}")
         ui.write("\nRun stopped. No outputs were written or modified.")
         return None
+    finally:
+        signal.signal(signal.SIGINT, previous_handler)
     _finished_screen(result)
     return result
 
@@ -637,6 +675,7 @@ def review_run(profile: WorkflowProfile, selection) -> None:
         ["Provider", profile.model.provider],
         ["Model", profile.model.model],
         ["Mode", profile.model.execution_mode],
+        ["Mode behavior", _mode_behavior(profile.model.execution_mode)],
         ["Generation limit", str(profile.model.generation_limit or "auto")],
         ["Outputs", ", ".join(profile.output_formats)],
         ["Destination", profile.output_dir],
@@ -659,6 +698,14 @@ def _run_with_progress(request: RunRequest):
             reporter.update(message, advance=advance)
 
         return run_pipeline(request, progress=progress)
+
+
+def _mode_behavior(mode: str) -> str:
+    return {
+        "fast": "lower PDF DPI, shorter prompt",
+        "balanced": "standard PDF DPI, careful prompt",
+        "quality": "higher PDF DPI, deeper extraction prompt",
+    }.get(mode, "standard settings")
 
 
 def _finished_screen(result) -> None:
@@ -1043,9 +1090,21 @@ def _duplicate_profile(store: ConfigStore, name: str) -> None:
 
 
 def _provider_source(provider_name: str) -> str:
-    if provider_name in {"openai", "anthropic", "gemini"}:
+    if provider_name not in {"ollama", "openai-compatible-local", "lm-studio", "jan", "llama-cpp", "mock"}:
         return "cloud"
     return "local"
+
+
+def _model_name_hint(provider_name: str) -> str:
+    hints = {
+        "openrouter": "Use the exact OpenRouter model slug, for example provider/model-name.",
+        "custom-openai-compatible": "Use the exact model id accepted by the endpoint's /chat/completions API.",
+        "ollama": "Use the exact `ollama list` name, for example gemma4:12b-it-q4_K_M.",
+    }
+    return hints.get(
+        provider_name,
+        "Use the exact model id shown in the provider dashboard or returned by its /models endpoint.",
+    )
 
 
 def _validate_output_dir(value: str) -> Optional[Path]:
@@ -1102,6 +1161,17 @@ def env_command() -> None:
             ["Ollama", "detected through ollama list"],
         ]
     )
+    ui.section("Cloud Models")
+    ui.table(
+        [
+            ["Provider", "Setup"],
+            ["OpenAI / Anthropic / Gemini", "native provider key"],
+            ["OpenRouter / Groq / Mistral", "OpenAI-compatible model listing when available"],
+            ["Together / Fireworks / Perplexity", "OpenAI-compatible model listing when available"],
+            ["DeepSeek / xAI / Cerebras", "OpenAI-compatible model listing when available"],
+            ["Custom", "AKSHARA_CUSTOM_API_KEY + AKSHARA_CUSTOM_OPENAI_COMPATIBLE_BASE_URL"],
+        ]
+    )
     ui.section("Setup")
     ui.write("Copy .env.example to .env, fill values, then run `akv doctor`.")
     ui.write("For local-only use, API keys can stay empty.")
@@ -1151,7 +1221,9 @@ def combine_command(run_dir: Optional[str] = None) -> None:
         ui.write("No folder selected.")
         return
     try:
-        result = combine_stage_outputs(Path(target).expanduser())
+        with ui.progress("Combining staged outputs...") as reporter:
+            result = combine_stage_outputs(Path(target).expanduser())
+            reporter.finish("Combined staged outputs")
     except Exception as exc:
         ui.write(f"ERROR: {exc}")
         return
@@ -1287,11 +1359,14 @@ def export_command(run_dir: str, formats: Optional[List[str]] = None) -> None:
         return
     selected = formats or choose_output_formats(["txt"])
     registry = exporter_registry()
-    for output_format in selected:
-        exporter = registry.get(output_format)
-        if exporter:
-            result = exporter.export(source_text, destination, metadata)
-            ui.write(f"{result.format}: {result.path}")
+    with ui.progress("Exporting formats...", total=len(selected)) as reporter:
+        for output_format in selected:
+            exporter = registry.get(output_format)
+            if exporter:
+                reporter.update(f"Writing {output_format}", advance=0)
+                result = exporter.export(source_text, destination, metadata)
+                reporter.update(f"Wrote {output_format}", advance=1)
+                ui.write(f"{result.format}: {result.path}")
 
 
 def _export_source(path: Path) -> tuple[Optional[str], Path, dict]:
@@ -1425,12 +1500,7 @@ def _recommended_models(provider_name: str) -> List[str]:
         return ["claude-sonnet-5", "claude-fable-5"]
     if provider_name == "openai":
         return ["gpt-5.5", "gpt-5.4"]
-    return ["offline-restoration-preview"]
-
-
-def _with_custom_model_choice(models: List[str]) -> List[str]:
-    cleaned = [model for model in models if model and model != "Custom model id..."]
-    return cleaned + ["Custom model id..."]
+    return []
 
 
 def _default_endpoint(provider_name: str) -> str:
@@ -1439,6 +1509,7 @@ def _default_endpoint(provider_name: str) -> str:
         "lm-studio": "http://localhost:1234/v1",
         "jan": "http://localhost:1337/v1",
         "llama-cpp": "http://localhost:8080/v1",
+        "custom-openai-compatible": "https://api.example.com/v1",
     }.get(provider_name, "http://localhost:1234/v1")
 
 

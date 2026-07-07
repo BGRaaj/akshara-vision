@@ -11,6 +11,16 @@ Supported provider families:
 - OpenAI
 - Anthropic
 - Gemini
+- OpenRouter
+- Groq
+- Mistral
+- Together
+- Fireworks
+- Perplexity
+- DeepSeek
+- xAI
+- Cerebras
+- Custom OpenAI-compatible cloud endpoints
 - Mock provider for tests and demos
 
 Run:
@@ -53,7 +63,21 @@ Cloud providers are optional. Use:
 export OPENAI_API_KEY=...
 export ANTHROPIC_API_KEY=...
 export GEMINI_API_KEY=...
+export OPENROUTER_API_KEY=...
+export GROQ_API_KEY=...
+export MISTRAL_API_KEY=...
 ```
+
+For custom OpenAI-compatible clouds:
+
+```bash
+export AKSHARA_CUSTOM_API_KEY=...
+export AKSHARA_CUSTOM_OPENAI_COMPATIBLE_BASE_URL=https://api.example.com/v1
+```
+
+When a provider exposes a `/models` endpoint, Akshara Vision lists available
+models in the picker. Otherwise, choose manual entry and paste the exact model
+id from the provider dashboard or documentation.
 
 Then run:
 
@@ -89,6 +113,7 @@ Use a model that explicitly supports image or PDF inputs for scanned pages.
 | **Gemini** | `gemini-3.5-flash`, `gemini-3.5-pro`, `gemini-3.1-flash-lite` | Cloud multimodal document workflows |
 | **OpenAI** | `gpt-5.5`, `gpt-5.4` | Cloud vision workflows |
 | **Anthropic** | `claude-sonnet-5`, `claude-fable-5` | Cloud vision and reasoning workflows |
+| **OpenAI-compatible clouds** | Listed from `/models` or entered manually | OpenRouter, Groq, Mistral, Together, Fireworks, Perplexity, DeepSeek, xAI, Cerebras, or custom endpoints |
 
 Akshara Vision detects local models where a runtime exposes them and also offers
 a custom model-id entry so profiles can track the model names used by your local
