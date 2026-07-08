@@ -343,6 +343,7 @@ class ProgressReporter:
         self._progress = None
         self._task = None
         self._started_at = 0.0
+        self._task_progress = 0
 
     def __enter__(self):
         self._started_at = time.monotonic()
@@ -371,6 +372,7 @@ class ProgressReporter:
         else:
             elapsed = max(time.monotonic() - self._started_at, 0.0)
             if self.total > 0:
+                self._task_progress = min(self._task_progress + max(advance, 0), self.total)
                 self.ui.write(f"[{elapsed:0.1f}s] {message} (+{advance})")
             else:
                 self.ui.write(f"[{elapsed:0.1f}s] {message}")

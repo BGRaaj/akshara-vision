@@ -301,6 +301,44 @@ class CoreTests(unittest.TestCase):
             self.assertIn("The Second Case", md_text)
             self.assertIn("Body text", md_text)
 
+    def test_publication_exporters_render_assets_from_metadata_without_markers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            destination = root / "akshara_output"
+            asset_path = root / "figure.png"
+            try:
+                from PIL import Image
+
+                Image.new("RGB", (240, 160), "white").save(asset_path)
+            except ModuleNotFoundError:
+                asset_path.write_bytes(b"image")
+            metadata = {
+                "title": "Illustrated Book",
+                "run_dir": str(root),
+                "assets": [
+                    {
+                        "kind": "figure-crop",
+                        "path": "figure.png",
+                        "label": "plate one",
+                        "width": 240,
+                        "height": 160,
+                        "placement": {"recommended_width": "wide"},
+                        "layout": {"size_class": "large", "page_zone": "middle-center"},
+                    }
+                ],
+            }
+            html_result = exporter_registry()["html"].export("Body text", destination, metadata)
+            html_text = html_result.path.read_text(encoding="utf-8")
+            self.assertIn("<img", html_text)
+            self.assertIn("figure.png", html_text)
+            epub_result = exporter_registry()["epub"].export("Body text", destination, metadata)
+            with zipfile.ZipFile(epub_result.path) as archive:
+                content = archive.read("OEBPS/content.xhtml").decode("utf-8")
+                self.assertIn("<img", content)
+                self.assertIn("figure.png", content)
+            pdf_result = exporter_registry()["image-pdf"].export("Body text", destination, metadata)
+            self.assertTrue(pdf_result.path.read_bytes().startswith(b"%PDF-"))
+
     def test_mock_pipeline_exports_text_manifest_and_markdown(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

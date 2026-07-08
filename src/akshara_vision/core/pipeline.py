@@ -1002,13 +1002,14 @@ def _asset_markers(assets: object) -> str:
         path = str(asset.get("path") or "").strip()
         if not path:
             continue
-        label = str(asset.get("label") or asset.get("kind") or "figure").strip()
-        placement = _asset_marker_placement(asset)
-        size = _asset_size_label(asset)
-        detail = ", ".join(part for part in [placement, size] if part)
-        suffix = f" ({detail})" if detail else ""
-        markers.append(f"[image: {label}{suffix} | {path}]")
+        label = _asset_display_label(asset)
+        markers.append(f"[image: {label} | {path}]")
     return "\n".join(markers)
+
+
+def _asset_display_label(asset: Dict[str, object]) -> str:
+    label = str(asset.get("label") or asset.get("kind") or "figure").strip()
+    return label or "figure"
 
 
 def _asset_marker_placement(asset: Dict[str, object]) -> str:
@@ -2219,6 +2220,8 @@ def _contents_entries(lines: List[str]) -> List[Dict[str, str]]:
             continue
         if cleaned.lower().startswith(("contents", "table of contents")):
             continue
+        if _looks_like_body_line(cleaned):
+            continue
         page_text = r"(?P<page>[ivxlcdm\d]+)"
         title_text = r"(?P<title>.+?)"
         match = re.match(
@@ -2241,6 +2244,19 @@ def _contents_entries(lines: List[str]) -> List[Dict[str, str]]:
         if title and page:
             entries.append({"title": title, "page": page, "raw": line.strip()})
     return entries[:80]
+
+
+def _looks_like_body_line(text: str) -> bool:
+    words = re.findall(r"[A-Za-z]+", text)
+    if len(words) < 4:
+        return False
+    if len(text) > 95 and not re.search(r"\.{2,}|\s{2,}|[|:]-?\s*", text):
+        return True
+    if re.search(r"[.!?]\s+[A-Z]", text):
+        return True
+    if re.search(r"\b(and|or|but|the|this|that|with|from|into|upon|which)\b", text, re.I) and len(words) >= 8:
+        return True
+    return False
 
 
 def _footnotes(lines: List[str]) -> List[Dict[str, str]]:
@@ -2532,7 +2548,12 @@ def _detected_title(document_structure: Dict[str, object]) -> str:
         return ""
     for candidate in candidates:
         text = str(candidate).strip()
+        lowered = text.lower()
         if 3 <= len(text) <= 120 and not re.fullmatch(r"(?:page\s*)?[ivxlcdm\d]+", text, re.I):
+            if "akshara" in lowered or "default" in lowered:
+                continue
+            if re.search(r"\b(run|output|restoration|export|workflow)\b", lowered) and len(text) < 40:
+                continue
             return text
     return ""
 

@@ -23,7 +23,7 @@ class PdfExporter:
 
     def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
         path = destination.with_suffix(self.suffix)
-        if self.kind == "image" or _needs_image_pdf(text):
+        if self.kind == "image":
             _build_image_pdf(path, self.heading, text, metadata)
         else:
             pdf_bytes = _build_pdf_document(self.heading, text, metadata)
@@ -58,13 +58,19 @@ def _build_image_pdf(path: Path, heading: str, text: str, metadata: Dict[str, ob
 
 def _pdf_book_lines(text: str, metadata: Dict[str, object]) -> List[str]:
     title = str(metadata.get("title") or "Untitled").strip() or "Untitled"
+    text = _text_with_missing_asset_markers(text, metadata)
     lines: List[str] = [
-        title,
+        *_wrap_heading(title),
         "",
     ]
     for credit in _publication_credits(metadata):
-        lines.append(credit)
+        lines.extend(_wrap_heading(credit, width=58))
     if len(lines) > 2:
+        lines.append("")
+    contents_lines = _contents_lines(metadata)
+    if contents_lines:
+        for idx, entry in enumerate(contents_lines):
+            lines.extend(_wrap_heading(entry, width=58 if idx == 0 else 62))
         lines.append("")
     lines.append("")
     for paragraph in _paragraphs(text):
@@ -165,16 +171,18 @@ def _page_content_stream(page_lines: List[str], page_number: int, page_count: in
 def _pdf_line_style(line: str, line_index: int, page_number: int, page_count: int) -> tuple[str, int, int]:
     stripped = line.strip()
     if page_number == 1 and line_index == 0:
-        return "F2", 20, 28
+        return "F2", 18, 24
+    if stripped.lower() == "contents":
+        return "F2", 16, 22
     if page_number == 1 and line_index <= 4 and stripped:
-        return "F3", 12, 18
+        return "F3", 11, 16
     if page_number == 1 and line_index <= 2:
-        return "F2", 18, 28
+        return "F2", 16, 24
     if stripped.startswith("- "):
         return "F1", 11, 15
     if ":" in stripped and line_index < 20:
         return "F1", 11, 14
-    return "F1", 12, 16
+    return "F1", 11, 15
 
 
 def _pdf_stream_obj(stream: bytes) -> bytes:
@@ -206,6 +214,10 @@ def _wrap_paragraph(paragraph: str, width: int = 76) -> List[str]:
     return lines
 
 
+def _wrap_heading(text: str, width: int = 56) -> List[str]:
+    return _wrap_paragraph(str(text).strip(), width=width)
+
+
 def _wrap_for_draw(text: str, font: ImageFont.ImageFont, max_width: int) -> List[str]:
     words = str(text).split()
     if not words:
@@ -231,12 +243,6 @@ def _draw_text_width(text: str, font: ImageFont.ImageFont) -> int:
             return font.getbbox(text)[2]
         except Exception:
             return len(text) * 12
-
-
-def _needs_image_pdf(text: str) -> bool:
-    # The dependency-free text PDF uses built-in Type1 fonts. Raster rendering is safer for
-    # Indic and other non-Latin scripts because otherwise PDF readers may show odd glyphs.
-    return any(ord(char) > 255 for char in text)
 
 
 def _escape_pdf_text(text: str) -> str:
@@ -276,7 +282,7 @@ def _render_image_page(
     x_margin = 92
     y = 96
     current_font = title_font
-    for line in page_lines:
+    for line_index, line in enumerate(page_lines):
         if line == "":
             y += line_height // 2
             current_font = font
@@ -288,14 +294,18 @@ def _render_image_page(
             )
             current_font = font
             continue
-        if y == 96:
-            draw.text((x_margin, y), line, fill=text_color, font=title_font)
-            y += 72
+        if y == 96 and line_index == 0:
+            wrapped_title = _wrap_for_draw(line, title_font, page_width - x_margin * 2)
+            for title_line in wrapped_title:
+                draw.text((x_margin, y), title_line, fill=text_color, font=title_font)
+                y += 44
+            y += 12
+            current_font = font
             continue
         wrapped = _wrap_for_draw(line, current_font, page_width - x_margin * 2)
         for wrapped_line in wrapped:
             draw.text((x_margin, y), wrapped_line, fill=text_color, font=current_font)
-            y += line_height
+            y += 30
         current_font = font
         if y > page_height - 110:
             break
@@ -418,6 +428,80 @@ def _publication_credits(metadata: Dict[str, object]) -> List[str]:
         if len(result) >= 6:
             break
     return result
+
+
+def _contents_lines(metadata: Dict[str, object]) -> List[str]:
+    structure = metadata.get("document_structure")
+    if not isinstance(structure, dict):
+        return []
+    contents = structure.get("contents_entries")
+    if not isinstance(contents, list) or not contents:
+        return []
+    lines = ["Contents"]
+    for entry in contents:
+        if not isinstance(entry, dict):
+            continue
+        title = str(entry.get("title") or "").strip()
+        page = str(entry.get("page") or "").strip()
+        if not title or not page:
+            continue
+        lines.append(f"{title} ..... {page}")
+    return lines if len(lines) > 1 else []
+
+
+def _text_with_missing_asset_markers(text: str, metadata: Dict[str, object]) -> str:
+    existing = _rendered_asset_paths(text)
+    markers = []
+    for asset in _metadata_assets(metadata):
+        path = str(asset.get("path") or "").strip()
+        if not path or path in existing:
+            continue
+        label = _asset_display_label(asset)
+        markers.append(f"[image: {label} | {path}]")
+    if not markers:
+        return text
+    return (text.rstrip() + "\n\n" + "\n".join(markers)).strip()
+
+
+def _rendered_asset_paths(text: str) -> set[str]:
+    rendered = set()
+    for paragraph in _paragraphs(text):
+        marker = _parse_image_marker(paragraph)
+        if marker:
+            rendered.add(marker[1].replace("\\", "/"))
+    return rendered
+
+
+def _metadata_assets(metadata: Dict[str, object]) -> List[Dict[str, object]]:
+    assets = metadata.get("assets")
+    return [asset for asset in assets if isinstance(asset, dict)] if isinstance(assets, list) else []
+
+
+def _asset_marker_placement(asset: Dict[str, object]) -> str:
+    layout = asset.get("layout")
+    if isinstance(layout, dict):
+        zone = str(layout.get("page_zone") or "").strip()
+        size_class = str(layout.get("size_class") or "").strip()
+        values = [item for item in [zone if zone != "unknown" else "", size_class] if item]
+        if values:
+            return ", ".join(values)
+    placement = asset.get("placement")
+    if isinstance(placement, dict):
+        return str(placement.get("recommended_width") or "").strip()
+    return str(placement or "").strip()
+
+
+def _asset_size_label(asset: Dict[str, object]) -> str:
+    width = asset.get("width")
+    height = asset.get("height")
+    if width and height:
+        return f"{width}x{height}"
+    return ""
+
+
+def _asset_display_label(asset: Dict[str, object]) -> str:
+    label = str(asset.get("label") or asset.get("kind") or "Figure").strip()
+    return label or "Figure"
 
 
 def _reading_font(size: int) -> ImageFont.ImageFont:

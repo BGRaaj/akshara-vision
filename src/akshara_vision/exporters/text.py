@@ -172,7 +172,7 @@ def _paragraphs(text: str) -> list[str]:
 
 def _markdown_body(text: str, metadata: Optional[Dict[str, object]] = None) -> str:
     structured = _markdown_structured_body(metadata)
-    plain = _markdown_plain_body(text, _export_base_dir(metadata))
+    plain = _markdown_plain_body(_text_with_missing_asset_markers(text, metadata), _export_base_dir(metadata))
     if structured:
         return (structured + "\n\n" + plain).strip() + "\n"
     return plain
@@ -239,7 +239,7 @@ def _markdown_plain_body(text: str, base_dir: Optional[Path] = None) -> str:
 
 def _html_body(text: str, metadata: Optional[Dict[str, object]] = None) -> str:
     structured = _html_structured_body(metadata)
-    plain = _html_plain_body(text, metadata)
+    plain = _html_plain_body(_text_with_missing_asset_markers(text, metadata), metadata)
     if structured:
         return structured + "\n" + plain
     return plain
@@ -453,6 +453,7 @@ def _docx_document_xml(
     media_by_path = {
         str(entry["original"]): entry for entry in media_entries or []
     }
+    text = _text_with_missing_asset_markers(text, metadata)
     paragraphs = [
         "<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr>"
         "<w:r><w:rPr><w:b/><w:sz w:val=\"34\"/></w:rPr>"
@@ -688,6 +689,66 @@ def _asset_render_path(path: str, metadata: Optional[Dict[str, object]]) -> str:
         if isinstance(path_map, dict) and path in path_map:
             return str(path_map[path])
     return path
+
+
+def _text_with_missing_asset_markers(text: str, metadata: Optional[Dict[str, object]]) -> str:
+    if not metadata:
+        return text
+    existing = _rendered_asset_paths(text)
+    markers = []
+    for asset in _metadata_assets(metadata):
+        path = str(asset.get("path") or "").strip()
+        if not path or path in existing:
+            continue
+        label = _asset_display_label(asset)
+        markers.append(f"[image: {label} | {path}]")
+    if not markers:
+        return text
+    suffix = "\n\n".join(markers)
+    return (text.rstrip() + "\n\n" + suffix).strip()
+
+
+def _rendered_asset_paths(text: str) -> set[str]:
+    rendered = set()
+    for paragraph in _paragraphs(text):
+        marker = _parse_image_marker(paragraph)
+        if marker:
+            rendered.add(marker[1].replace("\\", "/"))
+    return rendered
+
+
+def _metadata_assets(metadata: Optional[Dict[str, object]]) -> list[Dict[str, object]]:
+    if not metadata:
+        return []
+    assets = metadata.get("assets")
+    return [asset for asset in assets if isinstance(asset, dict)] if isinstance(assets, list) else []
+
+
+def _asset_marker_placement(asset: Dict[str, object]) -> str:
+    layout = asset.get("layout")
+    if isinstance(layout, dict):
+        zone = str(layout.get("page_zone") or "").strip()
+        size_class = str(layout.get("size_class") or "").strip()
+        values = [item for item in [zone if zone != "unknown" else "", size_class] if item]
+        if values:
+            return ", ".join(values)
+    placement = asset.get("placement")
+    if isinstance(placement, dict):
+        return str(placement.get("recommended_width") or "").strip()
+    return str(placement or "").strip()
+
+
+def _asset_size_label(asset: Dict[str, object]) -> str:
+    width = asset.get("width")
+    height = asset.get("height")
+    if width and height:
+        return f"{width}x{height}"
+    return ""
+
+
+def _asset_display_label(asset: Dict[str, object]) -> str:
+    label = str(asset.get("label") or asset.get("kind") or "Figure").strip()
+    return label or "Figure"
 
 
 def _asset_figure_classes(asset: Optional[Dict[str, object]]) -> list[str]:

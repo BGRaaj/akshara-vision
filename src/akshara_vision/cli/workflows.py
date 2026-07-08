@@ -27,7 +27,12 @@ from akshara_vision.core.models import (
     WorkflowProfile,
     effective_translation_mode,
 )
-from akshara_vision.core.pipeline import combine_stage_outputs, find_executable, run_pipeline
+from akshara_vision.core.pipeline import (
+    combine_stage_outputs,
+    estimate_progress_units,
+    find_executable,
+    run_pipeline,
+)
 from akshara_vision.instructions import (
     DEFAULT_PRESET,
     install_editable_instruction,
@@ -919,7 +924,7 @@ def review_run(profile: WorkflowProfile, selection) -> None:
 
 def _run_with_progress(request: RunRequest):
     ui.section("Working")
-    with ui.progress("Processing") as reporter:
+    with ui.progress("Processing", total=estimate_progress_units(request)) as reporter:
 
         def progress(event: str, message: str, advance: int = 1) -> None:
             reporter.update(message, advance=advance)
