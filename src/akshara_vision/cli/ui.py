@@ -18,7 +18,7 @@ except ModuleNotFoundError:  # pragma: no cover - dependency fallback
     Console = None
 
 try:
-    from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn, BarColumn, MofNCompleteColumn  # type: ignore
+    from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn, BarColumn  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover - dependency fallback
     Progress = None
 
@@ -350,7 +350,7 @@ class ProgressReporter:
         if Progress and self.ui.console:
             columns = [SpinnerColumn(), TextColumn("{task.description}")]
             if self.total > 0:
-                columns.extend([BarColumn(), MofNCompleteColumn()])
+                columns.append(BarColumn())
             columns.append(TimeElapsedColumn())
             self._progress = Progress(
                 *columns,
