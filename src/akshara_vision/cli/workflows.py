@@ -2494,14 +2494,30 @@ def export_command(run_dir: Optional[str] = None, formats: Optional[List[str]] =
     export_metadata = dict(metadata)
     export_metadata.pop("_default_output_formats", None)
     registry = exporter_registry()
+    skipped: List[str] = []
     with ui.progress("Exporting formats...", total=len(selected)) as reporter:
         for output_format in selected:
             exporter = registry.get(output_format)
-            if exporter:
-                reporter.update(f"Writing {output_format}", advance=0)
+            if not exporter:
+                skipped.append(f"{output_format}: unsupported format")
+                reporter.update(f"Skipped {output_format}", advance=1)
+                ui.write(f"SKIPPED {output_format}: unsupported format")
+                continue
+            reporter.update(f"Writing {output_format}", advance=0)
+            try:
                 result = exporter.export(source_text, destination, export_metadata)
-                reporter.update(f"Wrote {output_format}", advance=1)
-                ui.write(f"{result.format}: {result.path}")
+            except Exception as exc:
+                reason = str(exc).strip() or "export failed"
+                skipped.append(f"{output_format}: {reason}")
+                reporter.update(f"Skipped {output_format}", advance=1)
+                ui.write(f"SKIPPED {output_format}: {reason}")
+                continue
+            reporter.update(f"Wrote {output_format}", advance=1)
+            ui.write(f"{result.format}: {result.path}")
+    if skipped:
+        ui.section("Skipped")
+        for item in skipped:
+            ui.write(item)
     _next_recommendations([["Combine run", f"akv combine {path}"], ["Run doctor", "akv doctor"]])
 
 

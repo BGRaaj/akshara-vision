@@ -22,11 +22,9 @@ class MarkdownExporter:
     name = "md"
 
     def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
-        title = _metadata_title(metadata)
         path = destination.with_suffix(".md")
         body = _markdown_body(text, metadata)
-        credits = _markdown_credits(metadata)
-        path.write_text(f"# {title}\n\n{credits}{body}", encoding="utf-8")
+        path.write_text(body, encoding="utf-8")
         return ExportResult(self.name, path)
 
 
@@ -37,7 +35,6 @@ class HtmlExporter:
         title = html.escape(_metadata_title(metadata))
         body = _html_body(text, metadata)
         document_class = _document_class(metadata)
-        credits = _html_credits(metadata)
         path = destination.with_suffix(".html")
         path.write_text(
             "<!doctype html>\n"
@@ -47,37 +44,48 @@ class HtmlExporter:
             '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
             f"<title>{title}</title>\n"
             "<style>\n"
-            "body{margin:0;background:#f8f5ed;color:#24170f;font-family:Georgia,'Times New Roman',serif;line-height:1.65;}\n"
-            "main{max-width:780px;margin:0 auto;padding:56px 28px 72px;}\n"
+            "body{margin:0;background:#f4efe4;color:#24170f;font-family:Georgia,'Iowan Old Style','Palatino Linotype','Times New Roman',serif;line-height:1.7;text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased;}\n"
+            "main{max-width:8.27in;margin:0 auto;padding:0;}\n"
+            ".document-page{min-height:11.69in;box-sizing:border-box;padding:0.88in 0.88in 0.92in;position:relative;break-after:page;page-break-after:always;background:#fffdf8;}\n"
+            ".document-page:last-child{break-after:auto;page-break-after:auto;}\n"
+            ".page-content{min-height:9.62in;}\n"
+            ".page-footer{position:absolute;right:0.88in;bottom:0.47in;font-size:.82rem;letter-spacing:.045em;color:#726356;text-transform:uppercase;}\n"
+            ".blank-page .page-content{min-height:10.02in;}\n"
             ".document-magazine,.document-newspaper{max-width:920px;}\n"
             ".document-manuscript{font-family:'Times New Roman',Georgia,serif;line-height:1.85;}\n"
             ".document-legal-document,.document-finance-document,.document-healthcare-document,.document-insurance-document{max-width:860px;}\n"
             ".layout-multi-column .multi-column{column-gap:2.2rem;column-rule:1px solid #d8cdbc;}\n"
             ".layout-structured-list .contents table,.layout-structured-list .notes ol{max-width:32rem;margin-left:auto;margin-right:auto;}\n"
-            ".layout-front-matter h1{margin-bottom:3rem;}\n"
-            "h1{text-align:center;font-size:2.45rem;line-height:1.15;margin:0 0 2.5rem;}\n"
-            ".credits{text-align:center;margin:-1.5rem 0 2.75rem;font-style:italic;}\n"
-            ".credits p{font-size:1rem;margin:.25rem 0;}\n"
-            "h2{font-size:1.35rem;line-height:1.25;margin:2rem 0 1rem;}\n"
-            ".semantic-title h2,.semantic-title-page h2,.semantic-cover h2,.semantic-cover-sheet h2{font-size:1.9rem;text-align:center;margin:0 0 1.8rem;}\n"
-            ".semantic-preface h2,.semantic-foreword h2,.semantic-introduction h2,.semantic-editorial h2,.semantic-abstract h2{font-size:1.2rem;letter-spacing:.02em;text-transform:uppercase;}\n"
-            ".semantic-chapter h2,.semantic-section h2,.semantic-article h2,.semantic-feature h2,.semantic-record h2,.semantic-letter h2{font-size:1.4rem;}\n"
-            ".semantic-index h2,.semantic-appendix h2,.semantic-references h2,.semantic-bibliography h2,.semantic-footnotes h2{font-size:1.1rem;}\n"
-            "p{font-size:1.08rem;margin:0 0 1.05rem;}\n"
-            ".page-marker{text-align:center;font-variant-numeric:oldstyle-nums;margin:2rem 0 1rem;}\n"
+            "h1{text-align:center;font-size:2.55rem;line-height:1.1;margin:0 0 1.2rem;letter-spacing:.01em;font-weight:700;}\n"
+            "h2{font-size:1.28rem;line-height:1.28;margin:1.85rem 0 .95rem;}\n"
+            ".semantic-title h2,.semantic-title-page h2,.semantic-cover h2,.semantic-cover-sheet h2{font-size:1.95rem;text-align:center;margin:0 0 1.55rem;letter-spacing:.01em;}\n"
+            ".semantic-preface h2,.semantic-foreword h2,.semantic-introduction h2,.semantic-editorial h2,.semantic-abstract h2{font-size:1.16rem;letter-spacing:.04em;text-transform:uppercase;}\n"
+            ".semantic-chapter h2,.semantic-section h2,.semantic-article h2,.semantic-feature h2,.semantic-record h2,.semantic-letter h2{font-size:1.38rem;}\n"
+            ".semantic-index h2,.semantic-appendix h2,.semantic-references h2,.semantic-bibliography h2,.semantic-footnotes h2{font-size:1.08rem;letter-spacing:.02em;}\n"
+            "p{font-size:1.05rem;margin:0 0 1rem;orphans:3;widows:3;}\n"
+            "ul,ol{margin:0 0 1rem 1.3rem;padding:0;}\n"
+            "li{margin:0 0 .45rem;}\n"
+            "blockquote{margin:1.1rem 0;padding:0 0 0 .95rem;border-left:2px solid #d8cdbc;color:#3f3026;font-style:italic;}\n"
+            "table{font-size:1rem;line-height:1.5;}\n"
+            ".page-marker{text-align:center;font-variant-numeric:oldstyle-nums;margin:1.65rem 0 .95rem;color:#705c4d;}\n"
             ".page-break{break-after:page;page-break-after:always;height:0;margin:0;padding:0;border:0;}\n"
-            ".figure-marker{break-inside:avoid;padding:0;text-align:center;font-style:normal;margin:1.5rem auto;}\n"
+            ".figure-marker{break-inside:avoid;padding:0;text-align:center;font-style:normal;margin:1.45rem auto;}\n"
             ".figure-marker img{max-width:100%;height:auto;display:block;margin:0 auto;}\n"
-            ".figure-full-width{width:100%;}.figure-large{width:82%;}.figure-medium{width:64%;}.figure-small{width:46%;}.figure-wide{width:100%;}.figure-tall{width:56%;}\n"
+            ".figure-full-width{width:100%;}.figure-large{width:80%;}.figure-medium{width:62%;}.figure-small{width:44%;}.figure-wide{width:100%;}.figure-tall{width:54%;}\n"
             ".zone-top-left,.zone-middle-left,.zone-bottom-left{margin-left:0;}.zone-top-right,.zone-middle-right,.zone-bottom-right{margin-right:0;}\n"
-            ".contents table{width:100%;border-collapse:collapse;margin:1rem 0 2rem;}\n"
-            ".contents td{border-bottom:1px solid #d8cdbc;padding:.35rem 0;}\n"
-            ".contents td:last-child{text-align:right;white-space:nowrap;padding-left:1.5rem;}\n"
-            ".multi-column{column-gap:2rem;}\n"
-            "@media print{body{background:white;color:black}main{max-width:none;padding:0.75in}h1{page-break-after:avoid}}\n"
+            ".contents table{width:100%;border-collapse:collapse;margin:1rem 0 1.85rem;}\n"
+            ".contents td{border-bottom:1px solid #d8cdbc;padding:.42rem 0;vertical-align:top;}\n"
+            ".contents td:first-child{padding-right:1rem;}\n"
+            ".contents td:last-child{text-align:right;white-space:nowrap;padding-left:1.4rem;color:#6c5a4f;}\n"
+            ".multi-column{column-gap:2.15rem;column-fill:auto;}\n"
+            ".document-page h1:first-child{margin-top:0;}\n"
+            ".document-page > .page-content > :first-child{margin-top:0;}\n"
+            ".document-page > .page-content > :last-child{margin-bottom:0;}\n"
+            "@page{size:A4;margin:0;}\n"
+            "@media print{body{background:white;color:black}main{max-width:none}.document-page{background:white}h1{page-break-after:avoid}}\n"
             "</style>\n"
             "</head>\n"
-            f'<body><main class="{_document_classes(metadata)}" data-document-type="{html.escape(_document_type_slug(metadata), quote=True)}"><h1>{title}</h1>\n{credits}{body}\n</main></body>\n</html>\n',
+            f'<body><main class="{_document_classes(metadata)}" data-document-type="{html.escape(_document_type_slug(metadata), quote=True)}" data-document-title="{title}">\n{body}\n</main></body>\n</html>\n',
             encoding="utf-8",
         )
         return ExportResult(self.name, path)
@@ -143,7 +151,6 @@ class EpubExporter:
     name = "epub"
 
     def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
-        title = _metadata_title(metadata)
         path = destination.with_suffix(".epub")
         epub_assets = _epub_asset_entries(metadata)
         epub_metadata = dict(metadata)
@@ -151,12 +158,11 @@ class EpubExporter:
             original: packaged for original, packaged, _source in epub_assets
         }
         body = _html_body(text, epub_metadata)
-        credits = _html_credits(metadata)
         with zipfile.ZipFile(path, "w") as archive:
             archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
             archive.writestr("META-INF/container.xml", _epub_container())
-            archive.writestr("OEBPS/content.xhtml", _epub_content(title, credits + body, metadata))
-            archive.writestr("OEBPS/package.opf", _epub_package(title, epub_assets))
+            archive.writestr("OEBPS/content.xhtml", _epub_content(_metadata_title(metadata), body, metadata))
+            archive.writestr("OEBPS/package.opf", _epub_package(_metadata_title(metadata), epub_assets))
             for _original, packaged, source in epub_assets:
                 archive.write(source, f"OEBPS/{packaged}")
         return ExportResult(self.name, path)
@@ -180,11 +186,18 @@ def _paragraphs(text: str) -> list[str]:
 
 
 def _markdown_body(text: str, metadata: Optional[Dict[str, object]] = None) -> str:
-    structured = _markdown_structured_body(metadata)
-    plain = _markdown_plain_body(_text_with_missing_asset_markers(text, metadata), _export_base_dir(metadata))
-    if structured:
-        return (structured + "\n\n" + plain).strip() + "\n"
-    return plain
+    pages = [part for part in str(text).split("\f")]
+    page_count = max(len(pages), 1)
+    rendered_pages = []
+    for index, page in enumerate(pages, start=1):
+        unit = _semantic_unit_for_page(metadata, index, page_count)
+        page_body = _markdown_page_body(
+            _text_with_missing_asset_markers(page, metadata), metadata, unit, index, page_count
+        )
+        if not page_body.strip():
+            page_body = "[blank page]"
+        rendered_pages.append(f"<!-- Page {index} of {page_count} -->\n\n{page_body}".strip())
+    return "\n\n\f\n\n".join(rendered_pages).strip() + "\n"
 
 
 def _publication_credits(metadata: Optional[Dict[str, object]]) -> list[str]:
@@ -199,13 +212,6 @@ def _publication_credits(metadata: Optional[Dict[str, object]]) -> list[str]:
         if isinstance(values, list):
             credits.extend(str(value).strip() for value in values if str(value).strip())
     return _unique_strings(credits, 6)
-
-
-def _markdown_credits(metadata: Optional[Dict[str, object]]) -> str:
-    credits = _publication_credits(metadata)
-    if not credits:
-        return ""
-    return "\n".join(f"*{credit}*" for credit in credits) + "\n\n"
 
 
 def _html_credits(metadata: Optional[Dict[str, object]]) -> str:
@@ -250,11 +256,25 @@ def _markdown_plain_body(text: str, base_dir: Optional[Path] = None) -> str:
 
 
 def _html_body(text: str, metadata: Optional[Dict[str, object]] = None) -> str:
-    structured = _html_structured_body(metadata)
-    plain = _html_plain_body(_text_with_missing_asset_markers(text, metadata), metadata)
-    if structured:
-        return structured + "\n" + plain
-    return plain
+    pages = [part for part in str(text).split("\f")]
+    rendered_pages = []
+    page_count = max(len(pages), 1)
+    for index, page in enumerate(pages, start=1):
+        unit = _semantic_unit_for_page(metadata, index, page_count)
+        page_body = _html_page_body(
+            _text_with_missing_asset_markers(page, metadata), metadata, unit, index, page_count
+        )
+        if not page_body.strip():
+            page_body = '<div class="blank-page"></div>'
+        rendered_pages.append(
+            '<section class="document-page">'
+            '<div class="page-content">'
+            f"{page_body}"
+            '</div>'
+            f'<div class="page-footer">Page {index} of {page_count}</div>'
+            '</section>'
+        )
+    return "\n".join(rendered_pages)
 
 
 def _html_plain_body(text: str, metadata_or_base_dir: Optional[object] = None) -> str:
@@ -300,34 +320,78 @@ def _semantic_units(metadata: Optional[Dict[str, object]]) -> list[Dict[str, obj
     return [unit for unit in units if isinstance(unit, dict)] if isinstance(units, list) else []
 
 
-def _markdown_structured_body(metadata: Optional[Dict[str, object]]) -> str:
+def _semantic_unit_for_page(
+    metadata: Optional[Dict[str, object]], page_index: int, page_count: int
+) -> Optional[Dict[str, object]]:
     units = _semantic_units(metadata)
-    if not units:
-        return ""
-    parts = []
-    contents = []
-    footnotes = []
     for unit in units:
-        role = str(unit.get("role") or "body")
-        heading = _unit_heading(unit)
-        if role == "contents":
-            entries = unit.get("contents_entries") if isinstance(unit.get("contents_entries"), list) else []
-            if entries:
-                contents.extend(entries)
-                continue
-        if role in {"title", "title-page"} and heading:
-            parts.append(f"## {heading}")
-        elif heading and _role_deserves_heading(role):
-            parts.append(f"## {heading}")
-        footnotes.extend(unit.get("footnotes") if isinstance(unit.get("footnotes"), list) else [])
-    if contents:
-        lines = ["## Contents", ""]
-        lines.extend(
-            f"- {entry.get('title', '').strip()} {entry.get('page', '').strip()}".rstrip()
-            for entry in contents
-            if isinstance(entry, dict)
-        )
-        parts.insert(0, "\n".join(lines).strip())
+        try:
+            if int(unit.get("index") or 0) == page_index:
+                return unit
+        except (TypeError, ValueError):
+            continue
+    if page_count == 1:
+        return _semantic_unit_summary(units)
+    return None
+
+
+def _markdown_page_body(
+    text: str,
+    metadata: Optional[Dict[str, object]],
+    unit: Optional[Dict[str, object]],
+    page_index: int,
+    page_count: int,
+) -> str:
+    parts = []
+    if unit:
+        page_heading = _markdown_unit_block(unit)
+        if page_heading:
+            parts.append(page_heading)
+    plain = _markdown_plain_body(text, _export_base_dir(metadata))
+    if plain.strip():
+        parts.append(plain.strip())
+    if not parts:
+        return ""
+    return "\n\n".join(parts).strip() + "\n"
+
+
+def _html_page_body(
+    text: str,
+    metadata: Optional[Dict[str, object]],
+    unit: Optional[Dict[str, object]],
+    page_index: int,
+    page_count: int,
+) -> str:
+    blocks = []
+    if unit:
+        page_heading = _html_unit_block(unit)
+        if page_heading:
+            blocks.append(page_heading)
+    plain = _html_plain_body(text, metadata)
+    if plain.strip():
+        blocks.append(plain)
+    return "\n".join(blocks)
+
+
+def _markdown_unit_block(unit: Dict[str, object]) -> str:
+    role = str(unit.get("role") or "body")
+    heading = _unit_heading(unit)
+    blocks = []
+    if role == "contents":
+        entries = unit.get("contents_entries") if isinstance(unit.get("contents_entries"), list) else []
+        if entries:
+            lines = ["## Contents", ""]
+            lines.extend(
+                f"- {entry.get('title', '').strip()} {entry.get('page', '').strip()}".rstrip()
+                for entry in entries
+                if isinstance(entry, dict)
+            )
+            blocks.append("\n".join(lines).strip())
+    if role in {"title", "title-page"} and heading:
+        blocks.append(f"## {heading}")
+    if heading and _role_deserves_heading(role):
+        blocks.append(f"## {heading}")
+    footnotes = unit.get("footnotes") if isinstance(unit.get("footnotes"), list) else []
     if footnotes:
         lines = ["## Notes", ""]
         lines.extend(
@@ -335,58 +399,79 @@ def _markdown_structured_body(metadata: Optional[Dict[str, object]]) -> str:
             for note in footnotes
             if isinstance(note, dict)
         )
-        parts.append("\n".join(lines).strip())
-    return "\n\n".join(part for part in parts if part).strip() + ("\n" if parts else "")
+        blocks.append("\n".join(lines).strip())
+    return "\n\n".join(blocks).strip()
 
 
-def _html_structured_body(metadata: Optional[Dict[str, object]]) -> str:
-    units = _semantic_units(metadata)
-    if not units:
-        return ""
+def _html_unit_block(unit: Dict[str, object]) -> str:
+    role = str(unit.get("role") or "body")
+    heading = _unit_heading(unit)
     blocks = []
-    contents = []
-    footnotes = []
-    for unit in units:
-        role = str(unit.get("role") or "body")
-        heading = _unit_heading(unit)
-        if role == "contents":
-            entries = unit.get("contents_entries") if isinstance(unit.get("contents_entries"), list) else []
-            contents.extend(entry for entry in entries if isinstance(entry, dict))
-            continue
-        if role in {"title", "title-page"} and heading:
-            blocks.append(
-                f'<section class="title-page semantic semantic-{_css_slug(role)}"><h2>{html.escape(heading)}</h2></section>'
-            )
-        elif heading and _role_deserves_heading(role):
-            blocks.append(
-                f'<section class="semantic semantic-{html.escape(_css_slug(role), quote=True)}"><h2>{html.escape(heading)}</h2>'
-                "</section>"
-            )
-        footnotes.extend(unit.get("footnotes") if isinstance(unit.get("footnotes"), list) else [])
-    if contents:
+    if role == "contents":
+        entries = unit.get("contents_entries") if isinstance(unit.get("contents_entries"), list) else []
         rows = []
-        for entry in contents:
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
             title = html.escape(str(entry.get("title") or ""))
             page = html.escape(str(entry.get("page") or ""))
             rows.append(f"<tr><td>{title}</td><td>{page}</td></tr>")
-        blocks.insert(
-            0,
-            '<section class="contents semantic semantic-contents"><h2>Contents</h2><table>'
-            + "".join(rows)
-            + "</table></section>",
+        if rows:
+            blocks.append(
+                '<section class="contents semantic semantic-contents"><h2>Contents</h2><table>'
+                + "".join(rows)
+                + "</table></section>"
+            )
+    if role in {"title", "title-page"} and heading:
+        blocks.append(
+            f'<section class="title-page semantic semantic-{_css_slug(role)}"><h2>{html.escape(heading)}</h2></section>'
         )
+    if heading and _role_deserves_heading(role):
+        blocks.append(
+            f'<section class="semantic semantic-{html.escape(_css_slug(role), quote=True)}"><h2>{html.escape(heading)}</h2></section>'
+        )
+    footnotes = unit.get("footnotes") if isinstance(unit.get("footnotes"), list) else []
     if footnotes:
         notes = []
         for note in footnotes:
             marker = html.escape(str(note.get("marker") or ""))
             body = html.escape(str(note.get("text") or ""))
             notes.append(f"<li><span>{marker}</span> {body}</li>")
-        blocks.append(
-            '<section class="notes semantic semantic-footnotes"><h2>Notes</h2><ol>'
-            + "".join(notes)
-            + "</ol></section>"
-        )
+        if notes:
+            blocks.append(
+                '<section class="notes semantic semantic-footnotes"><h2>Notes</h2><ol>'
+                + "".join(notes)
+                + "</ol></section>"
+            )
     return "\n".join(blocks)
+
+
+def _semantic_unit_summary(units: list[Dict[str, object]]) -> Optional[Dict[str, object]]:
+    if not units:
+        return None
+    summary: Dict[str, object] = {
+        "role": str(units[0].get("role") or "body"),
+        "role_label": str(units[0].get("role_label") or "body text"),
+        "layout": str(units[0].get("layout") or "single-flow"),
+        "headings": [],
+        "contents_entries": [],
+        "footnotes": [],
+        "title_candidates": [],
+    }
+    headings = []
+    contents_entries = []
+    footnotes = []
+    title_candidates = []
+    for unit in units:
+        headings.extend(unit.get("headings") or [])
+        contents_entries.extend(unit.get("contents_entries") or [])
+        footnotes.extend(unit.get("footnotes") or [])
+        title_candidates.extend(unit.get("title_candidates") or [])
+    summary["headings"] = headings
+    summary["contents_entries"] = contents_entries
+    summary["footnotes"] = footnotes
+    summary["title_candidates"] = title_candidates
+    return summary
 
 
 def _role_deserves_heading(role: str) -> bool:
@@ -499,49 +584,38 @@ def _docx_document_xml(
     metadata: Optional[Dict[str, object]] = None,
     media_entries: Optional[list[Dict[str, object]]] = None,
 ) -> str:
+    del title
     media_by_path = {
         str(entry["original"]): entry for entry in media_entries or []
     }
     text = _text_with_missing_asset_markers(text, metadata)
-    paragraphs = [
-        "<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr>"
-        "<w:r><w:rPr><w:b/><w:sz w:val=\"34\"/></w:rPr>"
-        f"<w:t>{html.escape(title)}</w:t></w:r></w:p>"
-    ]
-    for credit in _publication_credits(metadata):
-        paragraphs.append(_docx_centered_italic_paragraph(html.escape(credit)))
-    contents = _docx_contents_entries(metadata)
-    if contents:
-        paragraphs.append(_docx_centered_heading("Contents"))
-        for title_text, page_text in contents:
-            paragraphs.append(_docx_contents_line(title_text, page_text))
-    footnotes = _docx_footnote_entries(metadata)
-    for paragraph in text.split("\n\n"):
-        if not paragraph.strip():
-            continue
-        if paragraph.strip() == "\f":
+    paragraphs = []
+    pages = str(text).split("\f")
+    for index, page in enumerate(pages, start=1):
+        unit = _semantic_unit_for_page(metadata, index, len(pages))
+        if index > 1:
             paragraphs.append("<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>")
-            continue
-        marker = _parse_image_marker(paragraph.strip())
-        if marker:
-            label, path = marker
-            entry = media_by_path.get(path)
-            if entry:
-                paragraphs.append(_docx_image_paragraph(entry))
-            continue
-        if _looks_like_page_marker(paragraph.strip()):
-            escaped = html.escape(paragraph.strip())
-            paragraphs.append(
-                "<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr>"
-                f"<w:r><w:t>{escaped}</w:t></w:r></w:p>"
-            )
-            continue
-        escaped = html.escape(paragraph).replace("\n", "<w:br/>")
-        paragraphs.append(f"<w:p><w:r><w:t>{escaped}</w:t></w:r></w:p>")
-    if footnotes:
-        paragraphs.append(_docx_centered_heading("Notes"))
-        for marker, body in footnotes:
-            paragraphs.append(_docx_footnote_line(marker, body))
+        if unit:
+            paragraphs.extend(_docx_unit_paragraphs(unit))
+        for paragraph in page.split("\n\n"):
+            if not paragraph.strip():
+                continue
+            marker = _parse_image_marker(paragraph.strip())
+            if marker:
+                _label, path = marker
+                entry = media_by_path.get(path)
+                if entry:
+                    paragraphs.append(_docx_image_paragraph(entry))
+                continue
+            if _looks_like_page_marker(paragraph.strip()):
+                escaped = html.escape(paragraph.strip())
+                paragraphs.append(
+                    "<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr>"
+                    f"<w:r><w:t>{escaped}</w:t></w:r></w:p>"
+                )
+                continue
+            escaped = html.escape(paragraph).replace("\n", "<w:br/>")
+            paragraphs.append(f"<w:p><w:r><w:t>{escaped}</w:t></w:r></w:p>")
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
@@ -551,6 +625,40 @@ def _docx_document_xml(
         'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">'
         f"<w:body>{''.join(paragraphs)}</w:body></w:document>"
     )
+
+
+def _docx_unit_paragraphs(unit: Dict[str, object]) -> list[str]:
+    role = str(unit.get("role") or "body")
+    heading = _unit_heading(unit)
+    paragraphs: list[str] = []
+    if role == "contents":
+        entries = unit.get("contents_entries") if isinstance(unit.get("contents_entries"), list) else []
+        if entries:
+            paragraphs.append(_docx_centered_heading("Contents"))
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                title_text = str(entry.get("title") or "").strip()
+                page_text = str(entry.get("page") or "").strip()
+                if title_text and page_text:
+                    paragraphs.append(_docx_contents_line(title_text, page_text))
+            return paragraphs
+    if role in {"title", "title-page"} and heading:
+        paragraphs.append(_docx_centered_italic_paragraph(html.escape(heading)))
+        return paragraphs
+    if heading and _role_deserves_heading(role):
+        paragraphs.append(_docx_centered_heading(heading))
+    footnotes = unit.get("footnotes") if isinstance(unit.get("footnotes"), list) else []
+    if footnotes:
+        paragraphs.append(_docx_centered_heading("Notes"))
+        for note in footnotes:
+            if not isinstance(note, dict):
+                continue
+            marker = str(note.get("marker") or "").strip()
+            body = str(note.get("text") or "").strip()
+            if marker and body:
+                paragraphs.append(_docx_footnote_line(marker, body))
+    return paragraphs
 
 
 def _docx_centered_heading(text: str) -> str:
@@ -779,9 +887,6 @@ def _epub_content(title: str, body: str, metadata: Optional[Dict[str, object]] =
         f"<title>{html.escape(title)}</title>"
         "<style>"
         "body{font-family:Georgia,'Times New Roman',serif;line-height:1.7;color:#24170f;max-width:42em;margin:0 auto;padding:2.75em 1.4em 4em;}"
-        "h1{text-align:center;font-size:2em;letter-spacing:.01em;margin:0 0 1.35em;}"
-        ".credits{text-align:center;margin:-.6em 0 2.25em;font-style:italic;}"
-        ".credits p{font-size:1em;margin:.25em 0;}"
         "h2{font-size:1.22em;margin:2em 0 1em;}"
         ".document-magazine,.document-newspaper{max-width:48em;}"
         ".document-manuscript{line-height:1.85;}"
@@ -803,7 +908,7 @@ def _epub_content(title: str, body: str, metadata: Optional[Dict[str, object]] =
         ".contents td{border-bottom:1px solid #d8cdbc;padding:.3em 0;}"
         ".contents td:last-child{text-align:right;white-space:nowrap;padding-left:1em;}"
         "</style>"
-        f'</head><body class="{document_class}" data-document-type="{html.escape(_document_type_slug(metadata), quote=True)}"><h1>{html.escape(title)}</h1>{body}</body></html>'
+        f'</head><body class="{document_class}" data-document-type="{html.escape(_document_type_slug(metadata), quote=True)}">{body}</body></html>'
     )
 
 

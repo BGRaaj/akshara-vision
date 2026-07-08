@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import platform
 from pathlib import Path
 import re
 from typing import TYPE_CHECKING, Dict, Iterable, List, Optional
@@ -82,7 +84,7 @@ def _render_pdf_from_html(path: Path, text: str, metadata: Dict[str, object]) ->
         ],
     ]
     for command in renderer_commands:
-        executable = shutil.which(command[0])
+        executable = _find_renderer_executable(command[0])
         if not executable:
             continue
         command = [executable, *command[1:]]
@@ -102,6 +104,106 @@ def _render_pdf_from_html(path: Path, text: str, metadata: Dict[str, object]) ->
         if result.returncode == 0 and path.exists() and path.stat().st_size > 0:
             return True
     return False
+
+
+def _find_renderer_executable(name: str) -> Optional[str]:
+    found = shutil.which(name)
+    if found:
+        return found
+    for candidate in _common_renderer_candidates(platform.system().lower(), name):
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+def _common_renderer_candidates(system: str, name: str) -> List[Path]:
+    def _env_path(key: str) -> Optional[Path]:
+        raw = os.environ.get(key)
+        if not raw or not str(raw).strip():
+            return None
+        return Path(raw)
+
+    if system == "darwin":
+        app_candidates = {
+            "google-chrome": [
+                Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            ],
+            "google-chrome-stable": [
+                Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            ],
+            "chromium": [
+                Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+                Path.home() / "Applications/Chromium.app/Contents/MacOS/Chromium",
+            ],
+            "chromium-browser": [
+                Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+                Path.home() / "Applications/Chromium.app/Contents/MacOS/Chromium",
+            ],
+            "brave-browser": [
+                Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
+                Path.home() / "Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            ],
+        }
+        return app_candidates.get(name, [])
+    if system == "windows":
+        browser_names = {
+            "google-chrome": ["chrome.exe", "chrome"],
+            "google-chrome-stable": ["chrome.exe", "chrome"],
+            "chromium": ["chromium.exe", "chromium"],
+            "chromium-browser": ["chromium.exe", "chromium"],
+            "brave-browser": ["brave.exe", "brave-browser.exe", "brave-browser"],
+        }.get(name, [f"{name}.exe", name])
+        directories = [
+            Path("C:/Program Files/Google/Chrome/Application"),
+            Path("C:/Program Files (x86)/Google/Chrome/Application"),
+            Path("C:/Program Files/BraveSoftware/Brave-Browser/Application"),
+            Path("C:/Program Files (x86)/BraveSoftware/Brave-Browser/Application"),
+            Path("C:/Program Files/Chromium/Application"),
+            Path("C:/Program Files (x86)/Chromium/Application"),
+            (_env_path("LOCALAPPDATA") or Path.home()) / "Google/Chrome/Application",
+            (_env_path("LOCALAPPDATA") or Path.home()) / "BraveSoftware/Brave-Browser/Application",
+            (_env_path("LOCALAPPDATA") or Path.home()) / "Chromium/Application",
+        ]
+        candidates = []
+        for directory in directories:
+            if directory is None:
+                continue
+            for exe_name in browser_names:
+                candidates.append(directory / exe_name)
+        return candidates
+    if system == "linux":
+        browser_candidates = {
+            "google-chrome": [
+                Path("/usr/bin/google-chrome"),
+                Path("/usr/bin/google-chrome-stable"),
+                Path("/opt/google/chrome/google-chrome"),
+                Path("/snap/bin/google-chrome"),
+            ],
+            "google-chrome-stable": [
+                Path("/usr/bin/google-chrome"),
+                Path("/usr/bin/google-chrome-stable"),
+                Path("/opt/google/chrome/google-chrome"),
+                Path("/snap/bin/google-chrome"),
+            ],
+            "chromium": [
+                Path("/usr/bin/chromium"),
+                Path("/usr/bin/chromium-browser"),
+                Path("/snap/bin/chromium"),
+            ],
+            "chromium-browser": [
+                Path("/usr/bin/chromium"),
+                Path("/usr/bin/chromium-browser"),
+                Path("/snap/bin/chromium"),
+            ],
+            "brave-browser": [
+                Path("/usr/bin/brave-browser"),
+                Path("/snap/bin/brave-browser"),
+            ],
+        }
+        return browser_candidates.get(name, [])
+    return []
 
 
 def _page_content_stream(page_lines: List[str], page_number: int, page_count: int) -> bytes:

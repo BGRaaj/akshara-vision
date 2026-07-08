@@ -1257,8 +1257,11 @@ def _export_text(
         exporter = registry.get(output_format)
         if exporter is None:
             continue
-        _notify(progress, "export", f"Exporting {output_format}", advance=1)
-        exports.append(exporter.export(text, destination, export_metadata))
+        try:
+            _notify(progress, "export", f"Exporting {output_format}", advance=1)
+            exports.append(exporter.export(text, destination, export_metadata))
+        except Exception as exc:
+            _notify(progress, "export", f"Skipped {output_format}: {exc}", advance=1)
     return exports
 
 
@@ -1994,8 +1997,46 @@ def find_executable(name: str) -> Optional[str]:
     found = shutil.which(name)
     if found:
         return found
-    if platform.system().lower() == "windows":
-        common_dirs = []
+    system = platform.system().lower()
+    for candidate in _common_executable_candidates(system, name):
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+def _common_executable_candidates(system: str, name: str) -> List[Path]:
+    def _env_path(key: str) -> Optional[Path]:
+        raw = os.environ.get(key)
+        if not raw or not str(raw).strip():
+            return None
+        return Path(raw)
+
+    if system == "darwin":
+        app_candidates = {
+            "google-chrome": [
+                Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            ],
+            "google-chrome-stable": [
+                Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            ],
+            "chromium": [
+                Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+                Path.home() / "Applications/Chromium.app/Contents/MacOS/Chromium",
+            ],
+            "chromium-browser": [
+                Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+                Path.home() / "Applications/Chromium.app/Contents/MacOS/Chromium",
+            ],
+            "brave-browser": [
+                Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
+                Path.home() / "Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            ],
+        }
+        return app_candidates.get(name, [])
+    if system == "windows":
+        common_dirs: List[Path] = []
         if name == "pdftoppm":
             common_dirs = [
                 Path("C:/Program Files/poppler/bin"),
@@ -2003,7 +2044,7 @@ def find_executable(name: str) -> Optional[str]:
                 Path("C:/poppler/bin"),
                 Path("C:/Program Files/poppler-windows/bin"),
                 Path("C:/Program Files (x86)/poppler-windows/bin"),
-                Path(os.environ.get("USERPROFILE", "")) / "scoop/apps/poppler/current/bin",
+                (_env_path("USERPROFILE") or Path.home()) / "scoop/apps/poppler/current/bin",
             ]
             for base_dir in [Path("C:/Program Files"), Path("C:/Program Files (x86)")]:
                 if base_dir.exists():
@@ -2014,11 +2055,66 @@ def find_executable(name: str) -> Optional[str]:
                                 common_dirs.append(p)
                     except Exception:
                         pass
-        for directory in common_dirs:
-            exe_path = directory / f"{name}.exe"
-            if exe_path.exists():
-                return str(exe_path)
-    return None
+        else:
+            browser_names = {
+                "google-chrome": ["chrome.exe", "chrome"],
+                "google-chrome-stable": ["chrome.exe", "chrome"],
+                "chromium": ["chromium.exe", "chromium"],
+                "chromium-browser": ["chromium.exe", "chromium"],
+                "brave-browser": ["brave.exe", "brave-browser.exe", "brave-browser"],
+            }.get(name, [f"{name}.exe", name])
+            common_dirs = [
+                Path("C:/Program Files/Google/Chrome/Application"),
+                Path("C:/Program Files (x86)/Google/Chrome/Application"),
+                Path("C:/Program Files/BraveSoftware/Brave-Browser/Application"),
+                Path("C:/Program Files (x86)/BraveSoftware/Brave-Browser/Application"),
+                Path("C:/Program Files/Chromium/Application"),
+                Path("C:/Program Files (x86)/Chromium/Application"),
+                (_env_path("LOCALAPPDATA") or Path.home()) / "Google/Chrome/Application",
+                (_env_path("LOCALAPPDATA") or Path.home()) / "BraveSoftware/Brave-Browser/Application",
+                (_env_path("LOCALAPPDATA") or Path.home()) / "Chromium/Application",
+                _env_path("PROGRAMFILES") or Path("C:/Program Files"),
+                _env_path("PROGRAMFILES(X86)") or Path("C:/Program Files (x86)"),
+            ]
+            paths: List[Path] = []
+            for directory in common_dirs:
+                if directory is None:
+                    continue
+                for exe_name in browser_names:
+                    paths.append(directory / exe_name)
+            return paths
+        return [directory / f"{name}.exe" for directory in common_dirs if directory]
+    if system == "linux":
+        browser_candidates = {
+            "google-chrome": [
+                Path("/usr/bin/google-chrome"),
+                Path("/usr/bin/google-chrome-stable"),
+                Path("/opt/google/chrome/google-chrome"),
+                Path("/snap/bin/google-chrome"),
+            ],
+            "google-chrome-stable": [
+                Path("/usr/bin/google-chrome"),
+                Path("/usr/bin/google-chrome-stable"),
+                Path("/opt/google/chrome/google-chrome"),
+                Path("/snap/bin/google-chrome"),
+            ],
+            "chromium": [
+                Path("/usr/bin/chromium"),
+                Path("/usr/bin/chromium-browser"),
+                Path("/snap/bin/chromium"),
+            ],
+            "chromium-browser": [
+                Path("/usr/bin/chromium"),
+                Path("/usr/bin/chromium-browser"),
+                Path("/snap/bin/chromium"),
+            ],
+            "brave-browser": [
+                Path("/usr/bin/brave-browser"),
+                Path("/snap/bin/brave-browser"),
+            ],
+        }
+        return browser_candidates.get(name, [])
+    return []
 
 
 def _count_words(text: str) -> int:
@@ -2873,7 +2969,6 @@ def _assembly_profile(document_type: str, output_formats: List[str]) -> Dict[str
             "docx": "reader-friendly word-processing layout",
             "epub": "book-style reading layout with embedded assets",
             "searchable-pdf": "text-first PDF with stable margins and reading order",
-            "image-pdf": "compatibility alias for the same HTML-backed PDF layout",
         },
     }
 

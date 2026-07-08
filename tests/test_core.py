@@ -219,6 +219,45 @@ class CoreTests(unittest.TestCase):
         self.assertIn("searchable-pdf", exporter_registry())
         self.assertEqual(set(OUTPUT_FORMATS), set(exporter_registry()))
 
+    def test_find_executable_locates_macos_app_bundle(self):
+        from akshara_vision.core.pipeline import find_executable
+
+        bundle = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+
+        def fake_exists(self):
+            return self == bundle
+
+        with patch("akshara_vision.core.pipeline.shutil.which", return_value=None):
+            with patch("akshara_vision.core.pipeline.platform.system", return_value="Darwin"):
+                with patch.object(Path, "exists", fake_exists):
+                    self.assertEqual(find_executable("google-chrome"), str(bundle))
+
+    def test_find_executable_locates_linux_browser_path(self):
+        from akshara_vision.core.pipeline import find_executable
+
+        bundle = Path("/opt/google/chrome/google-chrome")
+
+        def fake_exists(self):
+            return self == bundle
+
+        with patch("akshara_vision.core.pipeline.shutil.which", return_value=None):
+            with patch("akshara_vision.core.pipeline.platform.system", return_value="Linux"):
+                with patch.object(Path, "exists", fake_exists):
+                    self.assertEqual(find_executable("google-chrome"), str(bundle))
+
+    def test_find_executable_locates_windows_browser_path(self):
+        from akshara_vision.core.pipeline import find_executable
+
+        bundle = Path("C:/Program Files/Google/Chrome/Application/chrome.exe")
+
+        def fake_exists(self):
+            return self == bundle
+
+        with patch("akshara_vision.core.pipeline.shutil.which", return_value=None):
+            with patch("akshara_vision.core.pipeline.platform.system", return_value="Windows"):
+                with patch.object(Path, "exists", fake_exists):
+                    self.assertEqual(find_executable("google-chrome"), str(bundle))
+
     def test_all_supported_exporters_write_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
             destination = Path(tmp) / "akshara_output"
@@ -229,7 +268,7 @@ class CoreTests(unittest.TestCase):
                     self.assertEqual(result.format, name)
                     self.assertTrue(result.path.exists(), name)
                     self.assertGreaterEqual(result.path.stat().st_size, 0, name)
-                    if name in {"searchable-pdf", "image-pdf"}:
+                    if name == "searchable-pdf":
                         self.assertTrue(result.path.read_bytes().startswith(b"%PDF-"))
 
     def test_publication_exporters_style_figure_markers(self):
@@ -240,14 +279,15 @@ class CoreTests(unittest.TestCase):
                 "i\n\n[image: map of region]\n\nBody text", destination, metadata
             )
             html_text = html_result.path.read_text(encoding="utf-8")
-            self.assertIn("<h1>Book Title</h1>", html_text)
+            self.assertIn('data-document-title="Book Title"', html_text)
+            self.assertIn('class="document-page"', html_text)
             self.assertIn('class="page-marker"', html_text)
             self.assertIn('class="figure-marker"', html_text)
             md_result = exporter_registry()["md"].export(
                 "[image: plate]\n\nBody text", destination, metadata
             )
             md_text = md_result.path.read_text(encoding="utf-8")
-            self.assertIn("# Book Title", md_text)
+            self.assertNotIn("# Book Title", md_text)
             self.assertNotIn("Run Summary", md_text)
             self.assertIn("> [image: plate]", md_text)
 
@@ -256,8 +296,21 @@ class CoreTests(unittest.TestCase):
             )
             with zipfile.ZipFile(epub_result.path) as archive:
                 content = archive.read("OEBPS/content.xhtml").decode("utf-8")
-                self.assertIn("<h1>Book Title</h1>", content)
+                self.assertNotIn("<h1>Book Title</h1>", content)
                 self.assertNotIn("Run Summary", content)
+
+    def test_html_export_preserves_blank_pages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "akshara_output"
+            metadata = {"title": "Blank Pages", "output_language": "English"}
+            html_result = exporter_registry()["html"].export(
+                "First page text\n\n\f\n\n\f\n\nSecond page text", destination, metadata
+            )
+            html_text = html_result.path.read_text(encoding="utf-8")
+            self.assertIn("Page 1 of 3", html_text)
+            self.assertIn("Page 2 of 3", html_text)
+            self.assertIn("Page 3 of 3", html_text)
+            self.assertIn('class="blank-page"', html_text)
 
     def test_contents_extraction_filters_page_numbers_from_body_like_lines(self):
         from akshara_vision.core.pipeline import _contents_entries
@@ -376,8 +429,50 @@ class CoreTests(unittest.TestCase):
                 "akshara_vision.exporters.pdf._render_pdf_from_html",
                 side_effect=lambda path, text, metadata: (_write_dummy_pdf(path) or True),
             ):
-                pdf_result = exporter_registry()["image-pdf"].export("Body text", destination, metadata)
+                pdf_result = exporter_registry()["searchable-pdf"].export("Body text", destination, metadata)
                 self.assertTrue(pdf_result.path.read_bytes().startswith(b"%PDF-"))
+
+    def test_pdf_renderer_finds_macos_browser_bundle(self):
+        from akshara_vision.exporters.pdf import _find_renderer_executable
+
+        bundle = Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser")
+
+        def fake_exists(self):
+            return self == bundle
+
+        with patch("akshara_vision.exporters.pdf.shutil.which", return_value=None):
+            with patch("akshara_vision.exporters.pdf.platform.system", return_value="Darwin"):
+                with patch.object(Path, "exists", fake_exists):
+                    self.assertEqual(
+                        _find_renderer_executable("brave-browser"),
+                        str(bundle),
+                    )
+
+    def test_pdf_renderer_finds_linux_browser_path(self):
+        from akshara_vision.exporters.pdf import _find_renderer_executable
+
+        bundle = Path("/usr/bin/google-chrome")
+
+        def fake_exists(self):
+            return self == bundle
+
+        with patch("akshara_vision.exporters.pdf.shutil.which", return_value=None):
+            with patch("akshara_vision.exporters.pdf.platform.system", return_value="Linux"):
+                with patch.object(Path, "exists", fake_exists):
+                    self.assertEqual(_find_renderer_executable("google-chrome"), str(bundle))
+
+    def test_pdf_renderer_finds_windows_browser_path(self):
+        from akshara_vision.exporters.pdf import _find_renderer_executable
+
+        bundle = Path("C:/Program Files/Google/Chrome/Application/chrome.exe")
+
+        def fake_exists(self):
+            return self == bundle
+
+        with patch("akshara_vision.exporters.pdf.shutil.which", return_value=None):
+            with patch("akshara_vision.exporters.pdf.platform.system", return_value="Windows"):
+                with patch.object(Path, "exists", fake_exists):
+                    self.assertEqual(_find_renderer_executable("google-chrome"), str(bundle))
 
     def test_asset_insertion_prefers_top_placement(self):
         from akshara_vision.exporters.text import _asset_insertion_index
@@ -1283,7 +1378,7 @@ class CoreTests(unittest.TestCase):
             (run_dir / "run_manifest.json").write_text(
                 json.dumps(
                     {
-                        "profile": {"output_formats": ["txt", "md", "html", "docx", "epub", "json", "image-pdf"]},
+                        "profile": {"output_formats": ["txt", "md", "html", "docx", "epub", "json", "searchable-pdf"]},
                         "metadata": {
                             "title": "Illustrated",
                             "document_type": "Book",
@@ -1358,7 +1453,7 @@ class CoreTests(unittest.TestCase):
                 "akshara_vision.exporters.pdf._render_pdf_from_html",
                 side_effect=lambda path, text, metadata: (_write_dummy_pdf(path) or True),
             ):
-                self.assertTrue((run_dir / "akshara_output.image.pdf").read_bytes().startswith(b"%PDF-"))
+                self.assertTrue((run_dir / "akshara_output.searchable.pdf").read_bytes().startswith(b"%PDF-"))
             json_payload = json.loads((run_dir / "akshara_output.json").read_text(encoding="utf-8"))
             self.assertEqual(json_payload["metadata"]["assets"][0]["label"], "plate")
 

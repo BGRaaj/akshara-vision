@@ -32,11 +32,5 @@ def exporter_registry() -> Dict[str, object]:
             ".searchable.pdf",
             "Searchable PDF Export",
         ),
-        "image-pdf": PdfExporter(
-            "image-pdf",
-            ".image.pdf",
-            "Cleaned Image PDF Export",
-            kind="image",
-        ),
         "review": ReviewExporter(),
     }

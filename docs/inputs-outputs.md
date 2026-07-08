@@ -42,7 +42,6 @@ Selectable:
 - `alto`: ALTO XML sidecar
 - `pagexml`: PAGE XML sidecar
 - `searchable-pdf`: text-first PDF assembled as a clean publication
-- `image-pdf`: compatibility alias for the same HTML-backed PDF renderer
 - `review`: run review notes and text preview
 
 Typical use:
@@ -61,7 +60,6 @@ Typical use:
 | `alto` | Archive-side layout sidecar for OCR ecosystems |
 | `pagexml` | Page-structure sidecar for downstream OCR/layout tools |
 | `searchable-pdf` | Reading and sharing as a calm text-first PDF |
-| `image-pdf` | Backward-compatible alias for the searchable PDF renderer |
 | `review` | QA, diffing, and restoration inspection |
 
 The OCR/archive sidecars are portable text and metadata handoffs. Runs also keep
@@ -183,8 +181,7 @@ PDF exports use the HTML rendering route only. Install a Chromium-family
 browser such as `chromium`, `chromium-browser`, `google-chrome`, or
 `brave-browser` so Akshara Vision can print the HTML layout to PDF directly.
 The old internal PDF writer is intentionally disabled so page breaks, figures,
-and title spacing stay publication-like. `image-pdf` is retained only as a
-compatibility alias for the same HTML-backed renderer.
+and title spacing stay publication-like.
 
 `akv export` can take either a run folder or a compiled output file such as
 `.txt`, `.md`, `.html`, `.json`, `.jsonl`, `.yaml`, `.hocr`, or `.xml`. It writes

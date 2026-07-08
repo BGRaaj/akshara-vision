@@ -156,12 +156,45 @@ class CliFallbackTests(unittest.TestCase):
                 ".alto.xml",
                 ".page.xml",
                 ".searchable.pdf",
-                ".image.pdf",
                 ".review.md",
             ]
             for suffix in expected_suffixes:
                 self.assertTrue((run_dir / f"akshara_output{suffix}").exists(), suffix)
             self.assertTrue((run_dir / "akshara_output.searchable.pdf").read_bytes().startswith(b"%PDF-"))
+
+    def test_export_command_skips_failed_format_and_keeps_going(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            run_dir.mkdir()
+            (run_dir / "akshara_output.txt").write_text("Finished text", encoding="utf-8")
+            (run_dir / "run_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "profile": {"output_formats": ["txt", "html"]},
+                        "metadata": {"title": "Best Effort"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            from akshara_vision.registries.exporters import exporter_registry as _exporters
+
+            class FailingExporter:
+                name = "txt"
+
+                def export(self, text, destination, metadata):
+                    del text, destination, metadata
+                    raise RuntimeError("simulated failure")
+
+            with patch(
+                "akshara_vision.cli.workflows.exporter_registry",
+                return_value={"txt": FailingExporter(), "html": _exporters()["html"]},
+            ):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    export_command(str(run_dir), formats=["txt", "html"])
+
+            self.assertIn("SKIPPED txt", output.getvalue())
+            self.assertTrue((run_dir / "akshara_output.html").exists())
 
     def test_choose_output_formats_toggles_and_handles_back(self):
         with patch("akshara_vision.cli.workflows.ui.choose", return_value="Back"):
