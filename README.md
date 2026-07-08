@@ -33,6 +33,7 @@ model, provider, scan quality, script complexity, and document damage.
 | Chat | Grounded `akv chat` / `akv ask` mode over runs, outputs, or raw files with source citations, saved history, source search, and source opening |
 | Assembly enrichment | Optional figure markers plus candidate figure crops with bounding boxes, page zones, relative positions, size, DPI, and placement metadata |
 | Review | `akv review` visual block-map preview, low-confidence block audit, and asset inspection for run folders |
+| Compare | `akv compare` side-by-side source/output browser report for run folders |
 | Language handling | Per-run choice to preserve all readable detected languages/scripts or strictly extract only the declared source language |
 | Translation | Automatic final-pass translation when output language differs from source language; manual modes for translate, bilingual, transliterate, and metadata-only workflows |
 | Batch processing | Files, folders, recursive folders, globs, ZIP archives, CSV manifests, and JSON manifests |
@@ -77,6 +78,10 @@ complex page layouts:
 python -m pip install -e ".[layout]"
 ```
 
+For best PDF output, Akshara Vision prefers an HTML-to-PDF renderer already
+available on your machine. It will try `weasyprint`, `wkhtmltopdf`, or a
+headless Chromium/Chrome browser before falling back to the built-in PDF path.
+
 ## Quick Start
 
 ```bash
@@ -94,6 +99,7 @@ Inside the interactive shell:
 /quick examples/sample.txt --dry-run
 /chat examples/sample.txt --question "What is the main topic?"
 /batch path/to/folder
+/compare path/to/run-folder
 /profiles
 /models
 /env
@@ -118,6 +124,7 @@ Inside the interactive shell:
 | `akshara combine` | `akv combine` | Rebuild a final document from staged outputs |
 | `akshara resume` | `akv resume` | Recover completed checkpoints from an interrupted run |
 | `akshara review` | `akv review` | Inspect layout, block confidence, and figure assets |
+| `akshara compare` | `akv compare` | Render source and output side by side |
 | `akshara export` | `akv x` | Re-export an existing run or convert an existing output file |
 | `akshara check` | `akv t` | Compile and run unit tests |
 | `akshara clean` | `akv clean` | Remove generated local artifacts |

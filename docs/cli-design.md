@@ -44,6 +44,7 @@ Core commands:
 | `akshara doctor` | `akv d` | Diagnostics |
 | `akshara check` | `akv t` | Compile and run tests |
 | `akshara resume` | `akv resume` | Recover interrupted checkpoints |
+| `akshara compare` | `akv compare` | Render source and output side by side |
 | `akshara export` | `akv x` | Re-export or convert output files |
 | `akshara guide` | `akv g` | Choose guidance level |
 | `akshara mode` | `akv speed` | Choose speed versus quality |
@@ -70,6 +71,7 @@ Interactive session commands:
 | `/ui` | Customize hero, density, prompt |
 | `/doctor` | Check local setup |
 | `/install` | Install PDF/image system dependencies |
+| `/compare [run-folder]` | Render source and output side by side |
 | `/status` | Show current configuration |
 | `/check`, `/test` | Compile and run unit tests |
 | `/clean` | Remove generated outputs |
@@ -107,3 +109,7 @@ the project inspectable in bare Python environments.
 The current home screen separates core workflows from extended tools so repeat
 operations stay compact while recovery, export, and maintenance actions remain
 available.
+
+The compare command is the browser-facing review path. It is meant for checking
+page-level or image-level source material against the generated publication
+output without leaving the terminal workflow.

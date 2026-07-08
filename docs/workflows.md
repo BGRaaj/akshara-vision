@@ -129,6 +129,11 @@ visual block-map previews, low-confidence blocks, and figure assets. It writes
 `layout_review.md` next to the manifest so reviewers can audit crops and layout
 signals before final assembly.
 
+Use `akv compare path/to/run-folder` to open a browser-friendly before/after
+report. The compare view renders source pages or images next to the generated
+output so you can check whether placement, reading order, and figures still
+match the source material.
+
 Dense pages and non-English scripts still depend heavily on the chosen vision
 model. Quality mode gives the model stronger page-order, region-by-region, and
 script-specific instructions. If a model hits its output limit, the run is marked

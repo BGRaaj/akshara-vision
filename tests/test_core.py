@@ -622,6 +622,51 @@ class CoreTests(unittest.TestCase):
             self.assertIn("Low-Confidence Blocks", report_text)
             self.assertIn("plate", report_text)
 
+    def test_compare_command_writes_side_by_side_report(self):
+        from akshara_vision.cli.workflows import compare_command
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            source_dir = run_dir / "sources" / "0001"
+            item_dir = run_dir / "items" / "0001" / "page-0001"
+            source_dir.mkdir(parents=True)
+            item_dir.mkdir(parents=True)
+            (source_dir / "page-0001.png").write_bytes(b"fake-image")
+            (item_dir / "final__0001.txt").write_text("Restored text", encoding="utf-8")
+            (item_dir / "final__0001.json").write_text('{"text":"Restored text"}', encoding="utf-8")
+            (run_dir / "run_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "metadata": {
+                            "title": "Compareable",
+                            "document_type": "Book",
+                            "restoration": [
+                                {
+                                    "chunks": [
+                                        {
+                                            "assets": [],
+                                        }
+                                    ]
+                                }
+                            ],
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            with patch("akshara_vision.cli.workflows.ui.heading"):
+                with patch("akshara_vision.cli.workflows.ui.section"):
+                    with patch("akshara_vision.cli.workflows.ui.status"):
+                        with patch("akshara_vision.cli.workflows._next_recommendations"):
+                            report = compare_command(str(run_dir))
+            self.assertTrue(report.exists())
+            report_text = report.read_text(encoding="utf-8")
+            self.assertIn("compare-grid", report_text)
+            self.assertEqual(report_text.count('<section class="compare-card">'), 1)
+            self.assertIn("<img", report_text)
+            self.assertIn("Restored text", report_text)
+
     def test_native_layout_preview_renders_block_map(self):
         from akshara_vision.cli.workflows import _native_layout_previews
 
@@ -915,6 +960,7 @@ class CoreTests(unittest.TestCase):
             combined = result["output_path"].read_text(encoding="utf-8")
             self.assertIn("First part", combined)
             self.assertIn("Second part", combined)
+            self.assertIn("\f", combined)
             self.assertNotIn("=====", combined)
 
     def test_combine_uses_neutral_title_when_missing(self):

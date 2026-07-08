@@ -1,4 +1,5 @@
 import copy
+import html
 import json
 import os
 import re
@@ -64,6 +65,7 @@ HOME_ACTIONS = [
     "Core - Instructions",
     "Extended - Resume run",
     "Extended - Review layout and assets",
+    "Extended - Compare before and after",
     "Extended - Combine outputs",
     "Extended - Export existing output",
     "Extended - Docs",
@@ -118,6 +120,7 @@ def _render_home() -> None:
         [
             ("Resume", "/resume", "Continue interrupted work"),
             ("Review", "/review", "Inspect layout and assets"),
+            ("Compare", "/compare", "Source and output side by side"),
             ("Combine", "/combine", "Assemble staged outputs"),
             ("Export", "/export", "Convert existing outputs"),
             ("Docs", "/docs", "Open project guides"),
@@ -202,6 +205,7 @@ def _menu_command() -> str:
         "Core - Instructions": "/instructions",
         "Extended - Resume run": "/resume",
         "Extended - Review layout and assets": "/review",
+        "Extended - Compare before and after": "/compare",
         "Extended - Combine outputs": "/combine",
         "Extended - Export existing output": "/export",
         "Extended - Docs": "/docs",
@@ -302,6 +306,8 @@ def _dispatch_session_command(raw: str) -> bool:
         resume_command(args[0] if args else None)
     elif command in {"/review", "/inspect", "/qa"}:
         review_command(args[0] if args else None)
+    elif command in {"/compare", "/beforeafter", "/diff"}:
+        compare_command(args[0] if args else None)
     elif command in {"/export", "/x"}:
         export_command(args[0] if args else None)
     elif command in {"/install", "/setup"}:
@@ -353,6 +359,7 @@ def _session_help() -> None:
             ["/combine [run-folder]", "Rebuild staged outputs into one document"],
             ["/resume [run-folder]", "Recover completed checkpoints from an interrupted run"],
             ["/review [run-folder]", "Inspect layout, assets, and confidence"],
+            ["/compare [run-folder]", "Render source and output side by side"],
             ["/export [path]", "Convert a run folder or existing output to another format"],
             ["/install", "Install PDF/image system dependencies"],
             ["/check, /test", "Compile and run unit tests"],
@@ -1092,6 +1099,38 @@ def review_command(run_dir: Optional[str] = None):
     return report_path
 
 
+def compare_command(run_dir: Optional[str] = None):
+    ui.heading("Akshara Vision", "Compare")
+    if not run_dir:
+        run_dir = ui.text("Path to Akshara run folder")
+    if not run_dir:
+        ui.status("info", "Compare cancelled.")
+        return None
+    path = Path(run_dir).expanduser()
+    manifest_path = path / "run_manifest.json"
+    if not manifest_path.exists():
+        ui.status("error", f"No run_manifest.json found in {path}")
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        ui.status("error", f"Could not read manifest: {exc}")
+        return None
+    metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+    comparisons = _compare_views(path, metadata)
+    if not comparisons:
+        ui.status("warning", "No comparable source/output pairs were found.")
+        return None
+    report_path = path / "compare_review.html"
+    report_path.write_text(
+        _compare_review_html(path, metadata, comparisons),
+        encoding="utf-8",
+    )
+    ui.status("success", f"Saved compare report: {report_path}")
+    _next_recommendations(_next_steps_for_context("compare", run_dir=path))
+    return report_path
+
+
 def _manifest_assets(metadata: Dict[str, object]) -> List[Dict[str, object]]:
     assets = metadata.get("assets") if isinstance(metadata.get("assets"), list) else []
     if assets:
@@ -1248,6 +1287,268 @@ def _layout_review_markdown(
         lines.append("")
     lines.append("Reviewer note: deleting a wrong asset image is safe; exporters skip missing assets.")
     return "\n".join(lines).strip() + "\n"
+
+
+def _compare_views(run_dir: Path, metadata: Dict[str, object]) -> List[Dict[str, object]]:
+    items_root = run_dir / "items"
+    sources_root = run_dir / "sources"
+    if not items_root.exists():
+        return []
+    restoration = metadata.get("restoration") if isinstance(metadata.get("restoration"), list) else []
+    output_files = _preferred_compare_outputs(items_root)
+    comparisons: List[Dict[str, object]] = []
+    for index, output_path in enumerate(output_files, start=1):
+        item_dir = output_path.parent
+        source_path = _match_source_path(items_root, sources_root, item_dir)
+        record = restoration[index - 1] if index - 1 < len(restoration) else {}
+        assets = _compare_assets(record)
+        comparisons.append(
+            {
+                "label": str(item_dir.relative_to(items_root)).replace("\\", "/"),
+                "source_path": source_path,
+                "source_html": _source_preview_html(source_path, run_dir),
+                "output_path": output_path,
+                "output_html": _output_preview_html(output_path, run_dir),
+                "assets_html": _compare_assets_html(assets, run_dir),
+            }
+        )
+    return comparisons
+
+
+def _preferred_compare_outputs(items_root: Path) -> List[Path]:
+    grouped: Dict[Path, List[Path]] = {}
+    for pattern in (
+        "final__*.html",
+        "translated__*.html",
+        "restored__*.html",
+        "final__*.md",
+        "translated__*.md",
+        "restored__*.md",
+        "final__*.txt",
+        "translated__*.txt",
+        "restored__*.txt",
+        "final__*.json",
+        "translated__*.json",
+        "restored__*.json",
+        "akshara_output.html",
+        "akshara_output.pdf",
+    ):
+        for path in items_root.rglob(pattern):
+            if path.is_file():
+                grouped.setdefault(path.parent, []).append(path)
+    return [
+        _best_compare_output(paths)
+        for _folder, paths in sorted(grouped.items(), key=lambda item: str(item[0]))
+        if paths
+    ]
+
+
+def _best_compare_output(paths: List[Path]) -> Path:
+    def score(path: Path) -> tuple[int, str]:
+        name = path.name.lower()
+        suffix = path.suffix.lower()
+        stage_score = 0
+        if name.startswith("final__") or name == "akshara_output.html":
+            stage_score = 0
+        elif name.startswith("translated__"):
+            stage_score = 1
+        elif name.startswith("restored__"):
+            stage_score = 2
+        else:
+            stage_score = 3
+        suffix_score = {
+            ".html": 0,
+            ".htm": 0,
+            ".xhtml": 0,
+            ".md": 1,
+            ".txt": 2,
+            ".pdf": 3,
+            ".json": 4,
+        }.get(suffix, 9)
+        return stage_score * 10 + suffix_score, name
+
+    return sorted(paths, key=score)[0]
+
+
+def _match_source_path(items_root: Path, sources_root: Path, item_dir: Path) -> Optional[Path]:
+    if not sources_root.exists():
+        return None
+    try:
+        relative_dir = item_dir.relative_to(items_root)
+    except ValueError:
+        return None
+    candidate_dir = sources_root / relative_dir.parent
+    if not candidate_dir.exists():
+        candidate_dir = sources_root
+    stem = item_dir.name
+    prefix = stem.split("-", 1)[0]
+    candidates = []
+    for pattern in (f"{stem}*", f"{prefix}*"):
+        candidates.extend(path for path in candidate_dir.glob(pattern) if path.is_file())
+    if candidates:
+        return sorted(candidates)[0]
+    return None
+
+
+def _compare_assets(record: object) -> List[Dict[str, object]]:
+    if not isinstance(record, dict):
+        return []
+    chunks = record.get("chunks") if isinstance(record.get("chunks"), list) else []
+    assets: List[Dict[str, object]] = []
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        for asset in chunk.get("assets") or []:
+            if isinstance(asset, dict):
+                assets.append(asset)
+    return assets
+
+
+def _source_preview_html(source_path: Optional[Path], run_dir: Path) -> str:
+    if source_path is None:
+        return '<p class="missing">Source file not found.</p>'
+    try:
+        rel = source_path.resolve().relative_to(run_dir.resolve())
+    except Exception:
+        rel = source_path.name
+    suffix = source_path.suffix.lower()
+    if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
+        return (
+            f'<figure class="preview-image"><img src="{html.escape(str(rel), quote=True)}" '
+            f'alt="" /></figure>'
+        )
+    if suffix == ".pdf":
+        return (
+            f'<object data="{html.escape(str(rel), quote=True)}" type="application/pdf" '
+            f'class="preview-pdf"><p class="missing">{html.escape(source_path.name)}</p></object>'
+        )
+    if suffix in {".html", ".htm", ".xhtml"}:
+        return (
+            f'<iframe src="{html.escape(str(rel), quote=True)}" '
+            f'class="preview-frame" title="{html.escape(source_path.name, quote=True)}"></iframe>'
+        )
+    if suffix in {".txt", ".md", ".html", ".hocr", ".xml", ".json", ".jsonl", ".yaml", ".yml"}:
+        try:
+            content = source_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return f'<p class="missing">{html.escape(source_path.name)}</p>'
+        if suffix == ".html":
+            content = re.sub(r"<[^>]+>", "", content)
+        return f"<pre>{html.escape(content)}</pre>"
+    return f'<p class="missing">{html.escape(source_path.name)}</p>'
+
+
+def _output_preview_html(output_path: Path, run_dir: Path) -> str:
+    try:
+        rel = output_path.resolve().relative_to(run_dir.resolve())
+    except Exception:
+        rel = output_path.name
+    suffix = output_path.suffix.lower()
+    if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
+        return (
+            f'<figure class="preview-image"><img src="{html.escape(str(rel), quote=True)}" '
+            f'alt="" /></figure>'
+        )
+    if suffix == ".pdf":
+        return (
+            f'<object data="{html.escape(str(rel), quote=True)}" type="application/pdf" '
+            f'class="preview-pdf"><p class="missing">{html.escape(output_path.name)}</p></object>'
+        )
+    if suffix in {".html", ".htm", ".xhtml"}:
+        return (
+            f'<iframe src="{html.escape(str(rel), quote=True)}" '
+            f'class="preview-frame" title="{html.escape(output_path.name, quote=True)}"></iframe>'
+        )
+    try:
+        content = output_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return f'<p class="missing">{html.escape(output_path.name)}</p>'
+    return f"<pre>{html.escape(content)}</pre>"
+
+
+def _compare_assets_html(assets: List[Dict[str, object]], run_dir: Path) -> str:
+    if not assets:
+        return ""
+    parts = ['<div class="asset-grid">']
+    for asset in assets[:12]:
+        source = _asset_source_from_metadata(asset, run_dir)
+        if source and source.exists():
+            try:
+                rel = source.resolve().relative_to(run_dir.resolve())
+            except Exception:
+                rel = source.name
+            parts.append(
+                f'<figure class="preview-image"><img src="{html.escape(str(rel), quote=True)}" alt="" /></figure>'
+            )
+    parts.append("</div>")
+    return "\n".join(parts)
+
+
+def _asset_source_from_metadata(asset: Dict[str, object], run_dir: Path) -> Optional[Path]:
+    path = str(asset.get("path") or "").strip()
+    if not path:
+        return None
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = run_dir / candidate
+    return candidate
+
+
+def _compare_review_html(run_dir: Path, metadata: Dict[str, object], comparisons: List[Dict[str, object]]) -> str:
+    title = html.escape(str(metadata.get("title") or run_dir.name))
+    cards = []
+    for item in comparisons:
+        cards.append(
+            f'''
+            <section class="compare-card">
+              <header>
+                <h2>{html.escape(str(item["label"]))}</h2>
+              </header>
+              <div class="compare-grid">
+                <div class="panel">
+                  <h3>Source</h3>
+                  {item["source_html"]}
+                </div>
+                <div class="panel">
+                  <h3>Output</h3>
+                  {item["output_html"]}
+                  {item["assets_html"]}
+                </div>
+              </div>
+            </section>
+            '''
+        )
+    return (
+        "<!doctype html>\n"
+        '<html lang="en">\n'
+        "<head>\n"
+        '<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        f"<title>Compare - {title}</title>\n"
+        "<style>"
+        "body{margin:0;padding:2rem;background:#f7f3ea;color:#24170f;font-family:Georgia,'Times New Roman',serif;line-height:1.6;}"
+        "main{max-width:1280px;margin:0 auto;}"
+        "h1{font-size:2.2rem;text-align:center;margin:0 0 1rem;}"
+        ".summary{text-align:center;margin:0 0 2rem;}"
+        ".compare-card{background:#fffdf9;border:1px solid #d9ccb7;margin:0 0 1.5rem;padding:1rem 1rem 1.25rem;break-inside:avoid;}"
+        ".compare-card header h2{margin:0 0 1rem;font-size:1.2rem;}"
+        ".compare-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem;}"
+        ".panel{border:1px solid #e0d4c1;padding:0.85rem;background:#fff;min-width:0;}"
+        ".panel h3{margin:0 0 .75rem;font-size:1rem;text-transform:uppercase;letter-spacing:.04em;}"
+        ".panel pre{white-space:pre-wrap;word-break:break-word;margin:0;font-size:.98rem;}"
+        ".preview-image img{max-width:100%;height:auto;display:block;margin:0 auto;}"
+        ".preview-image{margin:0;}"
+        ".preview-frame,.preview-pdf{width:100%;min-height:520px;border:1px solid #d8cdbc;background:#fff;}"
+        ".asset-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:.75rem;margin-top:.75rem;}"
+        ".missing{opacity:.7;font-style:italic;}"
+        "@media print{body{background:#fff} .compare-card{break-inside:avoid; page-break-inside:avoid;} }"
+        "</style>"
+        "</head><body><main>"
+        f"<h1>{title}</h1>"
+        f'<p class="summary">Run folder: {html.escape(str(run_dir))} | Items: {len(comparisons)}</p>'
+        + "".join(cards)
+        + "</main></body></html>"
+    )
 
 
 def execute_run(
@@ -2148,13 +2449,18 @@ def _next_steps_for_context(
     export_count = len(exports or [])
     if context == "combine":
         rows.append(["Review output", f"{run_path}/akshara_output.txt" if run_path else "akv review"])
+        rows.append(["Compare source/output", f"akv compare {run_path}" if run_path else "akv compare"])
         rows.append(["Export another format", f"akv export {run_path}" if run_path else "akv export"])
-        rows.append(["Resume run", f"akv resume {run_path}" if run_path else "akv resume"])
         return rows[:3]
     if context == "review":
+        rows.append(["Compare source/output", f"akv compare {run_path}" if run_path else "akv compare"])
         rows.append(["Combine outputs", f"akv combine {run_path}" if run_path else "akv combine"])
         rows.append(["Export another format", f"akv export {run_path}" if run_path else "akv export"])
-        rows.append(["Chat with run", f"akv chat {run_path}" if run_path else "akv chat"])
+        return rows[:3]
+    if context == "compare":
+        rows.append(["Review layout", f"akv review {run_path}" if run_path else "akv review"])
+        rows.append(["Combine outputs", f"akv combine {run_path}" if run_path else "akv combine"])
+        rows.append(["Export another format", f"akv export {run_path}" if run_path else "akv export"])
         return rows[:3]
     if context == "chat":
         rows.append(["Run workflow", "akv run"])
@@ -2177,12 +2483,9 @@ def _next_steps_for_context(
             rows.append(["Review warnings", f"akv review {run_path}" if run_path else "akv review"])
             rows.append(["Resume later", f"akv resume {run_path}" if run_path else "akv resume"])
         else:
+            rows.append(["Compare source/output", f"akv compare {run_path}" if run_path else "akv compare"])
             rows.append(["Review output", f"{run_path}/akshara_output.txt" if run_path else "akv review"])
-            if export_count:
-                rows.append(["Combine run", f"akv combine {run_path}" if run_path else "akv combine"])
-            else:
-                rows.append(["Export another format", f"akv export {run_path}" if run_path else "akv export"])
-        rows.append(["Docs", "akv docs"])
+            rows.append(["Export another format", f"akv export {run_path}" if run_path else "akv export"])
         return rows[:3]
     rows.append(["Run workflow", "akv run"])
     rows.append(["Review output", f"akv review {run_path}" if run_path else "akv review"])

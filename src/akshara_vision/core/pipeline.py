@@ -732,8 +732,8 @@ def run_pipeline(
         _copy_source(path, run_dir / "sources", index=index, label=source_label)
         gc.collect()
 
-    raw_text = "\n\n".join(raw_parts).strip() + "\n"
-    cleaned_text = "\n\n".join(cleaned_parts).strip() + "\n"
+    raw_text = "\n\n\f\n\n".join(raw_parts).strip() + "\n"
+    cleaned_text = "\n\n\f\n\n".join(cleaned_parts).strip() + "\n"
     _notify(progress, "write", "Writing raw OCR text", advance=1)
     artifacts.write_raw_ocr(raw_text)
     artifacts.write_raw_checkpoint(cleaned_text)
@@ -884,7 +884,7 @@ def combine_stage_outputs(run_dir: Path) -> Dict[str, object]:
     if not combined_parts:
         raise RuntimeError(f"No staged pieces found in {stage_root}.")
 
-    combined_text = "\n\n".join(part for part in combined_parts if part.strip()).strip()
+    combined_text = "\n\n\f\n\n".join(part for part in combined_parts if part.strip()).strip()
     if not combined_text:
         combined_text = "[missing text]"
 
@@ -1097,7 +1097,7 @@ def _text_with_chunk_assets(text: str, chunks: object) -> str:
     if not isinstance(chunks, list) or not chunks:
         return text
     parts = [_chunk_text_with_assets(chunk) for chunk in chunks if isinstance(chunk, dict)]
-    combined = "\n\n".join(part for part in parts if part.strip()).strip()
+    combined = "\n\n\f\n\n".join(part for part in parts if part.strip()).strip()
     return combined or text
 
 
@@ -1135,7 +1135,7 @@ def _write_nested_folder_combines(items_root: Path, language_suffix: str) -> Lis
 
     written = []
     for folder, parts in sorted(folder_parts.items(), key=lambda item: str(item[0])):
-        combined = "\n\n".join(text for _label, text in parts if text.strip()).strip()
+        combined = "\n\n\f\n\n".join(text for _label, text in parts if text.strip()).strip()
         if not combined:
             continue
         path = folder / f"combined__{_language_slug(language_suffix)}.txt"
@@ -1165,7 +1165,7 @@ def _combined_parts_from_stages(stage_root: Path) -> List[str]:
         if not piece_paths:
             continue
         pieces = [path.read_text(encoding="utf-8", errors="replace").strip() for path in piece_paths]
-        text = "\n".join(part for part in pieces if part).strip()
+        text = "\n\n\f\n\n".join(part for part in pieces if part).strip()
         if text:
             combined_parts.append(text)
     return combined_parts
@@ -1403,7 +1403,7 @@ def _restore_text(
             chunk_record,
             profile.document_type,
         )
-    combined = "\n\n".join(part for part in restored_chunks if part.strip()).strip()
+    combined = "\n\n\f\n\n".join(part for part in restored_chunks if part.strip()).strip()
     if not combined:
         combined = "[missing text]"
     file_failure_reason = next(
@@ -4451,7 +4451,7 @@ def _apply_translation_stage(
                 }
             )
 
-        source_translated_text = "\n\n".join(
+        source_translated_text = "\n\n\f\n\n".join(
             part for part in source_translated_parts if part.strip()
         ).strip()
         if not source_translated_text:
@@ -4470,7 +4470,7 @@ def _apply_translation_stage(
         artifacts.write_item_final(source_index, source_name, source_final_text + "\n")
         translated_parts.append(source_final_text.strip())
 
-    translated_text = "\n\n".join(part for part in translated_parts if part.strip()).strip()
+    translated_text = "\n\n\f\n\n".join(part for part in translated_parts if part.strip()).strip()
     if not translated_text:
         translated_text = cleaned_text.strip()
 
@@ -4786,7 +4786,7 @@ def _restore_multimodal_pdf(
                 except OSError:
                     pass
 
-        combined = "\n\n".join(restored_pages) + "\n"
+        combined = "\n\n\f\n\n".join(restored_pages) + "\n"
         file_failure_reason = next(
             (chunk["failure_reason"] for chunk in chunks_record if chunk.get("failure_reason")),
             "",
@@ -5018,7 +5018,7 @@ def _restore_multimodal_zip(
                         source_index, label, chunk_idx, chunk_record, profile.document_type
                     )
                     chunk_idx += 1
-                archive_file_text = "\n\n".join(part for part in archive_file_parts if part.strip())
+                archive_file_text = "\n\n\f\n\n".join(part for part in archive_file_parts if part.strip())
                 artifacts.write_archive_item_restored(
                     source_index, label, archive_label, archive_file_text + "\n"
                 )
@@ -5186,12 +5186,12 @@ def _restore_multimodal_zip(
                 chunk_idx += 1
 
         for folder_label, parts in sorted(archive_folder_parts.items()):
-            folder_text = "\n\n".join(part for part in parts if part.strip()).strip()
+            folder_text = "\n\n\f\n\n".join(part for part in parts if part.strip()).strip()
             artifacts.write_archive_folder_combined(
                 source_index, label, folder_label, folder_text + "\n"
             )
 
-        combined = "\n\n".join(restored_parts) + "\n"
+        combined = "\n\n\f\n\n".join(restored_parts) + "\n"
         file_failure_reason = next(
             (chunk["failure_reason"] for chunk in chunks_record if chunk.get("failure_reason")),
             "",

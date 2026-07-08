@@ -152,6 +152,11 @@ If a reviewer deletes an unwanted file from `assets/`, later HTML, EPUB, and
 Markdown exports skip that missing image instead of rendering a broken image.
 Plain text may still show the original image marker as an audit reference.
 
+Use `akv compare path/to/run-folder` when you want a browser-friendly
+side-by-side report of source material and generated output. It is useful for
+checking whether image crops, PDF composition, and export layout still match
+the original page flow.
+
 For long runs, progress updates show token usage after each completed page,
 image, text chunk, or translation chunk when the provider reports usage. The
 message separates `tokens this page` from `run total` so cost/performance can be
@@ -168,6 +173,16 @@ Markdown, HTML, DOCX, EPUB, and PDF exports use the detected title where
 possible. Reader-facing exports avoid workflow/provider branding and are shaped
 as restored publication files. Technical run details stay in JSON, YAML,
 review files, and manifests.
+
+Publication exports do not print figure metadata labels into the rendered page.
+They place the figure itself, using saved placement metadata when the export
+format supports it, so the output reads like a publication rather than a tool
+log.
+
+PDF exports prefer the HTML rendering route first. If a browser-backed renderer
+such as `weasyprint`, `wkhtmltopdf`, or headless Chromium/Chrome is installed,
+Akshara Vision prints the HTML export to PDF from that layout path; otherwise it
+falls back to the built-in PDF writer.
 
 `akv export` can take either a run folder or a compiled output file such as
 `.txt`, `.md`, `.html`, `.json`, `.jsonl`, `.yaml`, `.hocr`, or `.xml`. It writes

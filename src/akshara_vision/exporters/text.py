@@ -65,8 +65,9 @@ class HtmlExporter:
             ".semantic-index h2,.semantic-appendix h2,.semantic-references h2,.semantic-bibliography h2,.semantic-footnotes h2{font-size:1.1rem;}\n"
             "p{font-size:1.08rem;margin:0 0 1.05rem;}\n"
             ".page-marker{text-align:center;font-variant-numeric:oldstyle-nums;margin:2rem 0 1rem;}\n"
-            ".figure-marker{break-inside:avoid;border:1px solid #6f5a47;padding:.75rem 1rem;text-align:center;font-style:italic;margin:1.5rem auto;}\n"
-            ".figure-marker img{max-width:100%;height:auto;display:block;margin:0 auto .75rem;}\n"
+            ".page-break{break-after:page;page-break-after:always;height:0;margin:0;padding:0;border:0;}\n"
+            ".figure-marker{break-inside:avoid;padding:0;text-align:center;font-style:normal;margin:1.5rem auto;}\n"
+            ".figure-marker img{max-width:100%;height:auto;display:block;margin:0 auto;}\n"
             ".figure-full-width{width:100%;}.figure-large{width:82%;}.figure-medium{width:64%;}.figure-small{width:46%;}.figure-wide{width:100%;}.figure-tall{width:56%;}\n"
             ".zone-top-left,.zone-middle-left,.zone-bottom-left{margin-left:0;}.zone-top-right,.zone-middle-right,.zone-bottom-right{margin-right:0;}\n"
             ".contents table{width:100%;border-collapse:collapse;margin:1rem 0 2rem;}\n"
@@ -233,11 +234,14 @@ def _unique_strings(values: list[str], limit: int) -> list[str]:
 def _markdown_plain_body(text: str, base_dir: Optional[Path] = None) -> str:
     parts = []
     for paragraph in _paragraphs(text):
+        if paragraph == "\f":
+            parts.append("\n<div class=\"page-break\"></div>\n")
+            continue
         image = _parse_image_marker(paragraph)
         if image:
-            alt, path = image
+            _alt, path = image
             if _asset_exists(path, base_dir):
-                parts.append(f"![{alt}]({path})")
+                parts.append(f"![]({path})")
         elif paragraph.lower().startswith("[image:"):
             parts.append(f"> {paragraph}")
         else:
@@ -258,11 +262,14 @@ def _html_plain_body(text: str, metadata_or_base_dir: Optional[object] = None) -
     base_dir = _export_base_dir(metadata) if metadata else metadata_or_base_dir
     body = []
     for paragraph in _paragraphs(text):
+        if paragraph == "\f":
+            body.append('<div class="page-break"></div>')
+            continue
         escaped = html.escape(paragraph).replace("\n", "<br />\n")
         stripped = paragraph.strip()
         image = _parse_image_marker(stripped)
         if image:
-            alt, path = image
+            _alt, path = image
             if _asset_exists(path, base_dir):
                 asset = _asset_for_path(path, metadata)
                 render_path = _asset_render_path(path, metadata)
@@ -271,8 +278,7 @@ def _html_plain_body(text: str, metadata_or_base_dir: Optional[object] = None) -
                 style_attr = f' style="{html.escape(style, quote=True)}"' if style else ""
                 body.append(
                     f'<figure class="{html.escape(classes, quote=True)}"{style_attr}>'
-                    f'<img src="{html.escape(render_path, quote=True)}" alt="{html.escape(alt, quote=True)}" />'
-                    f"<figcaption>{html.escape(alt)}</figcaption>"
+                    f'<img src="{html.escape(render_path, quote=True)}" alt="" />'
                     "</figure>"
                 )
         elif stripped.lower().startswith("[image:"):
@@ -513,14 +519,15 @@ def _docx_document_xml(
     for paragraph in text.split("\n\n"):
         if not paragraph.strip():
             continue
+        if paragraph.strip() == "\f":
+            paragraphs.append("<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>")
+            continue
         marker = _parse_image_marker(paragraph.strip())
         if marker:
             label, path = marker
             entry = media_by_path.get(path)
             if entry:
                 paragraphs.append(_docx_image_paragraph(entry))
-            escaped = html.escape(label)
-            paragraphs.append(_docx_centered_italic_paragraph(escaped))
             continue
         if _looks_like_page_marker(paragraph.strip()):
             escaped = html.escape(paragraph.strip())
@@ -788,8 +795,9 @@ def _epub_content(title: str, body: str, metadata: Optional[Dict[str, object]] =
         ".semantic-index h2,.semantic-appendix h2,.semantic-references h2,.semantic-bibliography h2,.semantic-footnotes h2{font-size:1.08em;}"
         "p{margin:0 0 1em;}"
         ".page-marker{text-align:center;margin:1.8em 0 1em;}"
-        ".figure-marker{text-align:center;font-style:italic;margin:1.5em auto;break-inside:avoid;}"
-        ".figure-marker img{max-width:100%;height:auto;display:block;margin:0 auto .75em;}"
+        ".page-break{break-after:page;page-break-after:always;height:0;margin:0;padding:0;border:0;}"
+        ".figure-marker{text-align:center;font-style:normal;margin:1.5em auto;break-inside:avoid;}"
+        ".figure-marker img{max-width:100%;height:auto;display:block;margin:0 auto;}"
         ".figure-full-width{width:100%;}.figure-large{width:82%;}.figure-medium{width:64%;}.figure-small{width:46%;}.figure-wide{width:100%;}.figure-tall{width:56%;}"
         ".contents table{width:100%;border-collapse:collapse;}"
         ".contents td{border-bottom:1px solid #d8cdbc;padding:.3em 0;}"
@@ -853,6 +861,11 @@ def _insert_marker_near_related_text(
                     inserted = True
             if inserted:
                 return "\n\n".join(rebuilt)
+    index = _asset_insertion_index(asset, paragraphs)
+    if index is not None:
+        rebuilt = list(paragraphs)
+        rebuilt.insert(index, marker)
+        return "\n\n".join(rebuilt)
     return (text.rstrip() + "\n\n" + marker).strip()
 
 
@@ -903,6 +916,24 @@ def _paragraph_matches_candidates(paragraph: str, candidates: list[str]) -> bool
 
 def _normalize_match_text(text: str) -> str:
     return re.sub(r"\s+", " ", str(text)).strip().lower()
+
+
+def _asset_insertion_index(asset: Dict[str, object], paragraphs: list[str]) -> Optional[int]:
+    if not paragraphs:
+        return None
+    layout = asset.get("layout") if isinstance(asset.get("layout"), dict) else {}
+    zone = str(layout.get("page_zone") or "").strip().lower()
+    if zone.startswith("top"):
+        return min(1, len(paragraphs))
+    if zone.startswith("bottom"):
+        return len(paragraphs)
+    if zone.startswith("middle"):
+        return max(1, min(len(paragraphs) // 2, len(paragraphs) - 1))
+    placement = asset.get("placement") if isinstance(asset.get("placement"), dict) else {}
+    width_hint = str(placement.get("recommended_width") or "").strip().lower()
+    if width_hint in {"full-width", "wide"}:
+        return 0
+    return len(paragraphs)
 
 
 def _rendered_asset_paths(text: str) -> set[str]:

@@ -14,6 +14,7 @@ from akshara_vision.cli.workflows import (
     check_command,
     clean_command,
     combine_command,
+    compare_command,
     docs_command,
     env_command,
     doctor_command,
@@ -193,6 +194,14 @@ if typer:
     ):
         review_command(run_dir=run_dir)
 
+    @app.command("compare")
+    @app.command("beforeafter")
+    @app.command("diff")
+    def compare(
+        run_dir: Optional[str] = typer.Argument(None, help="Path to Akshara run folder."),
+    ):
+        compare_command(run_dir=run_dir)
+
     @app.command("check")
     @app.command("test")
     @app.command("t")
@@ -319,6 +328,8 @@ def _fallback_main(argv: List[str]) -> None:
         resume_command(args.inputs[0] if args.inputs else None)
     elif command in {"review", "inspect", "qa"}:
         review_command(args.inputs[0] if args.inputs else None)
+    elif command in {"compare", "beforeafter", "diff"}:
+        compare_command(args.inputs[0] if args.inputs else None)
     elif command in {"check", "test", "t"}:
         raise SystemExit(check_command())
     elif command in {"export", "x"}:

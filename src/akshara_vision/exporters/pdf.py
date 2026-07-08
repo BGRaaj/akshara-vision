@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 import re
 from typing import Dict, Iterable, List
@@ -12,6 +14,7 @@ except ModuleNotFoundError:  # pragma: no cover - optional rendering fallback
     ImageFont = None
 
 from akshara_vision.exporters.base import ExportResult
+from akshara_vision.exporters.text import HtmlExporter
 
 
 class PdfExporter:
@@ -23,6 +26,8 @@ class PdfExporter:
 
     def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
         path = destination.with_suffix(self.suffix)
+        if _render_pdf_from_html(path, text, metadata):
+            return ExportResult(self.name, path)
         if self.kind == "image":
             _build_image_pdf(path, self.heading, text, metadata)
         else:
@@ -37,6 +42,8 @@ def _build_pdf_document(_heading: str, text: str, metadata: Dict[str, object]) -
 
 
 def _build_image_pdf(path: Path, heading: str, text: str, metadata: Dict[str, object]) -> None:
+    if _render_pdf_from_html(path, text, metadata):
+        return
     if Image is None or ImageDraw is None or ImageFont is None:
         path.write_bytes(_build_pdf_document(heading, text, metadata))
         return
@@ -74,6 +81,9 @@ def _pdf_book_lines(text: str, metadata: Dict[str, object]) -> List[str]:
         lines.append("")
     lines.append("")
     for paragraph in _paragraphs(text):
+        if paragraph == "\f":
+            lines.append("\f")
+            continue
         paragraph = _clean_visible_text(paragraph)
         if _parse_image_marker(paragraph):
             lines.append(paragraph)
@@ -88,6 +98,11 @@ def _paginate_pdf_lines(lines: Iterable[str], metadata: Dict[str, object] | None
     page: List[str] = []
     usable_lines = 43
     for line in lines:
+        if line == "\f":
+            if page:
+                wrapped_pages.append(page)
+                page = []
+            continue
         cost = _pdf_line_cost(line, metadata)
         current_cost = sum(_pdf_line_cost(item, metadata) for item in page)
         if page and current_cost + cost > usable_lines:
@@ -172,6 +187,69 @@ def _render_pdf_pages(pages: List[List[str]]) -> bytes:
         ).encode("utf-8")
     )
     return b"".join(rendered)
+
+
+def _render_pdf_from_html(path: Path, text: str, metadata: Dict[str, object]) -> bool:
+    html_destination = path.with_suffix("")
+    html_result = HtmlExporter().export(text, html_destination, metadata)
+    html_path = html_result.path
+    renderer_commands = [
+        ["weasyprint", str(html_path), str(path)],
+        ["wkhtmltopdf", str(html_path), str(path)],
+        [
+            "google-chrome",
+            "--headless",
+            "--disable-gpu",
+            f"--print-to-pdf={path}",
+            f"--print-to-pdf-no-header",
+            html_path.as_uri(),
+        ],
+        [
+            "chromium",
+            "--headless",
+            "--disable-gpu",
+            f"--print-to-pdf={path}",
+            f"--print-to-pdf-no-header",
+            html_path.as_uri(),
+        ],
+        [
+            "chromium-browser",
+            "--headless",
+            "--disable-gpu",
+            f"--print-to-pdf={path}",
+            f"--print-to-pdf-no-header",
+            html_path.as_uri(),
+        ],
+        [
+            "brave-browser",
+            "--headless",
+            "--disable-gpu",
+            f"--print-to-pdf={path}",
+            f"--print-to-pdf-no-header",
+            html_path.as_uri(),
+        ],
+    ]
+    for command in renderer_commands:
+        executable = shutil.which(command[0])
+        if not executable:
+            continue
+        command = [executable, *command[1:]]
+        try:
+            result = subprocess.run(
+                command,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=180,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0 and path.exists() and path.stat().st_size > 0:
+            return True
+    return False
 
 
 def _page_content_stream(page_lines: List[str], page_number: int, page_count: int) -> bytes:
@@ -388,12 +466,9 @@ def _draw_asset_marker(
     page_width: int,
     page_height: int,
 ) -> int:
-    label, marker_path = marker
+    _label, marker_path = marker
     line = _clean_visible_text(line)
-    label = _clean_visible_text(label)
     source = _asset_source_path(marker_path, metadata)
-    font = _reading_font(20)
-    caption_font = _reading_font(18)
     text_color = "#3a2417"
     if source and source.exists():
         try:
@@ -407,20 +482,16 @@ def _draw_asset_marker(
                 render_width = max(int(asset.width * scale), 1)
                 render_height = max(int(asset.height * scale), 1)
                 if render_height < 80 or y + render_height + 72 > page_height - 120:
-                    draw.text((x_margin, y), line, fill=text_color, font=font)
-                    return y + 34
+                    return y + 16
                 asset = asset.resize((render_width, render_height))
                 x = x_margin + max((page_width - x_margin * 2 - render_width) // 2, 0)
                 canvas.paste(asset, (x, y))
                 y += render_height + 18
         except Exception:
-            draw.text((x_margin, y), line, fill=text_color, font=font)
-            return y + 34
+            return y + 16
     else:
-        draw.text((x_margin, y), line, fill=text_color, font=font)
-        return y + 34
-    draw.text((x_margin, y), label, fill=text_color, font=caption_font)
-    return y + 44
+        return y + 16
+    return y + 18
 
 
 def _asset_render_width(path: str, metadata: Dict[str, object], available_width: int) -> int:
@@ -545,6 +616,11 @@ def _insert_marker_near_related_text(
                     inserted = True
             if inserted:
                 return "\n\n".join(rebuilt)
+    index = _asset_insertion_index(asset, paragraphs)
+    if index is not None:
+        rebuilt = list(paragraphs)
+        rebuilt.insert(index, marker)
+        return "\n\n".join(rebuilt)
     return (text.rstrip() + "\n\n" + marker).strip()
 
 
@@ -595,6 +671,24 @@ def _paragraph_matches_candidates(paragraph: str, candidates: List[str]) -> bool
 
 def _normalize_match_text(text: str) -> str:
     return re.sub(r"\s+", " ", _clean_visible_text(text)).strip().lower()
+
+
+def _asset_insertion_index(asset: Dict[str, object], paragraphs: List[str]) -> int | None:
+    if not paragraphs:
+        return None
+    layout = asset.get("layout") if isinstance(asset.get("layout"), dict) else {}
+    zone = str(layout.get("page_zone") or "").strip().lower()
+    if zone.startswith("top"):
+        return min(1, len(paragraphs))
+    if zone.startswith("bottom"):
+        return len(paragraphs)
+    if zone.startswith("middle"):
+        return max(1, min(len(paragraphs) // 2, len(paragraphs) - 1))
+    placement = asset.get("placement") if isinstance(asset.get("placement"), dict) else {}
+    width_hint = str(placement.get("recommended_width") or "").strip().lower()
+    if width_hint in {"full-width", "wide"}:
+        return 0
+    return len(paragraphs)
 
 
 _INVISIBLE_TEXT_RE = re.compile(r"[\u200b\u200c\u200d\ufeff\u2060\u00ad\ufe00-\ufe0f]")
