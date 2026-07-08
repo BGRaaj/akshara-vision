@@ -10,13 +10,14 @@
 =================================================================================
 ```
 
-Akshara Vision is a local-first terminal application for OCR cleanup,
-model-assisted book restoration, final-stage translation, batch processing, and
-archival exports.
+Akshara Vision is a local-first document-intelligence agent for restoring,
+understanding, reviewing, translating, assembling, and exporting scanned
+documents.
 
-It is designed for keyboard-first archival work: guided onboarding, interactive
-menus, reusable profiles, model selection, API key checks, batch input discovery,
-transparent run manifests, and clean text-first outputs.
+It is designed for serious keyboard-first document work: guided onboarding,
+interactive menus, reusable profiles, model routing, batch input discovery,
+native page-layout analysis, transparent run manifests, grounded file chat,
+review tools, and publication-style outputs.
 
 Accuracy, translation quality, and language coverage depend on the selected
 model, provider, scan quality, script complexity, and document damage.
@@ -28,15 +29,17 @@ model, provider, scan quality, script complexity, and document damage.
 | Interactive CLI | Monochrome terminal UI with orange accent branding, home board, dropdowns, checkboxes, confirmations, profile manager, model setup, doctor checks |
 | Restoration | Text cleanup, OCR error correction, uncertainty markers, chunked long-text processing, raw OCR preservation |
 | Vision input | Direct multimodal processing for scanned images and rendered PDF pages with dense-page and multilingual-script extraction guidance |
-| Document intelligence | Document-type-specific extraction guidance plus semantic roles, layout hints, and detected structure metadata for books, manuscripts, magazines, newspapers, articles, letters, and archive bundles |
+| Document intelligence | Document-type-specific extraction guidance plus semantic roles, native page block geometry, optional ML layout backends, layout hints, and detected structure metadata for books, manuscripts, magazines, newspapers, articles, letters, and archive bundles |
+| Chat | Grounded `akv chat` / `akv ask` mode over runs, outputs, or raw files with source citations, saved history, source search, and source opening |
 | Assembly enrichment | Optional figure markers plus candidate figure crops with bounding boxes, page zones, relative positions, size, DPI, and placement metadata |
+| Review | `akv review` visual block-map preview, low-confidence block audit, and asset inspection for run folders |
 | Language handling | Per-run choice to preserve all readable detected languages/scripts or strictly extract only the declared source language |
 | Translation | Automatic final-pass translation when output language differs from source language; manual modes for translate, bilingual, transliterate, and metadata-only workflows |
 | Batch processing | Files, folders, recursive folders, globs, ZIP archives, CSV manifests, and JSON manifests |
 | Profiles | Portable TOML profiles with defaults for workflow, languages, translation mode, model, output formats, destination, and locked quick runs |
 | Models | Ollama, LM Studio, Jan, llama.cpp/OpenAI-compatible local servers, Sarvam, native cloud providers, OpenRouter, and other OpenAI-compatible cloud APIs |
 | Reliability | Long model calls wait for completion, transient provider failures retry with backoff, and failed batch items are tracked without corrupting later outputs |
-| Exports | Text, Markdown, HTML, DOCX, EPUB, JSON, JSONL, YAML, OCR sidecars, review files, and PDF request notes |
+| Exports | Text, Markdown, HTML, DOCX, EPUB, JSON, JSONL, YAML, OCR sidecars, review files, and publication-style PDF outputs |
 | Auditability | Live token metrics during long runs, raw OCR file, restored checkpoint, JSON sidecars, staged per-page/per-chunk outputs, copied source inputs, structured run manifest, model usage metadata, truncation warnings, and failure reasons |
 
 ## Install
@@ -67,12 +70,20 @@ python -m akshara_vision
 python -m akshara_vision install
 ```
 
+Optional ML layout adapters are available for harder magazines, tables, and
+complex page layouts:
+
+```bash
+python -m pip install -e ".[layout]"
+```
+
 ## Quick Start
 
 ```bash
 akshara
 akv i
 akv q examples/sample.txt
+akv chat examples/sample.txt --question "What is this file about?"
 ```
 
 Inside the interactive shell:
@@ -81,6 +92,7 @@ Inside the interactive shell:
 /menu
 /run
 /quick examples/sample.txt --dry-run
+/chat examples/sample.txt --question "What is the main topic?"
 /batch path/to/folder
 /profiles
 /models
@@ -98,12 +110,14 @@ Inside the interactive shell:
 | `akshara run` | `akv r` | Guided full workflow |
 | `akshara quick` | `akv q` | Run with saved defaults |
 | `akshara batch` | `akv b` | Process folders, manifests, and mixed batches |
+| `akshara chat` | `akv chat` | Ask grounded questions over runs or files |
 | `akshara profile` | `akv p` | Create, modify, duplicate, delete, import, export, lock, or switch profiles |
 | `akshara model` | `akv m` | Detect, test, and choose local/cloud models |
 | `akshara instruct` | `akv ins` | View, edit, reset, or install editable instructions |
 | `akshara doctor` | `akv d` | Check dependencies, model providers, API keys, and export support |
 | `akshara combine` | `akv combine` | Rebuild a final document from staged outputs |
 | `akshara resume` | `akv resume` | Recover completed checkpoints from an interrupted run |
+| `akshara review` | `akv review` | Inspect layout, block confidence, and figure assets |
 | `akshara export` | `akv x` | Re-export an existing run or convert an existing output file |
 | `akshara check` | `akv t` | Compile and run unit tests |
 | `akshara clean` | `akv clean` | Remove generated local artifacts |
@@ -131,7 +145,7 @@ processed.
 | Default | Clean copy-paste `.txt` |
 | Publishing | `.md`, `.html`, `.docx`, `.epub` |
 | Structured | `.json`, `.jsonl`, `.yaml` |
-| OCR sidecars | `.hocr`, `.alto.xml`, `.page.xml` sidecar placeholders with restored text |
+| OCR sidecars | `.hocr`, `.alto.xml`, `.page.xml` portable sidecars with restored text and available metadata |
 | Review | `.review.md`, `raw_ocr.txt`, copied source files, `run_manifest.json` |
 | PDF exports | `.searchable.pdf`, `.image.pdf` structured PDF reports built from restored text and run metadata |
 
@@ -142,6 +156,10 @@ chunks, uncertainty notes, and failure reasons.
 Markdown, HTML, DOCX, and EPUB exports use the detected title and simple
 publication-oriented structure. HTML and EPUB preserve paragraph breaks, center
 page-marker-like lines, and style figure markers separately when present.
+
+The export layer also uses semantic document roles. A title page, contents
+page, chapter opening, journal abstract, letter signature, or archive record is
+treated differently from ordinary body text when the structure is clear.
 
 Each run also writes `items/` for human-friendly per-input outputs and `stages/`
 for recoverable page/chunk checkpoints. Interrupted runs can be recombined later
@@ -183,9 +201,21 @@ letters, journal articles, and archive bundles get their own role sets. Contents
 entries are parsed into title/page pairs when clear, so publishing exports can
 build more useful document structure without changing the restored text.
 
+The manifest now also stores per-page `native_layout` blocks plus a
+`layout_tree`, `layout_profile`, and `assembly_profile`. Those fields capture
+reading order, page flow, role, layout class, native block geometry, page
+markers, headings, confidence, and figure metadata so chat, combine, resume, and
+export all see the same structure.
+
 Blank pages are preserved as empty outputs and marked as `blank` in the manifest.
 If a model accidentally returns JSON-like text for a page, Akshara Vision extracts
 the restored text field before writing `.txt` outputs.
+
+The default instruction preset is strict on purpose. It asks the model to
+preserve reading order, ignore mirrored bleed-through, mark uncertainty honestly,
+return empty output for blank pages, and keep translation as a separate final
+pass. The model should not leak wrapper JSON or diagnostic text into ordinary
+exports.
 
 Recursive folders keep their nested structure under `items/` and `sources/`.
 ZIP archives keep their nested folder structure under `items/<zip>/archive/`.
@@ -197,6 +227,13 @@ current batch or document. It learns recurring layout hints such as paragraph
 spacing, heading style, page markers, lists, and table spacing, then passes those
 hints to later pages for more uniform formatting. This guide never replaces the
 main restoration instruction and is not printed into restored outputs.
+
+See also:
+
+- [docs/document-intelligence.md](docs/document-intelligence.md)
+- [docs/chat.md](docs/chat.md)
+- [docs/workflows.md](docs/workflows.md)
+- [docs/inputs-outputs.md](docs/inputs-outputs.md)
 
 ## Translation
 
@@ -366,9 +403,11 @@ project checks, use `akv check`.
 ## Notes
 
 - PDF page rendering for multimodal processing depends on Poppler `pdftoppm`.
-- Native searchable/image PDF assembly is represented by explicit request-note
-  files unless optional PDF assembly support is added.
-- OCR sidecar exports are portable placeholders containing restored text until a
-  dedicated OCR layout engine writes native layout data.
+- PDF exports are generated as publication-style documents from restored text and
+  available figure assets. Searchable PDF remains text-first; image PDF is a
+  composed reading PDF.
+- OCR sidecar exports are portable text sidecars with available restored text and
+  metadata. They are not replacements for specialized hOCR/ALTO/PAGE output from
+  a dedicated OCR segmentation model.
 - Model output should be reviewed before publication, especially for damaged
   pages, rare scripts, tables, handwriting, or translated passages.

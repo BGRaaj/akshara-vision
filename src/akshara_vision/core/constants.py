@@ -74,6 +74,10 @@ DOCUMENT_TYPES = [
     "Journal article",
     "Letter",
     "Archive bundle",
+    "Legal document",
+    "Finance document",
+    "Healthcare document",
+    "Insurance document",
     "General",
 ]
 

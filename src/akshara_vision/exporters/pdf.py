@@ -32,7 +32,7 @@ class PdfExporter:
 
 
 def _build_pdf_document(_heading: str, text: str, metadata: Dict[str, object]) -> bytes:
-    pages = _paginate_pdf_lines(_pdf_book_lines(text, metadata))
+    pages = _paginate_pdf_lines(_pdf_book_lines(text, metadata), metadata)
     return _render_pdf_pages(pages)
 
 
@@ -40,7 +40,7 @@ def _build_image_pdf(path: Path, heading: str, text: str, metadata: Dict[str, ob
     if Image is None or ImageDraw is None or ImageFont is None:
         path.write_bytes(_build_pdf_document(heading, text, metadata))
         return
-    pages = _paginate_pdf_lines(_pdf_book_lines(text, metadata))
+    pages = _paginate_pdf_lines(_pdf_book_lines(text, metadata), metadata)
     page_count = max(len(pages), 1)
     rendered_pages = [
         _render_image_page(page_lines, index + 1, page_count, metadata)
@@ -74,6 +74,7 @@ def _pdf_book_lines(text: str, metadata: Dict[str, object]) -> List[str]:
         lines.append("")
     lines.append("")
     for paragraph in _paragraphs(text):
+        paragraph = _clean_visible_text(paragraph)
         if _parse_image_marker(paragraph):
             lines.append(paragraph)
         else:
@@ -82,18 +83,46 @@ def _pdf_book_lines(text: str, metadata: Dict[str, object]) -> List[str]:
     return [line.rstrip() for line in lines]
 
 
-def _paginate_pdf_lines(lines: Iterable[str]) -> List[List[str]]:
+def _paginate_pdf_lines(lines: Iterable[str], metadata: Dict[str, object] | None = None) -> List[List[str]]:
     wrapped_pages: List[List[str]] = []
     page: List[str] = []
     usable_lines = 43
     for line in lines:
-        if len(page) >= usable_lines:
+        cost = _pdf_line_cost(line, metadata)
+        current_cost = sum(_pdf_line_cost(item, metadata) for item in page)
+        if page and current_cost + cost > usable_lines:
             wrapped_pages.append(page)
             page = []
         page.append(line)
     if page or not wrapped_pages:
         wrapped_pages.append(page or [""])
     return wrapped_pages
+
+
+def _pdf_line_cost(line: str, metadata: Dict[str, object] | None = None) -> int:
+    marker = _parse_image_marker(line)
+    if marker:
+        return _asset_line_cost(marker[1], metadata or {})
+    if not str(line).strip():
+        return 1
+    return 1
+
+
+def _asset_line_cost(path: str, metadata: Dict[str, object]) -> int:
+    if Image is None:
+        return 14
+    source = _asset_source_path(path, metadata)
+    if not source or not source.exists():
+        return 2
+    try:
+        with Image.open(source) as asset_image:
+            available_width = 1240 - 92 * 2
+            render_width = _asset_render_width(path, metadata, available_width)
+            scale = min(render_width / max(asset_image.width, 1), 1.0)
+            render_height = max(int(asset_image.height * scale), 1)
+            return max(6, min(28, (render_height + 92) // 34 + 1))
+    except Exception:
+        return 14
 
 
 def _render_pdf_pages(pages: List[List[str]]) -> bytes:
@@ -174,6 +203,12 @@ def _pdf_line_style(line: str, line_index: int, page_number: int, page_count: in
         return "F2", 18, 24
     if stripped.lower() == "contents":
         return "F2", 16, 22
+    if _looks_like_semantic_heading(stripped):
+        return "F2", 14, 18
+    if _looks_like_contents_entry(stripped):
+        return "F3", 10, 13
+    if _looks_like_page_marker(stripped):
+        return "F3", 10, 13
     if page_number == 1 and line_index <= 4 and stripped:
         return "F3", 11, 16
     if page_number == 1 and line_index <= 2:
@@ -218,6 +253,33 @@ def _wrap_heading(text: str, width: int = 56) -> List[str]:
     return _wrap_paragraph(str(text).strip(), width=width)
 
 
+def _looks_like_semantic_heading(text: str) -> bool:
+    if not text:
+        return False
+    if len(text) > 90:
+        return False
+    lowered = text.lower()
+    if text == text.upper() and len(text) >= 4:
+        return True
+    return bool(
+        re.match(
+            r"^(chapter|section|part|book|preface|foreword|introduction|appendix|index|abstract|references|bibliography|editorial|feature|article|letter|record|schedule|clauses|definitions|policy|coverage|claim|findings|diagnosis|medications|instructions)\b",
+            lowered,
+            re.I,
+        )
+    )
+
+
+def _looks_like_contents_entry(text: str) -> bool:
+    if not text or len(text) > 180:
+        return False
+    return bool(re.match(r"^.+?(?:\.{2,}|\s{2,}|[|:]\s*|-)\s*[ivxlcdm\d]+$", text.strip(), re.I))
+
+
+def _looks_like_page_marker(text: str) -> bool:
+    return bool(re.fullmatch(r"(?:page\s*)?[ivxlcdm\d]+", text.strip(), re.I))
+
+
 def _wrap_for_draw(text: str, font: ImageFont.ImageFont, max_width: int) -> List[str]:
     words = str(text).split()
     if not words:
@@ -247,7 +309,7 @@ def _draw_text_width(text: str, font: ImageFont.ImageFont) -> int:
 
 def _escape_pdf_text(text: str) -> str:
     return (
-        str(text)
+        _clean_visible_text(str(text))
         .replace("\\", "\\\\")
         .replace("(", "\\(")
         .replace(")", "\\)")
@@ -283,6 +345,7 @@ def _render_image_page(
     y = 96
     current_font = title_font
     for line_index, line in enumerate(page_lines):
+        line = _clean_visible_text(line)
         if line == "":
             y += line_height // 2
             current_font = font
@@ -326,6 +389,8 @@ def _draw_asset_marker(
     page_height: int,
 ) -> int:
     label, marker_path = marker
+    line = _clean_visible_text(line)
+    label = _clean_visible_text(label)
     source = _asset_source_path(marker_path, metadata)
     font = _reading_font(20)
     caption_font = _reading_font(18)
@@ -451,16 +516,95 @@ def _contents_lines(metadata: Dict[str, object]) -> List[str]:
 
 def _text_with_missing_asset_markers(text: str, metadata: Dict[str, object]) -> str:
     existing = _rendered_asset_paths(text)
-    markers = []
+    output = text.rstrip()
     for asset in _metadata_assets(metadata):
         path = str(asset.get("path") or "").strip()
-        if not path or path in existing:
+        normalized = path.replace("\\", "/")
+        if not path or normalized in existing:
             continue
         label = _asset_display_label(asset)
-        markers.append(f"[image: {label} | {path}]")
-    if not markers:
-        return text
-    return (text.rstrip() + "\n\n" + "\n".join(markers)).strip()
+        marker = f"[image: {label} | {path}]"
+        output = _insert_marker_near_related_text(output, marker, asset, metadata)
+    return output.strip() if output.strip() else text
+
+
+def _insert_marker_near_related_text(
+    text: str, marker: str, asset: Dict[str, object], metadata: Dict[str, object]
+) -> str:
+    related = _asset_related_text(asset, metadata)
+    paragraphs = _paragraphs(text)
+    if related and paragraphs:
+        candidates = _marker_match_candidates(related)
+        if candidates:
+            rebuilt: List[str] = []
+            inserted = False
+            for paragraph in paragraphs:
+                rebuilt.append(paragraph)
+                if not inserted and _paragraph_matches_candidates(paragraph, candidates):
+                    rebuilt.append(marker)
+                    inserted = True
+            if inserted:
+                return "\n\n".join(rebuilt)
+    return (text.rstrip() + "\n\n" + marker).strip()
+
+
+def _asset_related_text(asset: Dict[str, object], metadata: Dict[str, object]) -> str:
+    path = str(asset.get("path") or "").replace("\\", "/")
+    if not path:
+        return ""
+    records = metadata.get("restoration")
+    if not isinstance(records, list):
+        return ""
+    for record in records:
+        chunks = record.get("chunks") if isinstance(record, dict) else None
+        if not isinstance(chunks, list):
+            continue
+        for chunk in chunks:
+            if not isinstance(chunk, dict):
+                continue
+            for chunk_asset in chunk.get("assets") or []:
+                if not isinstance(chunk_asset, dict):
+                    continue
+                candidate = str(chunk_asset.get("path") or "").replace("\\", "/")
+                if candidate == path:
+                    return str(
+                        chunk.get("translated_text")
+                        or chunk.get("restored_text")
+                        or chunk.get("text")
+                        or ""
+                    )
+    return ""
+
+
+def _marker_match_candidates(text: str) -> List[str]:
+    candidates = []
+    for paragraph in _paragraphs(text):
+        normalized = _normalize_match_text(paragraph)
+        if len(normalized) >= 40:
+            candidates.append(normalized[:120])
+    normalized_text = _normalize_match_text(text)
+    if len(normalized_text) >= 40:
+        candidates.append(normalized_text[:120])
+    return candidates
+
+
+def _paragraph_matches_candidates(paragraph: str, candidates: List[str]) -> bool:
+    haystack = _normalize_match_text(paragraph)
+    return any(candidate and candidate in haystack for candidate in candidates)
+
+
+def _normalize_match_text(text: str) -> str:
+    return re.sub(r"\s+", " ", _clean_visible_text(text)).strip().lower()
+
+
+_INVISIBLE_TEXT_RE = re.compile(r"[\u200b\u200c\u200d\ufeff\u2060\u00ad\ufe00-\ufe0f]")
+_CONTROL_TEXT_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _clean_visible_text(text: str) -> str:
+    cleaned = _INVISIBLE_TEXT_RE.sub("", str(text))
+    cleaned = _CONTROL_TEXT_RE.sub("", cleaned)
+    return cleaned.replace("\t", " ")
 
 
 def _rendered_asset_paths(text: str) -> set[str]:

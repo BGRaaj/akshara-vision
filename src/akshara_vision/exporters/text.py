@@ -51,10 +51,18 @@ class HtmlExporter:
             "main{max-width:780px;margin:0 auto;padding:56px 28px 72px;}\n"
             ".document-magazine,.document-newspaper{max-width:920px;}\n"
             ".document-manuscript{font-family:'Times New Roman',Georgia,serif;line-height:1.85;}\n"
+            ".document-legal-document,.document-finance-document,.document-healthcare-document,.document-insurance-document{max-width:860px;}\n"
+            ".layout-multi-column .multi-column{column-gap:2.2rem;column-rule:1px solid #d8cdbc;}\n"
+            ".layout-structured-list .contents table,.layout-structured-list .notes ol{max-width:32rem;margin-left:auto;margin-right:auto;}\n"
+            ".layout-front-matter h1{margin-bottom:3rem;}\n"
             "h1{text-align:center;font-size:2.45rem;line-height:1.15;margin:0 0 2.5rem;}\n"
             ".credits{text-align:center;margin:-1.5rem 0 2.75rem;font-style:italic;}\n"
             ".credits p{font-size:1rem;margin:.25rem 0;}\n"
             "h2{font-size:1.35rem;line-height:1.25;margin:2rem 0 1rem;}\n"
+            ".semantic-title h2,.semantic-title-page h2,.semantic-cover h2,.semantic-cover-sheet h2{font-size:1.9rem;text-align:center;margin:0 0 1.8rem;}\n"
+            ".semantic-preface h2,.semantic-foreword h2,.semantic-introduction h2,.semantic-editorial h2,.semantic-abstract h2{font-size:1.2rem;letter-spacing:.02em;text-transform:uppercase;}\n"
+            ".semantic-chapter h2,.semantic-section h2,.semantic-article h2,.semantic-feature h2,.semantic-record h2,.semantic-letter h2{font-size:1.4rem;}\n"
+            ".semantic-index h2,.semantic-appendix h2,.semantic-references h2,.semantic-bibliography h2,.semantic-footnotes h2{font-size:1.1rem;}\n"
             "p{font-size:1.08rem;margin:0 0 1.05rem;}\n"
             ".page-marker{text-align:center;font-variant-numeric:oldstyle-nums;margin:2rem 0 1rem;}\n"
             ".figure-marker{break-inside:avoid;border:1px solid #6f5a47;padding:.75rem 1rem;text-align:center;font-style:italic;margin:1.5rem auto;}\n"
@@ -68,7 +76,7 @@ class HtmlExporter:
             "@media print{body{background:white;color:black}main{max-width:none;padding:0.75in}h1{page-break-after:avoid}}\n"
             "</style>\n"
             "</head>\n"
-            f'<body><main class="{document_class}"><h1>{title}</h1>\n{credits}{body}\n</main></body>\n</html>\n',
+            f'<body><main class="{_document_classes(metadata)}" data-document-type="{html.escape(_document_type_slug(metadata), quote=True)}"><h1>{title}</h1>\n{credits}{body}\n</main></body>\n</html>\n',
             encoding="utf-8",
         )
         return ExportResult(self.name, path)
@@ -340,10 +348,12 @@ def _html_structured_body(metadata: Optional[Dict[str, object]]) -> str:
             contents.extend(entry for entry in entries if isinstance(entry, dict))
             continue
         if role in {"title", "title-page"} and heading:
-            blocks.append(f'<section class="title-page"><h2>{html.escape(heading)}</h2></section>')
+            blocks.append(
+                f'<section class="title-page semantic semantic-{_css_slug(role)}"><h2>{html.escape(heading)}</h2></section>'
+            )
         elif heading and _role_deserves_heading(role):
             blocks.append(
-                f'<section class="{html.escape(role)}"><h2>{html.escape(heading)}</h2>'
+                f'<section class="semantic semantic-{html.escape(_css_slug(role), quote=True)}"><h2>{html.escape(heading)}</h2>'
                 "</section>"
             )
         footnotes.extend(unit.get("footnotes") if isinstance(unit.get("footnotes"), list) else [])
@@ -353,20 +363,53 @@ def _html_structured_body(metadata: Optional[Dict[str, object]]) -> str:
             title = html.escape(str(entry.get("title") or ""))
             page = html.escape(str(entry.get("page") or ""))
             rows.append(f"<tr><td>{title}</td><td>{page}</td></tr>")
-        blocks.insert(0, '<section class="contents"><h2>Contents</h2><table>' + "".join(rows) + "</table></section>")
+        blocks.insert(
+            0,
+            '<section class="contents semantic semantic-contents"><h2>Contents</h2><table>'
+            + "".join(rows)
+            + "</table></section>",
+        )
     if footnotes:
         notes = []
         for note in footnotes:
             marker = html.escape(str(note.get("marker") or ""))
             body = html.escape(str(note.get("text") or ""))
             notes.append(f"<li><span>{marker}</span> {body}</li>")
-        blocks.append('<section class="notes"><h2>Notes</h2><ol>' + "".join(notes) + "</ol></section>")
+        blocks.append(
+            '<section class="notes semantic semantic-footnotes"><h2>Notes</h2><ol>'
+            + "".join(notes)
+            + "</ol></section>"
+        )
     return "\n".join(blocks)
 
 
 def _role_deserves_heading(role: str) -> bool:
     return role in {
+        "cover",
+        "cover-sheet",
+        "front-page",
+        "parties",
+        "recitals",
+        "definitions",
+        "clauses",
+        "schedule",
+        "exhibits",
+        "statement",
+        "account",
+        "summary",
+        "patient",
+        "findings",
+        "diagnosis",
+        "medications",
+        "instructions",
+        "policy",
+        "coverage",
+        "claim",
+        "exclusions",
+        "premium",
+        "terms",
         "preface",
+        "foreword",
         "section",
         "chapter",
         "index",
@@ -461,6 +504,12 @@ def _docx_document_xml(
     ]
     for credit in _publication_credits(metadata):
         paragraphs.append(_docx_centered_italic_paragraph(html.escape(credit)))
+    contents = _docx_contents_entries(metadata)
+    if contents:
+        paragraphs.append(_docx_centered_heading("Contents"))
+        for title_text, page_text in contents:
+            paragraphs.append(_docx_contents_line(title_text, page_text))
+    footnotes = _docx_footnote_entries(metadata)
     for paragraph in text.split("\n\n"):
         if not paragraph.strip():
             continue
@@ -482,6 +531,10 @@ def _docx_document_xml(
             continue
         escaped = html.escape(paragraph).replace("\n", "<w:br/>")
         paragraphs.append(f"<w:p><w:r><w:t>{escaped}</w:t></w:r></w:p>")
+    if footnotes:
+        paragraphs.append(_docx_centered_heading("Notes"))
+        for marker, body in footnotes:
+            paragraphs.append(_docx_footnote_line(marker, body))
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
@@ -490,6 +543,74 @@ def _docx_document_xml(
         'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
         'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">'
         f"<w:body>{''.join(paragraphs)}</w:body></w:document>"
+    )
+
+
+def _docx_centered_heading(text: str) -> str:
+    return (
+        "<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr>"
+        "<w:r><w:rPr><w:b/><w:sz w:val=\"26\"/></w:rPr>"
+        f"<w:t>{html.escape(text)}</w:t></w:r></w:p>"
+    )
+
+
+def _docx_contents_entries(metadata: Optional[Dict[str, object]]) -> list[tuple[str, str]]:
+    if not metadata:
+        return []
+    structure = metadata.get("document_structure")
+    if not isinstance(structure, dict):
+        return []
+    contents = structure.get("contents_entries")
+    if not isinstance(contents, list):
+        return []
+    entries = []
+    for entry in contents:
+        if not isinstance(entry, dict):
+            continue
+        title_text = str(entry.get("title") or "").strip()
+        page_text = str(entry.get("page") or "").strip()
+        if title_text and page_text:
+            entries.append((title_text, page_text))
+    return entries
+
+
+def _docx_contents_line(title_text: str, page_text: str) -> str:
+    return (
+        "<w:p><w:pPr><w:tabs><w:tab w:val=\"right\" w:pos=\"8000\"/></w:tabs></w:pPr>"
+        "<w:r><w:t>"
+        f"{html.escape(title_text)}"
+        "</w:t></w:r><w:r><w:tab/></w:r>"
+        "<w:r><w:rPr><w:i/></w:rPr>"
+        f"<w:t>{html.escape(page_text)}</w:t></w:r></w:p>"
+    )
+
+
+def _docx_footnote_entries(metadata: Optional[Dict[str, object]]) -> list[tuple[str, str]]:
+    if not metadata:
+        return []
+    structure = metadata.get("document_structure")
+    if not isinstance(structure, dict):
+        return []
+    footnotes = structure.get("footnotes")
+    if not isinstance(footnotes, list):
+        return []
+    entries = []
+    for note in footnotes:
+        if not isinstance(note, dict):
+            continue
+        marker = str(note.get("marker") or "").strip()
+        body = str(note.get("text") or "").strip()
+        if marker and body:
+            entries.append((marker, body))
+    return entries
+
+
+def _docx_footnote_line(marker: str, body: str) -> str:
+    return (
+        "<w:p><w:pPr><w:ind w:left=\"320\" w:hanging=\"320\"/></w:pPr>"
+        "<w:r><w:rPr><w:b/></w:rPr>"
+        f"<w:t>{html.escape(marker)}</w:t></w:r><w:r><w:t> </w:t></w:r>"
+        f"<w:r><w:t>{html.escape(body)}</w:t></w:r></w:p>"
     )
 
 
@@ -644,7 +765,7 @@ def _epub_container() -> str:
 
 
 def _epub_content(title: str, body: str, metadata: Optional[Dict[str, object]] = None) -> str:
-    document_class = _document_class(metadata)
+    document_class = _document_classes(metadata)
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<html xmlns="http://www.w3.org/1999/xhtml"><head>'
@@ -657,6 +778,14 @@ def _epub_content(title: str, body: str, metadata: Optional[Dict[str, object]] =
         "h2{font-size:1.22em;margin:2em 0 1em;}"
         ".document-magazine,.document-newspaper{max-width:48em;}"
         ".document-manuscript{line-height:1.85;}"
+        ".document-legal-document,.document-finance-document,.document-healthcare-document,.document-insurance-document{max-width:45em;}"
+        ".layout-multi-column .multi-column{column-gap:2rem;column-rule:1px solid #d8cdbc;}"
+        ".layout-structured-list .contents table,.layout-structured-list .notes ol{max-width:34em;margin-left:auto;margin-right:auto;}"
+        ".layout-front-matter h1{margin-bottom:2.5em;}"
+        ".semantic-title h2,.semantic-title-page h2,.semantic-cover h2,.semantic-cover-sheet h2{text-align:center;font-size:1.6em;margin:0 0 1.5em;}"
+        ".semantic-preface h2,.semantic-foreword h2,.semantic-introduction h2,.semantic-editorial h2,.semantic-abstract h2{text-transform:uppercase;letter-spacing:.02em;}"
+        ".semantic-chapter h2,.semantic-section h2,.semantic-article h2,.semantic-feature h2,.semantic-record h2,.semantic-letter h2{font-size:1.28em;}"
+        ".semantic-index h2,.semantic-appendix h2,.semantic-references h2,.semantic-bibliography h2,.semantic-footnotes h2{font-size:1.08em;}"
         "p{margin:0 0 1em;}"
         ".page-marker{text-align:center;margin:1.8em 0 1em;}"
         ".figure-marker{text-align:center;font-style:italic;margin:1.5em auto;break-inside:avoid;}"
@@ -666,7 +795,7 @@ def _epub_content(title: str, body: str, metadata: Optional[Dict[str, object]] =
         ".contents td{border-bottom:1px solid #d8cdbc;padding:.3em 0;}"
         ".contents td:last-child{text-align:right;white-space:nowrap;padding-left:1em;}"
         "</style>"
-        f'</head><body class="{document_class}"><h1>{html.escape(title)}</h1>{body}</body></html>'
+        f'</head><body class="{document_class}" data-document-type="{html.escape(_document_type_slug(metadata), quote=True)}"><h1>{html.escape(title)}</h1>{body}</body></html>'
     )
 
 
@@ -695,17 +824,85 @@ def _text_with_missing_asset_markers(text: str, metadata: Optional[Dict[str, obj
     if not metadata:
         return text
     existing = _rendered_asset_paths(text)
-    markers = []
+    output = text.rstrip()
     for asset in _metadata_assets(metadata):
         path = str(asset.get("path") or "").strip()
-        if not path or path in existing:
+        normalized = path.replace("\\", "/")
+        if not path or normalized in existing:
             continue
         label = _asset_display_label(asset)
-        markers.append(f"[image: {label} | {path}]")
-    if not markers:
-        return text
-    suffix = "\n\n".join(markers)
-    return (text.rstrip() + "\n\n" + suffix).strip()
+        marker = f"[image: {label} | {path}]"
+        output = _insert_marker_near_related_text(output, marker, asset, metadata)
+    return output.strip() if output.strip() else text
+
+
+def _insert_marker_near_related_text(
+    text: str, marker: str, asset: Dict[str, object], metadata: Dict[str, object]
+) -> str:
+    related = _asset_related_text(asset, metadata)
+    paragraphs = _paragraphs(text)
+    if related and paragraphs:
+        candidates = _marker_match_candidates(related)
+        if candidates:
+            rebuilt = []
+            inserted = False
+            for paragraph in paragraphs:
+                rebuilt.append(paragraph)
+                if not inserted and _paragraph_matches_candidates(paragraph, candidates):
+                    rebuilt.append(marker)
+                    inserted = True
+            if inserted:
+                return "\n\n".join(rebuilt)
+    return (text.rstrip() + "\n\n" + marker).strip()
+
+
+def _asset_related_text(asset: Dict[str, object], metadata: Dict[str, object]) -> str:
+    path = str(asset.get("path") or "").replace("\\", "/")
+    if not path:
+        return ""
+    records = metadata.get("restoration")
+    if not isinstance(records, list):
+        return ""
+    for record in records:
+        chunks = record.get("chunks") if isinstance(record, dict) else None
+        if not isinstance(chunks, list):
+            continue
+        for chunk in chunks:
+            if not isinstance(chunk, dict):
+                continue
+            for chunk_asset in chunk.get("assets") or []:
+                if not isinstance(chunk_asset, dict):
+                    continue
+                candidate = str(chunk_asset.get("path") or "").replace("\\", "/")
+                if candidate == path:
+                    return str(
+                        chunk.get("translated_text")
+                        or chunk.get("restored_text")
+                        or chunk.get("text")
+                        or ""
+                    )
+    return ""
+
+
+def _marker_match_candidates(text: str) -> list[str]:
+    candidates = []
+    for paragraph in _paragraphs(text):
+        normalized = _normalize_match_text(paragraph)
+        if len(normalized) >= 40:
+            candidates.append(normalized[:120])
+    normalized_text = _normalize_match_text(text)
+    if len(normalized_text) >= 40:
+        candidates.append(normalized_text[:120])
+    return candidates
+
+
+def _paragraph_matches_candidates(paragraph: str, candidates: list[str]) -> bool:
+    haystack = _normalize_match_text(paragraph)
+    return any(candidate and candidate in haystack for candidate in candidates)
+
+
+def _normalize_match_text(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text)).strip().lower()
 
 
 def _rendered_asset_paths(text: str) -> set[str]:
@@ -779,6 +976,31 @@ def _document_class(metadata: Optional[Dict[str, object]]) -> str:
     if metadata:
         document_type = str(metadata.get("document_type") or "general")
     return f"document-{_css_slug(document_type)}"
+
+
+def _document_type_slug(metadata: Optional[Dict[str, object]]) -> str:
+    if not metadata:
+        return "general"
+    return _css_slug(str(metadata.get("document_type") or "general"))
+
+
+def _document_layout_class(metadata: Optional[Dict[str, object]]) -> str:
+    if not metadata:
+        return "layout-single-flow"
+    structure = metadata.get("document_structure")
+    if not isinstance(structure, dict):
+        return "layout-single-flow"
+    layout_profile = structure.get("layout_profile")
+    if not isinstance(layout_profile, dict):
+        return "layout-single-flow"
+    flow = str(layout_profile.get("dominant_flow") or "single-flow").strip()
+    return f"layout-{_css_slug(flow)}"
+
+
+def _document_classes(metadata: Optional[Dict[str, object]]) -> str:
+    return " ".join(
+        part for part in (_document_class(metadata), _document_layout_class(metadata)) if part
+    )
 
 
 def _css_slug(value: str) -> str:

@@ -7,10 +7,13 @@ import zipfile
 from unittest.mock import Mock, patch
 
 from akshara_vision.core.config import ConfigStore
+from akshara_vision.core.chat import answer_question, build_chat_bundle
 from akshara_vision.core.env import load_env_files
 from akshara_vision.core.input_discovery import discover_inputs
 from akshara_vision.core.models import RunRequest, WorkflowProfile
 from akshara_vision.core.pipeline import (
+    _document_structure,
+    _native_page_layout,
     _restore_text,
     _split_text_chunks,
     combine_stage_outputs,
@@ -25,7 +28,8 @@ class CoreTests(unittest.TestCase):
     def test_default_instruction_is_loaded(self):
         instruction = load_instruction()
         self.assertIn("historical books and archival documents", instruction)
-        self.assertIn("obey the output format requested by the task", instruction)
+        self.assertIn("Do not overthink damaged words", instruction)
+        self.assertIn("The only allowed output is the exact format requested by the task", instruction)
 
     def test_profile_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -37,6 +41,7 @@ class CoreTests(unittest.TestCase):
             profile.model.generation_limit = 16384
             profile.extract_figures = True
             profile.language_policy = "strict-source"
+            profile.layout_backend = "custom-layout"
             store.save_profile(profile)
             loaded = store.load_profile("book-cleanup")
             self.assertEqual(loaded.name, "book-cleanup")
@@ -46,6 +51,7 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(loaded.model.generation_limit, 16384)
             self.assertTrue(loaded.extract_figures)
             self.assertEqual(loaded.language_policy, "strict-source")
+            self.assertEqual(loaded.layout_backend, "custom-layout")
 
     def test_profile_delete_updates_default(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -115,8 +121,9 @@ class CoreTests(unittest.TestCase):
         ui = MonoUI()
         with patch("sys.stdin.isatty", return_value=False):
             with patch("sys.stdout.isatty", return_value=False):
-                self.assertTrue(ui.confirm("Start this run?", True))
-                self.assertFalse(ui.confirm("Start this run?", False))
+                with patch.object(ui, "write"):
+                    self.assertTrue(ui.confirm("Start this run?", True))
+                    self.assertFalse(ui.confirm("Start this run?", False))
 
     def test_input_discovery_supports_text(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -365,6 +372,278 @@ class CoreTests(unittest.TestCase):
             self.assertIn("source.txt", manifest)
             self.assertNotIn(str(tmp_path), manifest)
 
+    def test_run_manifest_includes_layout_tree_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "source.txt"
+            source.write_text("Book title\n\nChapter 1\n\nBody text.", encoding="utf-8")
+            profile = WorkflowProfile(
+                name="layout-tree",
+                output_formats=["txt"],
+                output_dir=str(tmp_path / "out"),
+            )
+            selection = discover_inputs([str(source)])
+            result = run_pipeline(RunRequest(profile=profile, inputs=selection))
+            manifest = json.loads((Path(result["run_dir"]) / "run_manifest.json").read_text(encoding="utf-8"))
+            structure = manifest["metadata"]["document_structure"]
+            self.assertIn("layout_tree", structure)
+            self.assertIn("layout_profile", structure)
+            self.assertGreaterEqual(len(structure["layout_tree"]), 1)
+            node = structure["layout_tree"][0]
+            self.assertIn("reading_order", node)
+            self.assertIn("confidence", node)
+            self.assertIn("assets", node)
+            self.assertIn("assembly_profile", structure)
+            self.assertIn("export_layout", structure["assembly_profile"])
+            self.assertEqual(structure["assembly_profile"]["target_formats"], ["txt"])
+
+    def test_native_page_layout_detects_blocks_and_columns(self):
+        try:
+            from PIL import Image, ImageDraw
+        except ModuleNotFoundError:
+            self.skipTest("Pillow is not installed in this environment")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "two-column-page.png"
+            image = Image.new("RGB", (600, 800), "white")
+            draw = ImageDraw.Draw(image)
+            for y in range(80, 680, 42):
+                draw.rectangle((70, y, 245, y + 13), fill="black")
+                draw.rectangle((345, y, 520, y + 13), fill="black")
+            image.save(source)
+
+            layout = _native_page_layout(source)
+            self.assertEqual(layout["engine"], "akshara-native-heuristic")
+            self.assertGreaterEqual(layout["block_count"], 1)
+            self.assertIn("blocks", layout)
+            self.assertGreaterEqual(layout["column_count_estimate"], 1)
+            self.assertIn(layout["dominant_flow"], {"single-flow", "multi-column", "dense-prose"})
+            self.assertIn("confidence", layout["blocks"][0])
+
+    def test_layout_backend_registry_accepts_custom_backend(self):
+        from akshara_vision.core.pipeline import available_layout_backends, register_layout_backend
+
+        def backend(path):
+            del path
+            return {"engine": "unit-test-layout", "blocks": []}
+
+        register_layout_backend("unit-test-layout", backend)
+        self.assertIn("unit-test-layout", available_layout_backends())
+
+    def test_document_structure_promotes_native_layout_profile(self):
+        native_layout = {
+            "engine": "akshara-native-heuristic",
+            "column_count_estimate": 2,
+            "dominant_flow": "multi-column",
+            "block_count": 9,
+            "blocks": [
+                {
+                    "order": 1,
+                    "role": "text-region",
+                    "bbox": [10, 20, 200, 300],
+                    "relative_bbox": [0.02, 0.03, 0.4, 0.5],
+                    "page_zone": "middle-left",
+                }
+            ],
+        }
+        records = [
+            {
+                "label": "magazine.pdf",
+                "chunks": [
+                    {
+                        "index": 1,
+                        "restored_text": "Article title\n\nFirst column text.\n\nSecond column text.",
+                        "native_layout": native_layout,
+                    }
+                ],
+            }
+        ]
+
+        structure = _document_structure(records, "Magazine", WorkflowProfile())
+        self.assertEqual(structure["layout_profile"]["column_count_estimate"], 2)
+        self.assertEqual(structure["layout_tree"][0]["native_layout"], native_layout)
+        self.assertEqual(structure["layout_tree"][0]["page_layout"]["native_flow"], "multi-column")
+
+    def test_html_export_uses_layout_profile_class(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "publication"
+            metadata = {
+                "title": "Magazine Issue",
+                "document_type": "Magazine",
+                "document_structure": {
+                    "layout_profile": {"dominant_flow": "multi-column", "column_count_estimate": 2}
+                },
+            }
+            result = exporter_registry()["html"].export("Body text", destination, metadata)
+            html_text = result.path.read_text(encoding="utf-8")
+            self.assertIn("layout-multi-column", html_text)
+
+    def test_document_types_include_vertical_packs(self):
+        from akshara_vision.core.constants import DOCUMENT_TYPES
+
+        self.assertIn("Legal document", DOCUMENT_TYPES)
+        self.assertIn("Finance document", DOCUMENT_TYPES)
+        self.assertIn("Healthcare document", DOCUMENT_TYPES)
+        self.assertIn("Insurance document", DOCUMENT_TYPES)
+
+    def test_chat_bundle_uses_run_manifest_sources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / "demo-run"
+            run_dir.mkdir()
+            (run_dir / "run_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "metadata": {
+                            "title": "Demo Volume",
+                            "restoration": [
+                                {
+                                    "source": "page-1.png",
+                                    "label": "page 1",
+                                    "chunks": [
+                                        {
+                                            "index": 1,
+                                            "restored_text": "The first restored passage.",
+                                            "semantic_tags": {
+                                                "role": "body",
+                                                "role_label": "body",
+                                                "confidence": 0.91,
+                                            },
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            bundle = build_chat_bundle([str(run_dir)], profile=WorkflowProfile())
+            self.assertEqual(bundle.title, "Demo Volume")
+            self.assertEqual(bundle.sources[0].source_id, "S1")
+            self.assertIn("first restored passage", bundle.sources[0].text)
+
+            seen_instruction = {}
+
+            class ChatProvider:
+                name = "mock"
+
+                def restore_text(self, text, instruction, settings, media_path=None):
+                    del text, settings, media_path
+                    seen_instruction["value"] = instruction
+                    return (
+                        "The document discusses the opening passage. [S1]",
+                        {
+                            "prompt_tokens": 3,
+                            "completion_tokens": 4,
+                            "total_tokens": 7,
+                            "truncated": False,
+                        },
+                    )
+
+            with patch("akshara_vision.core.chat.get_provider", return_value=ChatProvider()):
+                answer, usage, sources = answer_question(bundle, "What is the opening passage about?")
+            self.assertIn("[S1]", answer)
+            self.assertEqual(usage["total_tokens"], 7)
+            self.assertEqual([source.source_id for source in sources], ["S1"])
+            self.assertIn("Cite claims inline with source ids", seen_instruction["value"])
+
+    def test_chat_history_helpers_round_trip(self):
+        from akshara_vision.core.chat import load_chat_history, save_chat_history
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "chat_session.json"
+            save_chat_history(path, [("What is here?", "A passage. [S1]")])
+            history = load_chat_history(path)
+            self.assertEqual(history, [("What is here?", "A passage. [S1]")])
+
+    def test_review_command_writes_layout_report(self):
+        from akshara_vision.cli.workflows import review_command
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            run_dir.mkdir()
+            (run_dir / "run_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "metadata": {
+                            "title": "Reviewable",
+                            "document_type": "Book",
+                            "document_structure": {
+                                "layout_profile": {
+                                    "dominant_flow": "multi-column",
+                                    "column_count_estimate": 2,
+                                    "notes": ["Likely 2-column page structure on some pages."],
+                                },
+                                "layout_tree": [
+                                    {
+                                        "source": "page.png",
+                                        "native_layout": {
+                                            "blocks": [
+                                                {
+                                                    "role": "text-region",
+                                                    "page_zone": "middle-left",
+                                                    "confidence": 0.42,
+                                                }
+                                            ]
+                                        },
+                                    }
+                                ],
+                            },
+                            "assets": [
+                                {
+                                    "label": "plate",
+                                    "path": "assets/plate.png",
+                                    "width": 100,
+                                    "height": 80,
+                                    "layout": {"page_zone": "middle-center"},
+                                }
+                            ],
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            with patch("akshara_vision.cli.workflows.ui.heading"):
+                with patch("akshara_vision.cli.workflows.ui.section"):
+                    with patch("akshara_vision.cli.workflows.ui.table"):
+                        with patch("akshara_vision.cli.workflows.ui.bullet_list"):
+                            with patch("akshara_vision.cli.workflows.ui.note"):
+                                with patch("akshara_vision.cli.workflows.ui.status"):
+                                    with patch("akshara_vision.cli.workflows.ui.write"):
+                                        with patch("akshara_vision.cli.workflows._next_recommendations"):
+                                            report = review_command(str(run_dir))
+            self.assertTrue(report.exists())
+            report_text = report.read_text(encoding="utf-8")
+            self.assertIn("Low-Confidence Blocks", report_text)
+            self.assertIn("plate", report_text)
+
+    def test_native_layout_preview_renders_block_map(self):
+        from akshara_vision.cli.workflows import _native_layout_previews
+
+        blocks = [
+            {
+                "role": "text-region",
+                "page_zone": "middle-left",
+                "confidence": 0.83,
+                "relative_bbox": [0.05, 0.1, 0.45, 0.4],
+            },
+            {
+                "role": "figure-region",
+                "page_zone": "middle-right",
+                "confidence": 0.67,
+                "relative_bbox": [0.55, 0.3, 0.9, 0.7],
+            },
+        ]
+        preview = _native_layout_previews([{"source": "page.png", "role_label": "body", "native_layout": {"blocks": blocks}}])
+        self.assertEqual(len(preview), 1)
+        self.assertIn("+", preview[0])
+        self.assertIn("figure-region", preview[0])
+
     def test_translation_auto_enables_when_output_language_differs(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -482,8 +761,8 @@ class CoreTests(unittest.TestCase):
                 (run_dir / "items" / "0002-english-page-png" / "final__kannada.txt").exists()
             )
             output_text = (run_dir / "akshara_output.txt").read_text(encoding="utf-8")
-            self.assertIn("===== kannada-page.png =====", output_text)
-            self.assertIn("===== english-page.png =====", output_text)
+            self.assertNotIn("=====", output_text)
+            self.assertIn("ಕನ್ನಡ ಅನುವಾದಿತ ಪಠ್ಯ", output_text)
             manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["metadata"]["document_structure"]["asset_count"], 0)
 
@@ -636,7 +915,7 @@ class CoreTests(unittest.TestCase):
             combined = result["output_path"].read_text(encoding="utf-8")
             self.assertIn("First part", combined)
             self.assertIn("Second part", combined)
-            self.assertIn("===== 0001-source =====", combined)
+            self.assertNotIn("=====", combined)
 
     def test_combine_uses_neutral_title_when_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -668,10 +947,9 @@ class CoreTests(unittest.TestCase):
             (item_two / "final__kannada.txt").write_text("Final second\n", encoding="utf-8")
             result = combine_stage_outputs(run_dir)
             combined = result["output_path"].read_text(encoding="utf-8")
-            self.assertIn("===== 0001-first-page-png =====", combined)
             self.assertIn("Final first", combined)
-            self.assertIn("===== 0002-second-page-png =====", combined)
             self.assertIn("Final second", combined)
+            self.assertNotIn("=====", combined)
             self.assertNotIn("Restored first", combined)
 
     def test_combine_prefers_structured_json_sidecars(self):
@@ -700,10 +978,9 @@ class CoreTests(unittest.TestCase):
             (item_two / "final__kannada.txt").write_text("Final second\n", encoding="utf-8")
             result = combine_stage_outputs(run_dir)
             combined = result["output_path"].read_text(encoding="utf-8")
-            self.assertIn("===== book/part-1/0001-page-001-txt =====", combined)
             self.assertIn("Final first", combined)
-            self.assertIn("===== book/part-2/0002-page-001-txt =====", combined)
             self.assertIn("Final second", combined)
+            self.assertNotIn("=====", combined)
 
     def test_combine_rebuilds_requested_export_formats(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -777,7 +1054,7 @@ class CoreTests(unittest.TestCase):
                                     "chunks": [
                                         {
                                             "index": 1,
-                                            "restored_text": "Page text",
+                                            "restored_text": "Page text before the plate.",
                                             "assets": [
                                                 {
                                                     "kind": "figure-crop",
@@ -792,7 +1069,12 @@ class CoreTests(unittest.TestCase):
                                                     },
                                                 }
                                             ],
-                                        }
+                                        },
+                                        {
+                                            "index": 2,
+                                            "restored_text": "Second page text after the plate.",
+                                            "assets": [],
+                                        },
                                     ],
                                 }
                             ],
@@ -805,8 +1087,16 @@ class CoreTests(unittest.TestCase):
             result = combine_stage_outputs(run_dir)
             combined = result["output_path"].read_text(encoding="utf-8")
             self.assertIn("[image: plate", combined)
+            self.assertLess(
+                combined.index("[image: plate"),
+                combined.index("Second page text after the plate."),
+            )
             html_text = (run_dir / "akshara_output.html").read_text(encoding="utf-8")
             self.assertIn("<img", html_text)
+            self.assertLess(
+                html_text.index("<img"),
+                html_text.index("Second page text after the plate."),
+            )
             self.assertIn("figure-large", html_text)
             self.assertIn("zone-middle-center", html_text)
             self.assertIn("assets/book/0001-0001-figure-01.png", html_text)
@@ -932,10 +1222,9 @@ class CoreTests(unittest.TestCase):
             self.assertTrue((run_dir / "sources" / "book" / "part-1" / "0001-page-001.txt").exists())
             self.assertTrue((run_dir / "sources" / "book" / "part-2" / "0002-page-001.txt").exists())
             output_text = (run_dir / "akshara_output.txt").read_text(encoding="utf-8")
-            self.assertIn("===== book/part-1/page-001.txt =====", output_text)
             self.assertIn("First nested page", output_text)
-            self.assertIn("===== book/part-2/page-001.txt =====", output_text)
             self.assertIn("Second nested page", output_text)
+            self.assertNotIn("=====", output_text)
 
     def test_failure_reason_helper_reports_blurry_or_unreadable_source(self):
         from akshara_vision.core.pipeline import _infer_failure_reason

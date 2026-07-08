@@ -42,6 +42,10 @@ The profile output folder is only the default. Interactive runs ask for the
 destination again, so each book, batch, or experiment can be saved wherever it
 belongs without editing the profile.
 
+If you plan to use the chat mode, the same profile still applies. Chat reuses
+the selected provider and model so follow-up questions stay grounded in the
+same backend.
+
 Model setup starts with a simple `local` or `cloud` choice, then narrows to the
 matching provider list.
 

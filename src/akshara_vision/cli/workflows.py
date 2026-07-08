@@ -19,6 +19,14 @@ from akshara_vision.core.constants import (
     OUTPUT_FORMATS,
     WORKFLOWS,
 )
+from akshara_vision.core.chat import (
+    answer_question,
+    build_chat_bundle,
+    chat_session_path,
+    load_chat_history,
+    save_chat_history,
+    search_sources,
+)
 from akshara_vision.core.env import env_status, load_env_files
 from akshara_vision.core.input_discovery import discover_inputs
 from akshara_vision.core.models import (
@@ -28,6 +36,7 @@ from akshara_vision.core.models import (
     effective_translation_mode,
 )
 from akshara_vision.core.pipeline import (
+    available_layout_backends,
     combine_stage_outputs,
     estimate_progress_units,
     find_executable,
@@ -48,11 +57,13 @@ HOME_ACTIONS = [
     "Core - Run workflow",
     "Core - Quick run",
     "Core - Batch process",
+    "Core - Chat over files",
     "Core - Guided setup",
     "Core - Profiles",
     "Core - Models",
     "Core - Instructions",
     "Extended - Resume run",
+    "Extended - Review layout and assets",
     "Extended - Combine outputs",
     "Extended - Export existing output",
     "Extended - Docs",
@@ -94,6 +105,7 @@ def _render_home() -> None:
             ("Run", "/run", "Full guided workflow"),
             ("Quick", "/quick", "Use saved defaults"),
             ("Batch", "/batch", "Folders and manifests"),
+            ("Chat", "/chat", "Ask questions over files"),
             ("Setup", "/init", "Create your workflow"),
             ("Profiles", "/profiles", "Defaults and locks"),
             ("Models", "/models", "Local and cloud choices"),
@@ -105,12 +117,23 @@ def _render_home() -> None:
     ui.board(
         [
             ("Resume", "/resume", "Continue interrupted work"),
+            ("Review", "/review", "Inspect layout and assets"),
             ("Combine", "/combine", "Assemble staged outputs"),
             ("Export", "/export", "Convert existing outputs"),
             ("Docs", "/docs", "Open project guides"),
             ("Guide", "/guide", "Adjust CLI guidance"),
             ("Modes", "/mode", "Speed and quality tradeoffs"),
             ("Customize", "/ui", "Light/dark terminal theme"),
+        ],
+        compact=prefs["density"] == "compact",
+    )
+    ui.section("Suggested Next")
+    ui.board(
+        [
+            ("Review", "/review", "Inspect the latest layout map"),
+            ("Resume", "/resume", "Recover interrupted work"),
+            ("Combine", "/combine", "Rebuild staged outputs"),
+            ("Export", "/export", "Change output format"),
         ],
         compact=prefs["density"] == "compact",
     )
@@ -172,11 +195,13 @@ def _menu_command() -> str:
         "Core - Run workflow": "/run",
         "Core - Quick run": "/quick",
         "Core - Batch process": "/batch",
+        "Core - Chat over files": "/chat",
         "Core - Guided setup": "/init",
         "Core - Profiles": "/profiles",
         "Core - Models": "/models",
         "Core - Instructions": "/instructions",
         "Extended - Resume run": "/resume",
+        "Extended - Review layout and assets": "/review",
         "Extended - Combine outputs": "/combine",
         "Extended - Export existing output": "/export",
         "Extended - Docs": "/docs",
@@ -219,7 +244,7 @@ def _dispatch_session_command(raw: str) -> bool:
     args = parts[1:]
     if not command.startswith("/"):
         ui.write("Akshara Vision uses slash commands in the interactive session.")
-        ui.write("Try /run, /quick, /batch, /doctor, /models, /profiles, or /help.")
+        ui.write("Try /run, /quick, /batch, /chat, /doctor, /models, /profiles, or /help.")
         return True
     if command in {"/exit", "/quit", "/q!"}:
         ui.write("Namaskara.")
@@ -258,6 +283,9 @@ def _dispatch_session_command(raw: str) -> bool:
     elif command in {"/batch", "/b"}:
         inputs, flags = _session_args(args)
         batch_run(inputs=inputs or None, dry_run=flags["dry_run"])
+    elif command in {"/chat", "/ask"}:
+        inputs, flags = _session_args(args)
+        chat_command(inputs=inputs or None, recursive=flags["recursive"], question=None)
     elif command in {"/profiles", "/profile", "/p"}:
         profile_command(action=args[0] if args else "menu")
     elif command in {"/models", "/model", "/m"}:
@@ -272,6 +300,8 @@ def _dispatch_session_command(raw: str) -> bool:
         combine_command(args[0] if args else None)
     elif command in {"/resume", "/recover"}:
         resume_command(args[0] if args else None)
+    elif command in {"/review", "/inspect", "/qa"}:
+        review_command(args[0] if args else None)
     elif command in {"/export", "/x"}:
         export_command(args[0] if args else None)
     elif command in {"/install", "/setup"}:
@@ -310,6 +340,7 @@ def _session_help() -> None:
             ["/run [inputs...]", "Guided full workflow"],
             ["/quick [inputs...]", "Run locked/default profile"],
             ["/batch [folder...]", "Recursive batch workflow"],
+            ["/chat [inputs...]", "Ask grounded questions over runs or files"],
             ["/init", "Create a default profile"],
             ["/profiles", "List or manage profiles"],
             ["/models", "Check model providers"],
@@ -321,6 +352,7 @@ def _session_help() -> None:
             ["/doctor", "Check local setup"],
             ["/combine [run-folder]", "Rebuild staged outputs into one document"],
             ["/resume [run-folder]", "Recover completed checkpoints from an interrupted run"],
+            ["/review [run-folder]", "Inspect layout, assets, and confidence"],
             ["/export [path]", "Convert a run folder or existing output to another format"],
             ["/install", "Install PDF/image system dependencies"],
             ["/check, /test", "Compile and run unit tests"],
@@ -456,6 +488,7 @@ def onboard(
         return profile
     profile.model.request_timeout_seconds = choose_request_timeout(profile.model.request_timeout_seconds)
     profile.output_formats = choose_output_formats(profile.output_formats)
+    profile.layout_backend = choose_layout_backend(profile.layout_backend)
     profile.extract_figures = ui.confirm(
         "Enable figure/image markers and page image assets for assembly?", profile.extract_figures
     )
@@ -749,6 +782,28 @@ def choose_language_policy(default: str = "preserve-detected") -> str:
     return values[selected]
 
 
+def choose_layout_backend(default: str = "native") -> str:
+    backend_names = available_layout_backends()
+    labels = []
+    values = {}
+    for name in backend_names:
+        if name == "native":
+            label = "Native page layout analysis"
+        elif name == "off":
+            label = "Off - skip layout analysis"
+        else:
+            label = f"{name} layout backend"
+        labels.append(label)
+        values[label] = name
+    labels.append("Back")
+    values["Back"] = default or "native"
+    default_backend = default if default in backend_names else "native"
+    default_label = next(label for label, value in values.items() if value == default_backend)
+    ui.note("Layout analysis stores page blocks, confidence, columns, and figure/text hints.")
+    selected = ui.choose("Layout analysis", labels, default_label)
+    return values[selected]
+
+
 def choose_output_folder(default: str = "akshara-output") -> str:
     while True:
         entered = ui.text("Path to output folder", default)
@@ -811,6 +866,390 @@ def batch_run(
     return execute_run(profile, inputs=inputs, recursive=True, dry_run=dry_run)
 
 
+def chat_command(
+    inputs: Optional[Iterable[str]] = None,
+    profile_name: Optional[str] = None,
+    recursive: bool = False,
+    question: Optional[str] = None,
+    system_prompt: Optional[str] = None,
+):
+    store = ConfigStore()
+    profile = store.load_profile(profile_name) if profile_name else store.load_default_profile()
+    ui.heading("Akshara Vision", "Document Chat")
+    input_values = list(inputs or [])
+    if not input_values:
+        entered = ui.text("Path(s) to run folders, output files, files, folders, or globs")
+        input_values = [item.strip() for item in entered.split(",") if item.strip()]
+    if not input_values:
+        ui.status("info", "Chat cancelled.")
+        return None
+    with ui.progress("Indexing chat sources...") as reporter:
+        bundle = build_chat_bundle(input_values, profile=profile, recursive=recursive)
+        reporter.finish(f"Indexed {len(bundle.sources)} source chunk(s)")
+    ui.section("Review")
+    ui.table(
+        [
+            ["Title", bundle.title],
+            ["Provider", profile.model.provider],
+            ["Model", profile.model.model],
+            ["Sources", str(len(bundle.sources))],
+        ]
+    )
+    session_path = chat_session_path(input_values)
+    history: List[tuple[str, str]] = load_chat_history(session_path)
+    if history:
+        ui.status("info", f"Loaded {len(history)} previous chat turn(s).")
+    if ui.interactive():
+        ui.note("Chat tools: /sources, /find TERM, /open S1, /clear, /exit")
+    pending_question = question
+    while True:
+        if not pending_question:
+            pending_question = ui.text("Ask a question about these sources")
+        pending_question = str(pending_question or "").strip()
+        if not pending_question:
+            break
+        if pending_question.startswith("/"):
+            if _handle_chat_tool(pending_question, bundle, history, session_path) is False:
+                break
+            pending_question = ""
+            continue
+        with ui.progress("Answering...") as reporter:
+            answer, usage, selected_sources = answer_question(
+                bundle,
+                pending_question,
+                system_prompt=system_prompt,
+                history=history,
+            )
+            reporter.finish("Complete")
+        ui.section("Answer")
+        ui.write(answer or "[no answer]")
+        ui.section("Sources")
+        ui.bullet_list(
+            [
+                f"{source.source_id}: {source.label}"
+                for source in selected_sources
+            ]
+        )
+        usage_row = usage.get("total_tokens") if isinstance(usage, dict) else None
+        if usage_row:
+            ui.write(f"Token usage: {usage_row}")
+        history.append((pending_question, answer))
+        save_chat_history(session_path, history)
+        if question is not None or not ui.interactive():
+            break
+        if not ui.confirm("Ask another question?", True):
+            break
+        pending_question = ""
+    _next_recommendations(
+        _next_steps_for_context("chat", run_dir=Path(input_values[0]) if input_values else None)
+    )
+    return bundle
+
+
+def _handle_chat_tool(
+    command: str,
+    bundle,
+    history: List[tuple[str, str]],
+    session_path: Optional[Path],
+) -> bool:
+    parts = command.split(maxsplit=1)
+    name = parts[0].lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
+    if name in {"/exit", "/quit"}:
+        return False
+    if name == "/sources":
+        ui.section("Sources")
+        ui.table(
+            [["ID", "Label", "Role"]]
+            + [
+                [
+                    source.source_id,
+                    source.label,
+                    str(source.metadata.get("role_label") or source.metadata.get("role") or ""),
+                ]
+                for source in bundle.sources[:40]
+            ]
+        )
+        return True
+    if name == "/find":
+        if not arg:
+            ui.status("warning", "Use /find followed by a word or phrase.")
+            return True
+        matches = search_sources(bundle.sources, arg)
+        ui.section("Matches")
+        if not matches:
+            ui.write("No matching source chunks found.")
+            return True
+        ui.table([["ID", "Label", "Excerpt"]] + [[s.source_id, s.label, _excerpt_for_query(s.text, arg)] for s in matches])
+        return True
+    if name == "/open":
+        source = next((item for item in bundle.sources if item.source_id.lower() == arg.lower()), None)
+        if source is None:
+            ui.status("warning", "Use /open with a source id such as S1.")
+            return True
+        ui.section(f"{source.source_id}: {source.label}")
+        ui.write(source.text[:3000].strip() or "[missing text]")
+        return True
+    if name == "/clear":
+        history.clear()
+        save_chat_history(session_path, history)
+        ui.status("success", "Chat history cleared for this run.")
+        return True
+    if name == "/help":
+        ui.section("Chat Tools")
+        ui.table(
+            [
+                ["/sources", "List indexed source chunks"],
+                ["/find TERM", "Search source chunks locally"],
+                ["/open S1", "Open a cited source excerpt"],
+                ["/clear", "Clear saved chat history for this run"],
+                ["/exit", "Leave chat"],
+            ]
+        )
+        return True
+    ui.status("warning", "Unknown chat tool. Try /help.")
+    return True
+
+
+def _excerpt_for_query(text: str, query: str, limit: int = 160) -> str:
+    lower = text.lower()
+    terms = [term for term in re.findall(r"[A-Za-z0-9][A-Za-z0-9-]{1,}", query.lower())]
+    position = min((lower.find(term) for term in terms if lower.find(term) >= 0), default=0)
+    start = max(position - 50, 0)
+    excerpt = text[start : start + limit].replace("\n", " ").strip()
+    return excerpt + ("..." if len(text) > start + limit else "")
+
+
+def review_command(run_dir: Optional[str] = None):
+    ui.heading("Akshara Vision", "Review Layout")
+    if not run_dir:
+        run_dir = ui.text("Path to Akshara run folder")
+    if not run_dir:
+        ui.status("info", "Review cancelled.")
+        return None
+    path = Path(run_dir).expanduser()
+    manifest_path = path / "run_manifest.json"
+    if not manifest_path.exists():
+        ui.status("error", f"No run_manifest.json found in {path}")
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        ui.status("error", f"Could not read manifest: {exc}")
+        return None
+
+    metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+    structure = (
+        metadata.get("document_structure")
+        if isinstance(metadata.get("document_structure"), dict)
+        else {}
+    )
+    layout_profile = (
+        structure.get("layout_profile") if isinstance(structure.get("layout_profile"), dict) else {}
+    )
+    layout_tree = structure.get("layout_tree") if isinstance(structure.get("layout_tree"), list) else []
+    assets = _manifest_assets(metadata)
+    low_confidence = _low_confidence_layout_blocks(layout_tree)
+
+    ui.section("Summary")
+    ui.table(
+        [
+            ["Run folder", str(path)],
+            ["Title", str(metadata.get("title") or "Untitled")],
+            ["Document type", str(metadata.get("document_type") or manifest.get("document_type") or "")],
+            ["Dominant flow", str(layout_profile.get("dominant_flow") or "unknown")],
+            ["Columns", str(layout_profile.get("column_count_estimate") or "unknown")],
+            ["Layout nodes", str(len(layout_tree))],
+            ["Assets", str(len(assets))],
+            ["Low-confidence blocks", str(len(low_confidence))],
+        ]
+    )
+    notes = layout_profile.get("notes") if isinstance(layout_profile.get("notes"), list) else []
+    if notes:
+        ui.section("Layout Notes")
+        ui.bullet_list([str(note) for note in notes])
+    preview = _native_layout_previews(layout_tree)
+    if preview:
+        ui.section("Layout Preview")
+        for block in preview[:3]:
+            ui.write(block)
+            ui.write("")
+    if low_confidence:
+        ui.section("Low-Confidence Blocks")
+        ui.table([["Source", "Role", "Zone", "Confidence"]] + low_confidence[:12])
+    if assets:
+        ui.section("Figure Assets")
+        ui.table([["Label", "Zone", "Size", "Path"]] + _asset_review_rows(assets[:16]))
+        ui.note("If an asset crop is wrong, delete that image file; later exports will skip it.")
+
+    report_path = path / "layout_review.md"
+    report_path.write_text(
+        _layout_review_markdown(path, metadata, layout_profile, layout_tree, assets, low_confidence),
+        encoding="utf-8",
+    )
+    ui.status("success", f"Saved review: {report_path}")
+    _next_recommendations(_next_steps_for_context("review", run_dir=path))
+    return report_path
+
+
+def _manifest_assets(metadata: Dict[str, object]) -> List[Dict[str, object]]:
+    assets = metadata.get("assets") if isinstance(metadata.get("assets"), list) else []
+    if assets:
+        return [asset for asset in assets if isinstance(asset, dict)]
+    collected: List[Dict[str, object]] = []
+    restoration = metadata.get("restoration") if isinstance(metadata.get("restoration"), list) else []
+    for record in restoration:
+        if not isinstance(record, dict):
+            continue
+        chunks = record.get("chunks") if isinstance(record.get("chunks"), list) else []
+        for chunk in chunks:
+            if not isinstance(chunk, dict):
+                continue
+            for asset in chunk.get("assets") if isinstance(chunk.get("assets"), list) else []:
+                if isinstance(asset, dict):
+                    collected.append(asset)
+    return collected
+
+
+def _low_confidence_layout_blocks(layout_tree: List[object]) -> List[List[str]]:
+    rows: List[List[str]] = []
+    for node in layout_tree:
+        if not isinstance(node, dict):
+            continue
+        native = node.get("native_layout") if isinstance(node.get("native_layout"), dict) else {}
+        blocks = native.get("blocks") if isinstance(native.get("blocks"), list) else []
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            try:
+                confidence = float(block.get("confidence") or 1.0)
+            except (TypeError, ValueError):
+                confidence = 1.0
+            if confidence >= 0.55:
+                continue
+            rows.append(
+                [
+                    str(node.get("source") or ""),
+                    str(block.get("role") or "block"),
+                    str(block.get("page_zone") or ""),
+                    f"{confidence:.2f}",
+                ]
+            )
+    return rows
+
+
+def _asset_review_rows(assets: List[Dict[str, object]]) -> List[List[str]]:
+    rows = []
+    for asset in assets:
+        layout = asset.get("layout") if isinstance(asset.get("layout"), dict) else {}
+        rows.append(
+            [
+                str(asset.get("label") or asset.get("kind") or "figure"),
+                str(layout.get("page_zone") or ""),
+                f"{asset.get('width') or '?'}x{asset.get('height') or '?'}",
+                str(asset.get("path") or ""),
+            ]
+        )
+    return rows
+
+
+def _native_layout_previews(layout_tree: List[object]) -> List[str]:
+    previews: List[str] = []
+    for node in layout_tree:
+        if not isinstance(node, dict):
+            continue
+        native = node.get("native_layout") if isinstance(node.get("native_layout"), dict) else {}
+        blocks = native.get("blocks") if isinstance(native.get("blocks"), list) else []
+        if not blocks:
+            continue
+        title = f"{node.get('source') or 'page'} | {node.get('role_label') or node.get('role') or 'body'}"
+        preview = _render_native_layout_block_map(blocks)
+        if preview:
+            previews.append(f"{title}\n{preview}")
+    return previews
+
+
+def _render_native_layout_block_map(blocks: List[Dict[str, object]]) -> str:
+    width = 38
+    height = 14
+    canvas = [[" " for _ in range(width)] for _ in range(height)]
+    labels = []
+    for index, block in enumerate(blocks[:10], start=1):
+        bbox = block.get("relative_bbox") if isinstance(block.get("relative_bbox"), list) else None
+        if not bbox or len(bbox) != 4:
+            continue
+        left = max(0, min(width - 1, int(float(bbox[0]) * width)))
+        top = max(0, min(height - 1, int(float(bbox[1]) * height)))
+        right = max(left + 1, min(width, int(float(bbox[2]) * width)))
+        bottom = max(top + 1, min(height, int(float(bbox[3]) * height)))
+        mark = _block_mark(block.get("role"))
+        for y in range(top, bottom):
+            for x in range(left, right):
+                canvas[y][x] = mark
+        labels.append(
+            f"{index}. {block.get('role') or 'block'} @{block.get('page_zone') or 'zone'} "
+            f"conf {float(block.get('confidence') or 0.0):.2f}"
+        )
+    lines = ["+" + "-" * width + "+"]
+    for row in canvas:
+        lines.append("|" + "".join(row) + "|")
+    lines.append("+" + "-" * width + "+")
+    if labels:
+        lines.append("Blocks:")
+        lines.extend(f"  - {label}" for label in labels[:10])
+    return "\n".join(lines)
+
+
+def _block_mark(role: object) -> str:
+    role_text = str(role or "").lower()
+    if "figure" in role_text:
+        return "F"
+    if "header" in role_text or "footer" in role_text:
+        return "H"
+    if "page-number" in role_text or "small-mark" in role_text:
+        return "N"
+    return "T"
+
+
+def _layout_review_markdown(
+    run_dir: Path,
+    metadata: Dict[str, object],
+    layout_profile: Dict[str, object],
+    layout_tree: List[object],
+    assets: List[Dict[str, object]],
+    low_confidence: List[List[str]],
+) -> str:
+    lines = [
+        "# Layout Review",
+        "",
+        f"- Run folder: `{run_dir}`",
+        f"- Title: {metadata.get('title') or 'Untitled'}",
+        f"- Document type: {metadata.get('document_type') or ''}",
+        f"- Dominant flow: {layout_profile.get('dominant_flow') or 'unknown'}",
+        f"- Column estimate: {layout_profile.get('column_count_estimate') or 'unknown'}",
+        f"- Layout nodes: {len(layout_tree)}",
+        f"- Assets: {len(assets)}",
+        f"- Low-confidence blocks: {len(low_confidence)}",
+        "",
+    ]
+    notes = layout_profile.get("notes") if isinstance(layout_profile.get("notes"), list) else []
+    if notes:
+        lines.extend(["## Notes", ""])
+        lines.extend(f"- {note}" for note in notes)
+        lines.append("")
+    if low_confidence:
+        lines.extend(["## Low-Confidence Blocks", "", "| Source | Role | Zone | Confidence |", "| --- | --- | --- | --- |"])
+        lines.extend(f"| {row[0]} | {row[1]} | {row[2]} | {row[3]} |" for row in low_confidence[:60])
+        lines.append("")
+    if assets:
+        lines.extend(["## Assets", "", "| Label | Zone | Size | Path |", "| --- | --- | --- | --- |"])
+        for row in _asset_review_rows(assets):
+            lines.append(f"| {row[0]} | {row[1]} | {row[2]} | `{row[3]}` |")
+        lines.append("")
+    lines.append("Reviewer note: deleting a wrong asset image is safe; exporters skip missing assets.")
+    return "\n".join(lines).strip() + "\n"
+
+
 def execute_run(
     profile: WorkflowProfile,
     inputs: Optional[Iterable[str]] = None,
@@ -830,6 +1269,7 @@ def execute_run(
         ui.section("Destination")
         profile.output_dir = choose_output_folder(profile.output_dir)
         profile.language_policy = choose_language_policy(profile.language_policy)
+        profile.layout_backend = choose_layout_backend(profile.layout_backend)
         profile.model.request_timeout_seconds = choose_request_timeout(
             profile.model.request_timeout_seconds
         )
@@ -907,6 +1347,7 @@ def review_run(profile: WorkflowProfile, selection) -> None:
         ["Mode", profile.model.execution_mode],
         ["Mode behavior", _mode_behavior(profile.model.execution_mode)],
         ["Slow request policy", _request_timeout_display(profile.model.request_timeout_seconds)],
+        ["Layout analysis", profile.layout_backend],
         ["Figure/image assets", "on" if profile.extract_figures else "off"],
         ["Generation limit", str(profile.model.generation_limit or "auto")],
         ["Outputs", ", ".join(profile.output_formats)],
@@ -1018,14 +1459,7 @@ def _finished_screen(result) -> None:
     if issues:
         ui.section("Issues")
         ui.bullet_list(issues)
-    ui.section("Next")
-    ui.table(
-        [
-            ["Review text", f"{run_dir}/akshara_output.txt"],
-            ["Re-export", f"akv export {run_dir}"],
-            ["Clean later", "akv clean"],
-        ]
-    )
+    _next_recommendations(_next_steps_for_context("run", run_dir=run_dir, exports=exports, issues=issues))
 
 
 def profile_command(
@@ -1220,6 +1654,7 @@ def _show_profile(profile: WorkflowProfile, show_heading: bool = True) -> None:
             ["Instruction", profile.instruction_preset],
             ["Output folder", profile.output_dir],
             ["Figure/image assets", "on" if profile.extract_figures else "off"],
+            ["Layout analysis", profile.layout_backend],
             ["Locked", "yes" if profile.locked else "no"],
             ["Provider", profile.model.provider],
             ["Model", profile.model.model],
@@ -1300,6 +1735,7 @@ def _edit_profile_interactive(store: ConfigStore, name: str) -> None:
             )
         if section in {"Outputs", "Everything"}:
             profile.output_formats = choose_output_formats(profile.output_formats)
+            profile.layout_backend = choose_layout_backend(profile.layout_backend)
             profile.extract_figures = ui.confirm(
                 "Enable figure/image markers and page image assets for assembly?",
                 profile.extract_figures,
@@ -1502,11 +1938,7 @@ def combine_command(run_dir: Optional[str] = None) -> None:
             state = "available" if item.available else "setup note"
             ui.write(f"  {item.format}: {item.path} ({state})")
     _next_recommendations(
-        [
-            ["Review output", str(result["output_path"])],
-            ["Export another format", f"akv export {result['run_dir']}"],
-            ["Run checks", "akv check"],
-        ]
+        _next_steps_for_context("combine", run_dir=Path(result["run_dir"]), exports=exports)
     )
 
 
@@ -1636,10 +2068,12 @@ def check_command() -> int:
         ui.section(f"Failure in {failed_label}")
         ui.write(failed_output.strip())
         ui.status("error", "Checks did not pass.")
-        _next_recommendations([["Inspect failure", "Read the output above"], ["Retry", "akv check"]])
+        _next_recommendations(
+            _next_steps_for_context("check", issues=[failed_label])
+        )
         return failed
     ui.status("success", "Compile and unit tests passed.")
-    _next_recommendations([["Run workflow", "akv run"], ["Review setup", "akv doctor"]])
+    _next_recommendations(_next_steps_for_context("check"))
     return 0
 
 
@@ -1699,6 +2133,61 @@ def export_command(run_dir: Optional[str] = None, formats: Optional[List[str]] =
 def _next_recommendations(rows: List[List[str]]) -> None:
     ui.section("Next")
     ui.table([["Action", "Command / path"]] + rows)
+
+
+def _next_steps_for_context(
+    context: str,
+    run_dir: Optional[Path] = None,
+    exports: Optional[List[object]] = None,
+    issues: Optional[List[str]] = None,
+) -> List[List[str]]:
+    rows: List[List[str]] = []
+    context = context.lower().strip()
+    run_path = str(run_dir) if run_dir else ""
+    issue_count = len([item for item in (issues or []) if str(item).strip()])
+    export_count = len(exports or [])
+    if context == "combine":
+        rows.append(["Review output", f"{run_path}/akshara_output.txt" if run_path else "akv review"])
+        rows.append(["Export another format", f"akv export {run_path}" if run_path else "akv export"])
+        rows.append(["Resume run", f"akv resume {run_path}" if run_path else "akv resume"])
+        return rows[:3]
+    if context == "review":
+        rows.append(["Combine outputs", f"akv combine {run_path}" if run_path else "akv combine"])
+        rows.append(["Export another format", f"akv export {run_path}" if run_path else "akv export"])
+        rows.append(["Chat with run", f"akv chat {run_path}" if run_path else "akv chat"])
+        return rows[:3]
+    if context == "chat":
+        rows.append(["Run workflow", "akv run"])
+        if run_path:
+            rows.append(["Combine outputs", f"akv combine {run_path}"])
+        rows.append(["Docs", "akv docs"])
+        return rows[:3]
+    if context == "check":
+        if issue_count:
+            rows.append(["Inspect failure", "Read the output above"])
+            rows.append(["Run doctor", "akv doctor"])
+            rows.append(["Retry checks", "akv check"])
+        else:
+            rows.append(["Run workflow", "akv run"])
+            rows.append(["Review setup", "akv doctor"])
+            rows.append(["Open home", "akv home"])
+        return rows[:3]
+    if context == "run":
+        if issue_count:
+            rows.append(["Review warnings", f"akv review {run_path}" if run_path else "akv review"])
+            rows.append(["Resume later", f"akv resume {run_path}" if run_path else "akv resume"])
+        else:
+            rows.append(["Review output", f"{run_path}/akshara_output.txt" if run_path else "akv review"])
+            if export_count:
+                rows.append(["Combine run", f"akv combine {run_path}" if run_path else "akv combine"])
+            else:
+                rows.append(["Export another format", f"akv export {run_path}" if run_path else "akv export"])
+        rows.append(["Docs", "akv docs"])
+        return rows[:3]
+    rows.append(["Run workflow", "akv run"])
+    rows.append(["Review output", f"akv review {run_path}" if run_path else "akv review"])
+    rows.append(["Docs", "akv docs"])
+    return rows[:3]
 
 
 def _export_source(path: Path) -> tuple[Optional[str], Path, dict]:

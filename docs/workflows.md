@@ -20,9 +20,11 @@ Stages:
 4. Render PDF/Zip pages if media, or read raw text.
 5. Clean/Restore text with the selected model (multimodal visual transcription for images/PDFs, or prompt-based restoration for raw text).
 6. Save per-input files under `items/` and recoverable checkpoints under `stages/`.
-7. Optionally request translation through the selected model/profile, preserving each input as its own numbered output.
-8. Export selected formats.
-9. Write manifest and review files.
+7. Analyze native page layout when enabled, then tag structure and layout
+   metadata for later assembly.
+8. Optionally request translation through the selected model/profile, preserving each input as its own numbered output.
+9. Export selected formats.
+10. Write manifest and review files.
 
 Execution modes:
 
@@ -43,6 +45,9 @@ While a provider request is active, Akshara periodically reports that the model
 is still working. Pressing `Ctrl+C` during that window shows a safe-stop message
 and waits for the active request to finish before returning control, so already
 written checkpoints remain usable.
+
+If a provider request is slow but still progressing, Akshara keeps polling and
+retries only when the error is transient or explicitly retryable.
 
 Provider requests wait indefinitely by default. In profiles and before each
 interactive run, users may choose an explicit slow-page policy such as skip
@@ -75,6 +80,10 @@ guide as context so similar pages are formatted consistently. It does not add
 facts, does not override the restoration instructions, and is not emitted into
 the final text.
 
+The guide may also remember recently observed scripts or language cues within
+the same batch so repeated mixed-language patterns stay uniform without forcing
+translation or inventing language labels.
+
 The selected document type also changes extraction guidance and deterministic
 tagging. Books emphasize title matter, contents, chapters, page numbers,
 prefaces, indexes, and footnotes. Magazines and newspapers emphasize column
@@ -83,8 +92,12 @@ advertisements, classifieds, sidebars, and multi-column flow. Manuscripts
 emphasize folios, marginalia, corrections, colophons, lineated text, uncertain
 readings, and damaged text. Journal articles, letters, and archive bundles also
 receive their own role sets. The run manifest records semantic units, layout
-classes, content features, contents entries, headings, page markers, footnotes,
-and figure metadata for later assembly.
+classes, a layout profile, content features, contents entries, headings, page
+markers, footnotes, and figure metadata for later assembly.
+
+Legal, finance, healthcare, and insurance documents receive stricter role
+labels so their exports can feel like the original document type instead of a
+generic prose dump.
 
 The CLI asks whether to enable figure/image enrichment before a run. When
 enabled, prompts may insert concise `[image: ...]` markers for visible
@@ -95,12 +108,26 @@ This is disabled by default so normal restored text remains clean. The cropper
 does not claim full layout-perfect segmentation; it ignores tiny marks and
 ambiguous damage instead of treating them as figures.
 
+The CLI also asks which layout analysis backend to use. `native` is the default
+local analyzer and records page blocks, confidence scores, columns, and
+figure/text hints. `off` skips that step. Optional `doctr`, `paddleocr`, and
+`layoutparser` backends appear when their packages are installed; their output is
+normalized into the same layout tree used by combine, review, chat, and export.
+
 The CLI also asks how to handle languages:
 
 | Mode | Behavior |
 | --- | --- |
 | `preserve-detected` | Default. Preserve every readable language/script visible in the source, without forcing labels or translation. |
 | `strict-source` | Extract only the declared source language/script, while preserving necessary names, citations, and technical terms. |
+
+The run can also ask whether the user wants to strictly stick to the input
+language or accept every readable script detected on the page.
+
+After a run, use `akv review path/to/run-folder` to inspect layout profile,
+visual block-map previews, low-confidence blocks, and figure assets. It writes
+`layout_review.md` next to the manifest so reviewers can audit crops and layout
+signals before final assembly.
 
 Dense pages and non-English scripts still depend heavily on the chosen vision
 model. Quality mode gives the model stronger page-order, region-by-region, and
@@ -120,6 +147,9 @@ and then restored stage chunks. `resume` is the friendly recovery command; when
 the original inputs are available, it resumes inside the same run folder and
 skips existing PDF pages, archive entries, and staged text chunks. If the inputs
 are unavailable, it combines whatever completed checkpoints are already present.
+
+`akv chat` can read either a run folder, a compiled output, or a raw input path
+and answer grounded questions from the same restored material.
 
 Press `Ctrl+C` to stop a long run. Completed pages and sources remain on disk
 under `items/` and `stages/`, and the CLI prints the latest run folder for
@@ -157,6 +187,9 @@ Batch mode discovers supported files recursively. Each input is saved under a
 numbered `items/` folder using the original filename. Nested folders are mirrored
 under `items/` and `sources/`, so mixed images, PDFs, archives, and text files
 remain easy to identify after restoration or translation.
+
+The nested folder combine writes folder-local `combined__LANG.txt` files when a
+subtree has finished, which makes partial review easier during big archive runs.
 
 ## Cleanup
 

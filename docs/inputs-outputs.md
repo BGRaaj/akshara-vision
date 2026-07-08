@@ -64,8 +64,10 @@ Typical use:
 | `image-pdf` | Reading and sharing as a composed PDF with page styling |
 | `review` | QA, diffing, and restoration inspection |
 
-The current OCR/archive sidecars are portable text sidecars. They are not full
-layout-accurate OCR exports unless a future native OCR/layout backend writes that data.
+The OCR/archive sidecars are portable text and metadata handoffs. Runs also keep
+native page block geometry when media pages are processed, but these sidecars are
+not a replacement for specialized hOCR/ALTO/PAGE XML emitted by a dedicated OCR
+segmentation engine.
 
 Every run also writes:
 
@@ -82,6 +84,15 @@ Every run also writes:
 - `run_state.json` with interruption/recovery state while a run is active
 - `run_manifest.json`
 - `sources/`
+
+The manifest records:
+
+- `document_structure` with semantic roles, contents entries, page markers,
+  footnotes, layout tree nodes, repeated headers, and detected contributors or
+  publishers
+- `assembly_profile` with the document-type and export hints used by combine
+  and publication exporters
+- `assets` with crop metadata when figure enrichment is enabled
 
 The run folder is the timestamped folder created under the selected output
 folder. For example, if the output folder is `akshara-output`, a run folder might
@@ -121,6 +132,10 @@ hints. Books, magazines, newspapers, manuscripts,
 journal articles, letters, and archive bundles receive different role sets so
 assembly can treat contents pages, articles, folios, references, signatures, and
 archive item boundaries differently while keeping the restored text itself clean.
+
+The grounded chat layer can read these run manifests, keep run-local chat
+history, search source chunks, open cited sources, and answer questions with
+source citations.
 
 If figure/image enrichment is enabled, chunk records may also include `assets`
 entries with path, width, height, DPI, aspect ratio, bounding box, relative page

@@ -33,3 +33,11 @@ Instructions are stored in:
 The default preset is conservative. It restores OCR damage, preserves historical voice,
 marks uncertain text, avoids invented metadata, and returns only the requested output.
 
+For best results, keep the editable preset strict:
+
+- preserve page order and visible section order
+- ignore mirrored bleed-through and back-side impressions
+- use [unclear] only when the source is genuinely uncertain
+- return blank output for blank or unreadable pages
+- keep translation as a separate final pass
+- avoid leaking wrapper JSON or diagnostic text into the final export

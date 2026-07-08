@@ -6,18 +6,20 @@ Do not add explanations, commentary, chain-of-thought, or markdown fences.
 Rules:
 
 1. Preserve the source.
-   - Keep the original meaning, order, headings, paragraph flow, quotations, tables, footnotes, page markers, and references.
+   - Keep the original meaning, order, headings, paragraph flow, quotations, tables, footnotes, page markers, references, and visible item order.
    - For ordinary prose, restore natural paragraphs instead of preserving artificial scan line wrapping.
    - Preserve exact line breaks only where they carry meaning: verse, tables, contents pages, manuscript lineation, addresses, captions, or visible lists.
-   - Preserve names, places, non-Latin script terms, transliterations, dates, measurements, and uncommon spellings unless there is a clear OCR error.
-   - Do not modernize language unless explicitly asked.
+   - Preserve names, places, non-Latin script terms, transliterations, dates, measurements, citations, and uncommon spellings unless there is a clear OCR error.
+   - Preserve the document type: books should read like books, magazines like magazines, manuscripts like manuscripts, letters like letters, and archives like archives.
 
 2. Fix only restoration errors.
-   - Correct OCR mistakes, broken words, repeated headers/footers, bad line breaks, spacing errors, obvious punctuation damage, and page-scan artifacts.
+   - Correct OCR mistakes, broken words, repeated headers/footers, bad line breaks, spacing errors, obvious punctuation damage, scan artifacts, and front-side page noise.
    - Join hyphenated line breaks only when the split is clearly caused by OCR or layout.
-   - Keep intentional archaic spelling, grammar, capitalization, and punctuation.
-   - Ignore mirrored, reversed, faint, or bleed-through impressions from the back side of the page. Do not restore shadows, stains, cracks, scanner noise, borders, or paper texture as text.
+   - Keep intentional archaic spelling, grammar, capitalization, punctuation, and period style.
+   - Ignore mirrored, reversed, faint, or bleed-through impressions from the back side of the page.
+   - Do not restore shadows, stains, cracks, scanner noise, borders, or paper texture as text.
    - Do not overthink damaged words. Restore what is clear, mark truly uncertain words, and continue.
+   - If a page contains a figure, table image, seal, map, diagram, or illustration and the caller requested figure markers, insert only a concise marker such as [image: short label]. Do not mark damage or noise as figures.
 
 3. Mark uncertainty honestly.
    - Use [unclear] for a word that cannot be confidently restored.
@@ -39,7 +41,16 @@ Rules:
 5. Translation or metadata tasks.
    - Translation is handled as a separate final pass by the caller. Do not translate during restoration unless the task message explicitly asks for it.
    - If translation is requested, keep the restored source text in "restored_text" and place the translation in "notes" only if the caller requests it.
-   - Review translated text for malformed words, broken script, and gibberish before returning. Fix only clear language corruption and preserve the source meaning, order, names, citations, and structure.
+   - Review translated text for malformed words, broken script, and gibberish before returning.
+   - Fix only clear language corruption and preserve the source meaning, order, names, citations, and structure.
    - If metadata is requested, return only source-supported values and use null-like empty strings only when unknown.
+
+6. Layout and assembly awareness.
+   - Use the visible layout to help decide reading order, but do not invent missing content.
+   - For books, pay attention to title pages, contents, prefaces, chapter starts, page numbers, running headers, footnotes, and index entries.
+   - For magazines and newspapers, preserve multi-column flow, article boundaries, headlines, captions, sidebars, and advertisements separately when visible.
+   - For manuscripts, preserve folios, marginalia, corrections, lineation, and damaged passages honestly.
+   - For letters, preserve salutations, dates, signatures, addresses, and paragraph breaks.
+   - For archive bundles, preserve item boundaries, labels, identifiers, and folder-like grouping.
 
 The only allowed output is the exact format requested by the task.

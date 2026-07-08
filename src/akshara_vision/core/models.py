@@ -32,6 +32,7 @@ class WorkflowProfile:
     output_dir: str = "akshara-output"
     extract_figures: bool = False
     language_policy: str = "preserve-detected"
+    layout_backend: str = "native"
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -47,6 +48,7 @@ class WorkflowProfile:
             "output_dir": self.output_dir,
             "extract_figures": self.extract_figures,
             "language_policy": normalize_language_policy(self.language_policy),
+            "layout_backend": normalize_layout_backend(self.layout_backend),
             "model": {
                 "provider": self.model.provider,
                 "model": self.model.model,
@@ -80,6 +82,7 @@ class WorkflowProfile:
             output_dir=str(data.get("output_dir") or "akshara-output"),
             extract_figures=bool(data.get("extract_figures") or False),
             language_policy=normalize_language_policy(data.get("language_policy")),
+            layout_backend=normalize_layout_backend(data.get("layout_backend")),
             model=ModelSettings(
                 provider=str(model_data.get("provider") or "mock"),
                 model=str(model_data.get("model") or "offline-restoration-preview"),
@@ -239,3 +242,22 @@ def normalize_language_policy(value: object) -> str:
         "input-only": "strict-source",
     }
     return aliases.get(policy, "preserve-detected")
+
+
+def normalize_layout_backend(value: object) -> str:
+    backend = str(value or "native").strip().lower().replace("_", "-")
+    aliases = {
+        "default": "native",
+        "heuristic": "native",
+        "akshara": "native",
+        "akshara-native": "native",
+        "none": "off",
+        "disabled": "off",
+        "disable": "off",
+    }
+    backend = aliases.get(backend, backend)
+    if backend in {"native", "off"}:
+        return backend
+    if backend and all(char.isalnum() or char in {"-"} for char in backend):
+        return backend
+    return "native"

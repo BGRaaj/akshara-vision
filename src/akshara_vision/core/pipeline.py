@@ -1,4 +1,5 @@
 import gc
+import importlib.util
 import json
 import os
 import platform
@@ -34,11 +35,14 @@ except ModuleNotFoundError:  # pragma: no cover - optional runtime guard
 
 TEXT_EXTENSIONS = {".txt", ".md", ".html", ".hocr", ".xml", ".json"}
 ProgressCallback = Callable[[str, str, int], None]
+LayoutBackend = Callable[[Path], Dict[str, object]]
 RESTORATION_CHUNK_CHARS = 5000
 TRANSLATION_CHUNK_CHARS = 5000
 BLANK_PAGE_REASON = "blank page or no readable text"
 DEFAULT_PROVIDER_RETRIES = 3
 MAX_FIGURE_CROPS_PER_PAGE = 4
+_LAYOUT_BACKENDS: Dict[str, LayoutBackend] = {}
+_LAYOUT_MODEL_CACHE: Dict[str, object] = {}
 
 DOCUMENT_ROLE_GUIDANCE = {
     "book": {
@@ -132,6 +136,53 @@ DOCUMENT_ROLE_GUIDANCE = {
             "record": "record",
             "item-boundary": "item boundary",
             "body": "archive item body",
+        },
+    },
+    "legal document": {
+        "roles": {
+            "title": "document title",
+            "parties": "parties or signatories",
+            "recitals": "recitals",
+            "definitions": "definitions",
+            "clauses": "clauses",
+            "schedule": "schedule or annexure",
+            "exhibits": "exhibits",
+            "signature": "signature block",
+            "body": "legal body",
+        },
+    },
+    "finance document": {
+        "roles": {
+            "title": "document title",
+            "statement": "statement section",
+            "table": "financial table",
+            "account": "account details",
+            "summary": "summary",
+            "notes": "notes",
+            "body": "finance body",
+        },
+    },
+    "healthcare document": {
+        "roles": {
+            "title": "report title",
+            "patient": "patient details",
+            "findings": "findings",
+            "diagnosis": "diagnosis",
+            "medications": "medications",
+            "instructions": "instructions",
+            "body": "healthcare body",
+        },
+    },
+    "insurance document": {
+        "roles": {
+            "title": "policy title",
+            "policy": "policy section",
+            "coverage": "coverage",
+            "claim": "claim section",
+            "exclusions": "exclusions",
+            "premium": "premium details",
+            "terms": "terms",
+            "body": "insurance body",
         },
     },
 }
@@ -629,7 +680,7 @@ def run_pipeline(
             }
             _notify(progress, "error", f"Recorded failed source {source_label}: {failure_reason}", advance=1)
 
-        raw_parts.append(f"===== {source_label} =====\n{raw_text}".strip())
+        raw_parts.append(raw_text.strip())
         output_cleaned = _text_with_chunk_assets(cleaned, restoration_record.get("chunks"))
         source_text = output_cleaned.strip() + "\n"
         artifacts.write_item_restored(index, source_label, source_text)
@@ -676,7 +727,7 @@ def run_pipeline(
                 "input_paths": [str(p.expanduser().resolve()) for p in request.inputs.files],
             },
         )
-        cleaned_parts.append(f"===== {source_label} =====\n{output_cleaned}".strip())
+        cleaned_parts.append(output_cleaned.strip())
         _notify(progress, "source", f"Bundling source {source_label}", advance=1)
         _copy_source(path, run_dir / "sources", index=index, label=source_label)
         gc.collect()
@@ -886,10 +937,9 @@ def _combined_parts_from_manifest(manifest: Dict[str, object]) -> List[str]:
     for index, record in enumerate(records, start=1):
         if not isinstance(record, dict):
             continue
-        label = str(record.get("label") or record.get("source") or f"source-{index}")
         text = _text_with_chunk_assets("", record.get("chunks"))
         if text.strip():
-            parts.append(f"===== {label} =====\n{text.strip()}")
+            parts.append(text.strip())
     return parts
 
 
@@ -899,7 +949,12 @@ def _ensure_manifest_structure(manifest: Dict[str, object]) -> None:
     if not isinstance(records, list):
         return
     existing = metadata.get("document_structure")
-    if isinstance(existing, dict) and existing.get("semantic_units"):
+    if (
+        isinstance(existing, dict)
+        and existing.get("semantic_units")
+        and existing.get("layout_tree")
+        and existing.get("layout_profile")
+    ):
         return
     profile = manifest.get("profile") if isinstance(manifest.get("profile"), dict) else {}
     document_type = str(
@@ -925,7 +980,7 @@ def _combined_parts_from_record_checkpoints(records_root: Path) -> List[str]:
                 chunks.append(record)
         text = _text_with_chunk_assets("", chunks)
         if text.strip():
-            parts.append(f"===== {source_group.name} =====\n{text.strip()}")
+            parts.append(text.strip())
     return parts
 
 
@@ -952,8 +1007,7 @@ def _combined_parts_from_items(items_root: Path) -> List[str]:
     for output_path in _preferred_item_outputs(items_root):
         text = _read_structured_output_text(output_path).strip()
         if text:
-            label = str(output_path.parent.relative_to(items_root)).replace("\\", "/")
-            combined_parts.append(f"===== {label} =====\n{text}")
+            combined_parts.append(text)
     return combined_parts
 
 
@@ -1081,7 +1135,7 @@ def _write_nested_folder_combines(items_root: Path, language_suffix: str) -> Lis
 
     written = []
     for folder, parts in sorted(folder_parts.items(), key=lambda item: str(item[0])):
-        combined = "\n\n".join(f"===== {label} =====\n{text}" for label, text in parts).strip()
+        combined = "\n\n".join(text for _label, text in parts if text.strip()).strip()
         if not combined:
             continue
         path = folder / f"combined__{_language_slug(language_suffix)}.txt"
@@ -1113,7 +1167,7 @@ def _combined_parts_from_stages(stage_root: Path) -> List[str]:
         pieces = [path.read_text(encoding="utf-8", errors="replace").strip() for path in piece_paths]
         text = "\n".join(part for part in pieces if part).strip()
         if text:
-            combined_parts.append(f"===== {source_group.name} =====\n{text}")
+            combined_parts.append(text)
     return combined_parts
 
 
@@ -2027,6 +2081,25 @@ def _document_type_guidance(profile: WorkflowProfile) -> str:
             "identifiers, and folder-like grouping. Treat each visible record as an item, not as one "
             "continuous book page."
         ),
+        "legal document": (
+            "Legal document skill: preserve parties, recitals, clauses, schedules, exhibits, signatures, "
+            "defined terms, and numbering exactly as visible. Keep clause order, references, and quoted text "
+            "stable. Do not merge separate clauses or infer missing legal text."
+        ),
+        "finance document": (
+            "Finance document skill: preserve statements, account labels, line items, totals, tables, notes, "
+            "dates, and monetary values exactly as visible. Keep numerical alignment and do not reformat figures "
+            "into prose."
+        ),
+        "healthcare document": (
+            "Healthcare document skill: preserve report headings, patient details, findings, measurements, "
+            "diagnoses, medications, and instructions exactly as visible. Do not invent missing results or "
+            "medical interpretation."
+        ),
+        "insurance document": (
+            "Insurance document skill: preserve policy terms, coverage sections, exclusions, claim fields, "
+            "premium details, and signatures exactly as visible. Keep numbering and policy labels stable."
+        ),
     }
     selected = guidance.get(kind, "General restoration skill: preserve document order, headings, labels, notes, page markers, and uncertain text.")
     if _figure_extraction_enabled(profile):
@@ -2069,6 +2142,7 @@ def _document_structure(
 ) -> Dict[str, object]:
     chunks = []
     semantic_units = []
+    layout_tree = []
     for source_number, record in enumerate(records, start=1):
         source_label = str(record.get("label") or record.get("source") or f"source-{source_number}")
         for chunk in record.get("chunks", []):
@@ -2078,11 +2152,17 @@ def _document_structure(
                     _semantic_tags_for_chunk(chunk, document_type, source_label),
                 )
                 chunks.append(chunk)
-                semantic_units.append(chunk["semantic_tags"])
-    observations = [
-        _piece_observations(str(chunk.get("restored_text") or ""), document_type, int(chunk.get("index") or 0))
-        for chunk in chunks
-    ]
+                semantic = chunk["semantic_tags"]
+                semantic_units.append(semantic)
+                layout_tree.append(_layout_tree_node(chunk, semantic, source_label, len(layout_tree) + 1))
+    observations = []
+    for chunk in chunks:
+        observation = _piece_observations(
+            str(chunk.get("restored_text") or ""), document_type, int(chunk.get("index") or 0)
+        )
+        if isinstance(chunk.get("native_layout"), dict):
+            observation["native_layout"] = chunk["native_layout"]
+        observations.append(observation)
     title_candidates = []
     page_markers = []
     section_headings = []
@@ -2095,6 +2175,7 @@ def _document_structure(
     layouts: Dict[str, int] = {}
     content_features: Dict[str, int] = {}
     asset_count = 0
+    layout_profile_pages = []
     for item in observations:
         title_candidates.extend(item.get("title_candidates", []))
         page_marker = item.get("page_marker")
@@ -2115,6 +2196,7 @@ def _document_structure(
         for feature in item.get("content_features", []):
             feature_name = str(feature)
             content_features[feature_name] = content_features.get(feature_name, 0) + 1
+        layout_profile_pages.append(_layout_page_profile(item))
     for chunk in chunks:
         chunk_assets = chunk.get("assets")
         if isinstance(chunk_assets, list):
@@ -2134,14 +2216,75 @@ def _document_structure(
         "layouts": layouts,
         "content_features": content_features,
         "semantic_units": semantic_units,
+        "layout_tree": layout_tree,
+        "layout_profile": _layout_profile(layout_profile_pages, document_type),
         "figure_extraction_enabled": _figure_extraction_enabled(profile),
         "asset_count": asset_count,
+        "assembly_profile": _assembly_profile(
+            document_type, list(profile.output_formats) if profile else ["txt"]
+        ),
+    }
+
+
+def _layout_tree_node(
+    chunk: Dict[str, object],
+    semantic: Dict[str, object],
+    source_label: str,
+    reading_order: int,
+) -> Dict[str, object]:
+    text = str(chunk.get("restored_text") or chunk.get("text") or "").strip()
+    assets = chunk.get("assets") if isinstance(chunk.get("assets"), list) else []
+    native_layout = chunk.get("native_layout") if isinstance(chunk.get("native_layout"), dict) else {}
+    page_layout = _layout_page_profile(
+        {
+            "content_kind": semantic.get("role"),
+            "layout": semantic.get("layout"),
+            "content_features": semantic.get("content_features") or [],
+            "page_marker": semantic.get("page_marker") or "",
+            "headings": semantic.get("headings") or [],
+            "contents_entries": semantic.get("contents_entries") or [],
+            "footnotes": semantic.get("footnotes") or [],
+            "running_header": semantic.get("running_header") or "",
+            "has_figure_marker": semantic.get("has_figures") or False,
+            "text_excerpt": text,
+            "native_layout": native_layout,
+        }
+    )
+    return {
+        "reading_order": reading_order,
+        "source": source_label,
+        "page_number": int(chunk.get("index") or chunk.get("page_number") or reading_order),
+        "role": str(semantic.get("role") or "body"),
+        "role_label": str(semantic.get("role_label") or "body"),
+        "layout": semantic.get("layout") or "single-flow",
+        "confidence": _layout_confidence(text, semantic, assets),
+        "text_excerpt": _short_excerpt(text, 180),
+        "page_marker": semantic.get("page_marker") or "",
+        "headings": semantic.get("headings") or [],
+        "content_features": semantic.get("content_features") or [],
+        "page_layout": page_layout,
+        "native_layout": native_layout,
+        "assets": [_layout_asset_entry(asset) for asset in assets if isinstance(asset, dict)],
+    }
+
+
+def _layout_asset_entry(asset: Dict[str, object]) -> Dict[str, object]:
+    return {
+        "kind": asset.get("kind") or "figure-crop",
+        "label": asset.get("label") or asset.get("kind") or "figure",
+        "path": asset.get("path") or "",
+        "width": asset.get("width"),
+        "height": asset.get("height"),
+        "bbox": asset.get("bbox"),
+        "placement": asset.get("placement") or {},
+        "layout": asset.get("layout") or {},
     }
 
 
 def _piece_observations(text: str, document_type: str, index: int) -> Dict[str, object]:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     first_lines = lines[:12]
+    line_lengths = [len(line) for line in lines[:80] if line.strip()]
     headings = [
         line
         for line in first_lines
@@ -2175,6 +2318,8 @@ def _piece_observations(text: str, document_type: str, index: int) -> Dict[str, 
         "contributors": _contributors(lines),
         "publishers": _publishers(lines),
         "running_header": _running_header(lines),
+        "line_count": len(lines),
+        "avg_line_length": round(sum(line_lengths) / max(len(line_lengths), 1), 1) if line_lengths else 0.0,
         "has_multi_column_spacing": any(re.search(r"\S\s{4,}\S", line) for line in lines[:80]),
         "has_figure_marker": any("[image:" in line.lower() for line in lines),
     }
@@ -2339,6 +2484,32 @@ def _content_kind(lines: List[str], document_type: str) -> str:
     if kind == "archive bundle":
         if index_hint := _archive_role(lines, joined):
             return index_hint
+    if kind == "legal document":
+        if re.search(r"\b(parties?|agreement|contract|deed|memorandum|terms and conditions)\b", joined):
+            return "title" if len(lines) <= 10 else "clauses"
+        if re.search(r"\b(recitals?|whereas)\b", joined):
+            return "recitals"
+        if re.search(r"\b(definitions?|defined terms)\b", joined):
+            return "definitions"
+        if re.search(r"\b(schedule|annex|annexure|exhibit|appendix)\b", joined):
+            return "schedule"
+        if re.search(r"\b(signatures?|signed by|executed by)\b", joined):
+            return "signature"
+    if kind == "finance document":
+        if re.search(r"\b(statement|balance sheet|profit and loss|income statement|ledger)\b", joined):
+            return "statement"
+        if re.search(r"\b(account|invoice|receipt|debit|credit|transaction)\b", joined):
+            return "account"
+        if re.search(r"\b(total|summary|subtotal|grand total)\b", joined):
+            return "summary"
+    if kind == "healthcare document":
+        if re.search(r"\b(patient|hospital|clinic|report|diagnosis|prescription)\b", joined):
+            return "title" if len(lines) <= 10 else "findings"
+        if re.search(r"\b(medication|dose|dosage|treatment|instructions)\b", joined):
+            return "medications"
+    if kind == "insurance document":
+        if re.search(r"\b(policy|coverage|claim|premium|exclusion|benefit)\b", joined):
+            return "policy" if len(lines) <= 10 else "coverage"
     if kind in {"magazine", "newspaper"} and _has_column_spacing(lines):
         return "multi-column"
     if any("[image:" in line.lower() for line in lines):
@@ -2533,12 +2704,48 @@ def _assembly_profile(document_type: str, output_formats: List[str]) -> Dict[str
         layout = "periodical-like: preserve article and column boundaries when detected"
     elif kind == "manuscript":
         layout = "manuscript-like: preserve folios, marginalia, uncertain readings, and lineation"
+    elif kind == "legal document":
+        layout = "legal-like: preserve parties, clauses, signatures, schedules, and numbered sections"
+    elif kind == "finance document":
+        layout = "finance-like: preserve tables, labels, totals, and numeric alignment"
+    elif kind == "healthcare document":
+        layout = "report-like: preserve findings, measurements, and ordered clinical sections"
+    elif kind == "insurance document":
+        layout = "policy-like: preserve coverage, exclusions, claim fields, and policy numbering"
     else:
         layout = "document-like: preserve detected headings, page markers, and item order"
     return {
         "layout": layout,
         "target_formats": list(output_formats),
         "uses_structured_sidecars": True,
+        "section_order": [
+            "title",
+            "cover",
+            "cover-sheet",
+            "masthead",
+            "contents",
+            "preface",
+            "foreword",
+            "introduction",
+            "chapter",
+            "section",
+            "article",
+            "body",
+            "appendix",
+            "index",
+            "references",
+            "bibliography",
+            "footnotes",
+        ],
+        "export_layout": {
+            "txt": "plain text with clear section markers",
+            "md": "publication-style markdown with headings and notes",
+            "html": "structured reading view with reusable semantic classes",
+            "docx": "reader-friendly word-processing layout",
+            "epub": "book-style reading layout with embedded assets",
+            "searchable-pdf": "text-first PDF with stable margins and reading order",
+            "image-pdf": "visually composed PDF with preserved figures",
+        },
     }
 
 
@@ -2791,6 +2998,438 @@ def _dedupe_boxes(boxes: List[tuple[int, int, int, int]]) -> List[tuple[int, int
     return kept
 
 
+def register_layout_backend(name: str, backend: LayoutBackend) -> None:
+    normalized = str(name or "").strip().lower().replace("_", "-")
+    if not normalized:
+        raise ValueError("layout backend name is required")
+    _LAYOUT_BACKENDS[normalized] = backend
+
+
+def available_layout_backends() -> List[str]:
+    return ["native", "off"] + sorted(
+        name for name in _LAYOUT_BACKENDS if name not in {"native", "off"}
+    )
+
+
+def _page_layout(image_path: Path, profile: Optional[WorkflowProfile] = None) -> Dict[str, object]:
+    backend_name = str(getattr(profile, "layout_backend", "native") or "native").strip().lower()
+    if backend_name in {"", "default"}:
+        backend_name = "native"
+    if backend_name in {"off", "none", "disabled"}:
+        return {}
+    backend = _LAYOUT_BACKENDS.get(backend_name) or _LAYOUT_BACKENDS.get("native")
+    if backend is None:
+        return _native_page_layout(image_path)
+    try:
+        layout = backend(image_path)
+    except Exception:
+        if backend_name == "native":
+            return {}
+        layout = _native_page_layout(image_path)
+    return layout if isinstance(layout, dict) else {}
+
+
+def _native_page_layout(image_path: Path) -> Dict[str, object]:
+    if Image is None or ImageOps is None:
+        return {}
+    try:
+        with Image.open(image_path) as opened:
+            image = ImageOps.exif_transpose(opened).convert("RGB")
+            return _analyze_native_layout(image)
+    except Exception:
+        return {}
+
+
+def _analyze_native_layout(image) -> Dict[str, object]:
+    width, height = image.size
+    if width <= 0 or height <= 0:
+        return {}
+    gray = ImageOps.grayscale(image)
+    components = _native_layout_components(gray, width, height)
+    blocks = [_native_layout_block(gray, bbox, width, height, order) for order, bbox in enumerate(components, start=1)]
+    blocks = [block for block in blocks if block]
+    content_bbox = _merge_bboxes([tuple(block["bbox"]) for block in blocks if block.get("bbox")])
+    column_count = _estimate_native_columns(blocks)
+    flow = _native_flow(blocks, column_count)
+    return {
+        "engine": "akshara-native-heuristic",
+        "page_width": width,
+        "page_height": height,
+        "content_bbox": list(content_bbox) if content_bbox else None,
+        "relative_content_bbox": _relative_bbox(content_bbox, width, height) if content_bbox else None,
+        "column_count_estimate": column_count,
+        "dominant_flow": flow,
+        "block_count": len(blocks),
+        "blocks": blocks[:48],
+    }
+
+
+def _native_layout_components(gray, page_w: int, page_h: int) -> List[tuple[int, int, int, int]]:
+    grid_x = 56
+    grid_y = 72
+    cell_w = max(page_w // grid_x, 1)
+    cell_h = max(page_h // grid_y, 1)
+    active = set()
+    for gy in range(grid_y):
+        for gx in range(grid_x):
+            left = gx * cell_w
+            top = gy * cell_h
+            right = page_w if gx == grid_x - 1 else min((gx + 1) * cell_w, page_w)
+            bottom = page_h if gy == grid_y - 1 else min((gy + 1) * cell_h, page_h)
+            if right <= left or bottom <= top:
+                continue
+            crop = gray.crop((left, top, right, bottom))
+            histogram = crop.histogram()
+            dark_ratio = sum(histogram[:104]) / max((right - left) * (bottom - top), 1)
+            if 0.025 <= dark_ratio <= 0.88:
+                active.add((gx, gy))
+
+    boxes = []
+    seen = set()
+    for cell in sorted(active):
+        if cell in seen:
+            continue
+        stack = [cell]
+        seen.add(cell)
+        component = []
+        while stack:
+            current = stack.pop()
+            component.append(current)
+            cx, cy = current
+            for neighbor in ((cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)):
+                if neighbor in active and neighbor not in seen:
+                    seen.add(neighbor)
+                    stack.append(neighbor)
+        if not component:
+            continue
+        min_x = min(x for x, _y in component)
+        max_x = max(x for x, _y in component)
+        min_y = min(y for _x, y in component)
+        max_y = max(y for _x, y in component)
+        left = max(min_x * cell_w - cell_w, 0)
+        top = max(min_y * cell_h - cell_h, 0)
+        right = min((max_x + 2) * cell_w, page_w)
+        bottom = min((max_y + 2) * cell_h, page_h)
+        if _native_component_is_meaningful((left, top, right, bottom), page_w, page_h):
+            boxes.append((left, top, right, bottom))
+    return _dedupe_boxes(boxes)
+
+
+def _native_component_is_meaningful(
+    bbox: tuple[int, int, int, int], page_w: int, page_h: int
+) -> bool:
+    left, top, right, bottom = bbox
+    box_w = right - left
+    box_h = bottom - top
+    if box_w < page_w * 0.025 or box_h < page_h * 0.012:
+        return False
+    area_ratio = (box_w * box_h) / max(page_w * page_h, 1)
+    if area_ratio < 0.0008 or area_ratio > 0.92:
+        return False
+    return True
+
+
+def _native_layout_block(
+    gray,
+    bbox: tuple[int, int, int, int],
+    page_w: int,
+    page_h: int,
+    order: int,
+) -> Dict[str, object]:
+    left, top, right, bottom = bbox
+    box_w = right - left
+    box_h = bottom - top
+    crop = gray.crop(bbox)
+    histogram = crop.histogram()
+    dark_ratio = sum(histogram[:104]) / max(box_w * box_h, 1)
+    area_ratio = round((box_w * box_h) / max(page_w * page_h, 1), 4)
+    width_ratio = box_w / max(page_w, 1)
+    height_ratio = box_h / max(page_h, 1)
+    role = "text-region"
+    if _looks_like_figure_box(gray, bbox, page_w, page_h):
+        role = "figure-region"
+    elif width_ratio > 0.65 and height_ratio < 0.08:
+        role = "running-header-or-footer"
+    elif area_ratio < 0.01 and dark_ratio > 0.18:
+        role = "small-mark-or-page-number"
+    confidence = _native_block_confidence(role, area_ratio, dark_ratio, width_ratio, height_ratio)
+    return {
+        "order": order,
+        "role": role,
+        "bbox": [left, top, right, bottom],
+        "relative_bbox": _relative_bbox(bbox, page_w, page_h),
+        "page_zone": _page_zone(((left + right) / 2) / page_w, ((top + bottom) / 2) / page_h),
+        "area_ratio": area_ratio,
+        "dark_ratio": round(dark_ratio, 4),
+        "confidence": confidence,
+    }
+
+
+def _native_block_confidence(
+    role: str, area_ratio: float, dark_ratio: float, width_ratio: float, height_ratio: float
+) -> float:
+    confidence = 0.52
+    if role == "text-region":
+        confidence += 0.18
+        if 0.02 <= area_ratio <= 0.45:
+            confidence += 0.08
+        if 0.03 <= dark_ratio <= 0.40:
+            confidence += 0.08
+    elif role == "figure-region":
+        confidence += 0.12
+        if 0.04 <= area_ratio <= 0.55:
+            confidence += 0.10
+        if 0.08 <= dark_ratio <= 0.62:
+            confidence += 0.06
+    elif role == "running-header-or-footer":
+        confidence += 0.08
+        if width_ratio > 0.55 and height_ratio < 0.10:
+            confidence += 0.10
+    else:
+        confidence -= 0.05
+    if area_ratio < 0.003 or dark_ratio < 0.015:
+        confidence -= 0.18
+    if area_ratio > 0.82 or dark_ratio > 0.78:
+        confidence -= 0.14
+    return round(max(0.05, min(confidence, 0.98)), 2)
+
+
+def _merge_bboxes(boxes: List[tuple[int, int, int, int]]) -> Optional[tuple[int, int, int, int]]:
+    if not boxes:
+        return None
+    return (
+        min(box[0] for box in boxes),
+        min(box[1] for box in boxes),
+        max(box[2] for box in boxes),
+        max(box[3] for box in boxes),
+    )
+
+
+def _relative_bbox(
+    bbox: tuple[int, int, int, int], page_w: int, page_h: int
+) -> List[float]:
+    left, top, right, bottom = bbox
+    return [
+        round(left / max(page_w, 1), 4),
+        round(top / max(page_h, 1), 4),
+        round(right / max(page_w, 1), 4),
+        round(bottom / max(page_h, 1), 4),
+    ]
+
+
+def _estimate_native_columns(blocks: List[Dict[str, object]]) -> int:
+    text_blocks = [
+        block for block in blocks
+        if block.get("role") in {"text-region", "running-header-or-footer"}
+        and isinstance(block.get("relative_bbox"), list)
+    ]
+    if len(text_blocks) < 4:
+        return 1
+    centers = sorted((float(block["relative_bbox"][0]) + float(block["relative_bbox"][2])) / 2 for block in text_blocks)
+    left = sum(1 for center in centers if center < 0.42)
+    middle = sum(1 for center in centers if 0.42 <= center <= 0.58)
+    right = sum(1 for center in centers if center > 0.58)
+    if left >= 2 and right >= 2 and middle <= max(left, right):
+        return 2
+    third_left = sum(1 for center in centers if center < 0.34)
+    third_mid = sum(1 for center in centers if 0.34 <= center <= 0.66)
+    third_right = sum(1 for center in centers if center > 0.66)
+    if min(third_left, third_mid, third_right) >= 2:
+        return 3
+    return 1
+
+
+def _native_flow(blocks: List[Dict[str, object]], column_count: int) -> str:
+    if column_count > 1:
+        return "multi-column"
+    figure_count = sum(1 for block in blocks if block.get("role") == "figure-region")
+    text_count = sum(1 for block in blocks if block.get("role") == "text-region")
+    if figure_count and figure_count >= text_count:
+        return "figure-led"
+    if text_count >= 12:
+        return "dense-prose"
+    return "single-flow"
+
+
+def _doctr_page_layout(image_path: Path) -> Dict[str, object]:
+    from doctr.io import DocumentFile  # type: ignore
+    from doctr.models import ocr_predictor  # type: ignore
+
+    predictor = _LAYOUT_MODEL_CACHE.get("doctr")
+    if predictor is None:
+        predictor = ocr_predictor(pretrained=True)
+        _LAYOUT_MODEL_CACHE["doctr"] = predictor
+    document = DocumentFile.from_images(str(image_path))
+    result = predictor(document)
+    page = result.pages[0] if getattr(result, "pages", None) else None
+    if page is None:
+        return _native_page_layout(image_path)
+    width, height = _image_size(image_path)
+    blocks = []
+    for order, block in enumerate(getattr(page, "blocks", []) or [], start=1):
+        bbox = _doctr_geometry_to_bbox(getattr(block, "geometry", None), width, height)
+        if bbox is None:
+            continue
+        blocks.append(
+            _external_layout_block(
+                bbox,
+                width,
+                height,
+                order,
+                role="text-region",
+                confidence=_average_doctr_confidence(block),
+            )
+        )
+    return _external_layout_payload("doctr", width, height, blocks)
+
+
+def _paddleocr_page_layout(image_path: Path) -> Dict[str, object]:
+    from paddleocr import PPStructure  # type: ignore
+
+    structure = _LAYOUT_MODEL_CACHE.get("paddleocr")
+    if structure is None:
+        structure = PPStructure(show_log=False)
+        _LAYOUT_MODEL_CACHE["paddleocr"] = structure
+    result = structure(str(image_path))
+    width, height = _image_size(image_path)
+    blocks = []
+    for order, item in enumerate(result or [], start=1):
+        if not isinstance(item, dict):
+            continue
+        bbox = item.get("bbox")
+        if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+            continue
+        role = _external_role(item.get("type") or item.get("label"))
+        confidence = float(item.get("score") or item.get("confidence") or 0.72)
+        blocks.append(_external_layout_block(tuple(map(int, bbox)), width, height, order, role, confidence))
+    return _external_layout_payload("paddleocr", width, height, blocks)
+
+
+def _layoutparser_page_layout(image_path: Path) -> Dict[str, object]:
+    import layoutparser as lp  # type: ignore
+
+    config = os.environ.get("AKSHARA_LAYOUTPARSER_CONFIG", "").strip()
+    if not config:
+        layout = _native_page_layout(image_path)
+        if layout:
+            layout["engine"] = "layoutparser-not-configured-native-fallback"
+        return layout
+    model = _LAYOUT_MODEL_CACHE.get(f"layoutparser:{config}")
+    if model is None:
+        model = lp.Detectron2LayoutModel(config)
+        _LAYOUT_MODEL_CACHE[f"layoutparser:{config}"] = model
+    if Image is None:
+        return {}
+    image = Image.open(image_path).convert("RGB")
+    width, height = image.size
+    result = model.detect(image)
+    blocks = []
+    for order, item in enumerate(result or [], start=1):
+        coords = getattr(getattr(item, "block", None), "coordinates", None)
+        if not coords or len(coords) != 4:
+            continue
+        role = _external_role(getattr(item, "type", None))
+        confidence = float(getattr(item, "score", 0.72) or 0.72)
+        blocks.append(_external_layout_block(tuple(map(int, coords)), width, height, order, role, confidence))
+    return _external_layout_payload("layoutparser", width, height, blocks)
+
+
+def _image_size(image_path: Path) -> tuple[int, int]:
+    if Image is None:
+        return (1, 1)
+    with Image.open(image_path) as opened:
+        return opened.size
+
+
+def _doctr_geometry_to_bbox(geometry, width: int, height: int) -> Optional[tuple[int, int, int, int]]:
+    if not geometry or len(geometry) != 2:
+        return None
+    try:
+        (x0, y0), (x1, y1) = geometry
+        return (int(float(x0) * width), int(float(y0) * height), int(float(x1) * width), int(float(y1) * height))
+    except (TypeError, ValueError):
+        return None
+
+
+def _average_doctr_confidence(block) -> float:
+    confidences = []
+    for line in getattr(block, "lines", []) or []:
+        for word in getattr(line, "words", []) or []:
+            value = getattr(word, "confidence", None)
+            if value is not None:
+                try:
+                    confidences.append(float(value))
+                except (TypeError, ValueError):
+                    pass
+    if not confidences:
+        return 0.74
+    return round(sum(confidences) / len(confidences), 2)
+
+
+def _external_role(label: object) -> str:
+    text = str(label or "").lower()
+    if any(term in text for term in ("figure", "image", "table", "formula")):
+        return "figure-region" if "table" not in text else "table-region"
+    if any(term in text for term in ("header", "footer")):
+        return "running-header-or-footer"
+    if "title" in text:
+        return "title-region"
+    return "text-region"
+
+
+def _external_layout_block(
+    bbox: tuple[int, int, int, int],
+    page_w: int,
+    page_h: int,
+    order: int,
+    role: str,
+    confidence: float,
+) -> Dict[str, object]:
+    left, top, right, bottom = bbox
+    return {
+        "order": order,
+        "role": role,
+        "bbox": [left, top, right, bottom],
+        "relative_bbox": _relative_bbox((left, top, right, bottom), page_w, page_h),
+        "page_zone": _page_zone(((left + right) / 2) / max(page_w, 1), ((top + bottom) / 2) / max(page_h, 1)),
+        "area_ratio": round(((right - left) * (bottom - top)) / max(page_w * page_h, 1), 4),
+        "confidence": round(max(0.05, min(float(confidence), 0.99)), 2),
+    }
+
+
+def _external_layout_payload(
+    engine: str, width: int, height: int, blocks: List[Dict[str, object]]
+) -> Dict[str, object]:
+    content_bbox = _merge_bboxes([tuple(block["bbox"]) for block in blocks if block.get("bbox")])
+    column_count = _estimate_native_columns(blocks)
+    return {
+        "engine": engine,
+        "page_width": width,
+        "page_height": height,
+        "content_bbox": list(content_bbox) if content_bbox else None,
+        "relative_content_bbox": _relative_bbox(content_bbox, width, height) if content_bbox else None,
+        "column_count_estimate": column_count,
+        "dominant_flow": _native_flow(blocks, column_count),
+        "block_count": len(blocks),
+        "blocks": blocks[:96],
+    }
+
+
+def _register_optional_layout_backends() -> None:
+    optional = {
+        "doctr": ("doctr", _doctr_page_layout),
+        "paddleocr": ("paddleocr", _paddleocr_page_layout),
+        "layoutparser": ("layoutparser", _layoutparser_page_layout),
+    }
+    for name, (module_name, backend) in optional.items():
+        if importlib.util.find_spec(module_name) is not None:
+            register_layout_backend(name, backend)
+
+
+register_layout_backend("native", _native_page_layout)
+_register_optional_layout_backends()
+
+
 def _box_overlap_ratio(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
     left = max(a[0], b[0])
     top = max(a[1], b[1])
@@ -2934,6 +3573,126 @@ def _frequent_limited(values: List[object], limit: int) -> List[str]:
         originals.setdefault(key, text)
     ordered = sorted(counts, key=lambda key: (-counts[key], originals[key].lower()))
     return [originals[key] for key in ordered[:limit] if counts[key] > 1]
+
+
+def _layout_confidence(
+    text: str, semantic: Dict[str, object], assets: object = None
+) -> float:
+    confidence = 0.48
+    role = str(semantic.get("role") or "body")
+    if role in {"title", "contents", "chapter", "section", "preface", "abstract"}:
+        confidence += 0.18
+    if role in {"marginalia", "damaged"}:
+        confidence -= 0.08
+    if text:
+        confidence += min(len(text) / 1800.0, 0.2)
+    if _is_blank_or_missing_text(text):
+        confidence -= 0.22
+    if "[unclear]" in text.lower() or "[missing text]" in text.lower():
+        confidence -= 0.12
+    if isinstance(assets, list) and assets:
+        confidence += 0.06
+    if semantic.get("page_marker"):
+        confidence += 0.03
+    return round(max(0.05, min(confidence, 0.99)), 2)
+
+
+def _layout_page_profile(observation: Dict[str, object]) -> Dict[str, object]:
+    features = [str(item) for item in observation.get("content_features") or []]
+    role = str(observation.get("content_kind") or "body")
+    layout = str(observation.get("layout") or "single-flow")
+    native_layout = (
+        observation.get("native_layout")
+        if isinstance(observation.get("native_layout"), dict)
+        else {}
+    )
+    line_count = int(observation.get("line_count") or 0)
+    avg_line_length = float(observation.get("avg_line_length") or 0.0)
+    if "multi_column" in features or layout == "multi-column":
+        column_count = 2
+        dominant_flow = "multi-column"
+    elif "table_or_columns" in features:
+        column_count = 2 if avg_line_length < 70 else 3
+        dominant_flow = "tabular"
+    elif role in {"contents", "references", "bibliography", "index"}:
+        column_count = 1
+        dominant_flow = "structured-list"
+    else:
+        column_count = 1
+        dominant_flow = "single-flow"
+    if line_count >= 65 and avg_line_length < 62 and dominant_flow == "single-flow":
+        dominant_flow = "dense-prose"
+    if role in {"title", "cover", "cover-sheet"}:
+        dominant_flow = "front-matter"
+    native_flow = str(native_layout.get("dominant_flow") or "").strip()
+    try:
+        native_columns = int(native_layout.get("column_count_estimate") or 0)
+    except (TypeError, ValueError):
+        native_columns = 0
+    if native_columns > column_count:
+        column_count = native_columns
+    if (
+        native_flow in {"multi-column", "figure-led", "dense-prose"}
+        and dominant_flow in {"single-flow", "dense-prose"}
+    ):
+        dominant_flow = native_flow
+    return {
+        "dominant_flow": dominant_flow,
+        "column_count_estimate": column_count,
+        "native_flow": native_flow,
+        "native_block_count": int(native_layout.get("block_count") or 0),
+        "line_count": line_count,
+        "average_line_length": avg_line_length,
+        "has_running_header": bool(observation.get("running_header")),
+        "has_page_marker": bool(observation.get("page_marker")),
+        "has_figure_marker": bool(observation.get("has_figure_marker")),
+        "has_footnotes": bool(observation.get("footnotes")),
+        "has_contents_entries": bool(observation.get("contents_entries")),
+    }
+
+
+def _layout_profile(pages: List[Dict[str, object]], document_type: str) -> Dict[str, object]:
+    if not pages:
+        return {
+            "document_type": document_type,
+            "dominant_flow": "single-flow",
+            "column_count_estimate": 1,
+            "page_profiles": [],
+        }
+    flow_counts: Dict[str, int] = {}
+    max_columns = 1
+    page_profiles = []
+    for page in pages:
+        profile = dict(page)
+        page_profiles.append(profile)
+        flow = str(profile.get("dominant_flow") or "single-flow")
+        flow_counts[flow] = flow_counts.get(flow, 0) + 1
+        try:
+            max_columns = max(max_columns, int(profile.get("column_count_estimate") or 1))
+        except (TypeError, ValueError):
+            pass
+    dominant_flow = max(flow_counts, key=lambda key: (flow_counts[key], key)) if flow_counts else "single-flow"
+    return {
+        "document_type": document_type,
+        "dominant_flow": dominant_flow,
+        "column_count_estimate": max_columns,
+        "page_flow_counts": flow_counts,
+        "page_profiles": page_profiles[:120],
+        "notes": _layout_profile_notes(dominant_flow, max_columns, flow_counts),
+    }
+
+
+def _layout_profile_notes(dominant_flow: str, column_count: int, flow_counts: Dict[str, int]) -> List[str]:
+    notes = []
+    if column_count > 1:
+        notes.append(f"Likely {column_count}-column page structure on some pages.")
+    if flow_counts.get("front-matter", 0):
+        notes.append("Front matter detected on at least one page.")
+    if flow_counts.get("structured-list", 0):
+        notes.append("List-like pages such as contents or references detected.")
+    if dominant_flow == "dense-prose":
+        notes.append("Pages are text-dense and should stay paragraph-oriented.")
+    return notes[:6]
 
 
 def _publication_fallback_title(profile: WorkflowProfile, inputs: List[Path]) -> str:
@@ -3212,6 +3971,7 @@ def _restore_multimodal_image(
     restored_text = _extract_multimodal_text(result)
     failure_reason = ""
     label = source_label or path.name
+    native_layout = _page_layout(path, profile)
     assets = []
     if _figure_extraction_enabled(profile):
         assets = _extract_figure_assets(
@@ -3254,6 +4014,7 @@ def _restore_multimodal_image(
                 "status": _restoration_status(failure_reason),
                 "failure_reason": failure_reason,
                 "assets": assets,
+                "native_layout": native_layout,
                 **({"pre_review_text": pre_review_text} if pre_review_text else {}),
             }
         ],
@@ -3623,7 +4384,6 @@ def _apply_translation_stage(
         if not chunks:
             artifacts.write_item_translated(source_index, source_name, "\n")
             artifacts.write_item_final(source_index, source_name, "\n")
-            translated_parts.append(f"===== {source_name} =====")
             translation_chunks.append(
                 {
                     "source_index": source_index,
@@ -3708,7 +4468,7 @@ def _apply_translation_stage(
         else:
             source_final_text = source_translated_text
         artifacts.write_item_final(source_index, source_name, source_final_text + "\n")
-        translated_parts.append(f"===== {source_name} =====\n{source_final_text}".strip())
+        translated_parts.append(source_final_text.strip())
 
     translated_text = "\n\n".join(part for part in translated_parts if part.strip()).strip()
     if not translated_text:
@@ -3825,6 +4585,7 @@ def _restore_multimodal_pdf(
                 break
 
             page_assets = []
+            native_layout = _page_layout(page_img, profile)
             if _figure_extraction_enabled(profile):
                 page_assets = _extract_figure_assets(
                     artifacts,
@@ -3920,6 +4681,7 @@ def _restore_multimodal_pdf(
                 "status": _restoration_status(failure_reason),
                 "failure_reason": failure_reason,
                 "assets": page_assets,
+                "native_layout": native_layout,
             }
             if pre_review_text:
                 chunk_record["pre_review_text"] = pre_review_text
@@ -4328,6 +5090,7 @@ def _restore_multimodal_zip(
                     chunk_idx += 1
                     continue
                 prompt = _task_text("", profile, consistency_state)
+                native_layout = _page_layout(ext_file, profile)
                 assets = []
                 if _figure_extraction_enabled(profile):
                     assets = _extract_figure_assets(
@@ -4412,6 +5175,7 @@ def _restore_multimodal_zip(
                     "status": _restoration_status(failure_reason),
                     "failure_reason": failure_reason,
                     "assets": assets,
+                    "native_layout": native_layout,
                 }
                 if pre_review_text:
                     chunk_record["pre_review_text"] = pre_review_text

@@ -15,7 +15,7 @@ class SidecarExporter:
         path = destination.with_suffix(self.suffix)
         payload = {
             "format": self.label,
-            "note": "This sidecar is a portable placeholder until a dedicated OCR engine writes native layout data.",
+            "note": "This sidecar carries restored text and available run metadata for OCR/archive workflows.",
             "text": text,
             "metadata": _public_metadata(metadata),
         }

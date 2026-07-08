@@ -36,6 +36,7 @@ Core commands:
 | `akshara run` | `akv r` | Guided run |
 | `akshara quick` | `akv q` | Locked defaults |
 | `akshara batch` | `akv b` | Batch processing |
+| `akshara chat` | `akv chat` | Grounded questions over runs or files |
 | `akshara profile` | `akv p` | Profiles |
 | `akshara model` | `akv m` | Models |
 | `akshara env` | `akshara keys` | API keys and local endpoints |
@@ -58,6 +59,7 @@ Interactive session commands:
 | `/run [inputs...]` | Guided full workflow |
 | `/quick [inputs...]` | Run the default profile |
 | `/batch [folder...]` | Recursive batch workflow |
+| `/chat [inputs...]` | Ask grounded questions over runs or files |
 | `/init` | Create a default profile |
 | `/profiles` | Manage profiles |
 | `/models` | Check model providers |
@@ -101,3 +103,7 @@ exports use the cleaned text, while the JSON export keeps the structured record.
 
 The CLI uses Typer, Rich, and InquirerPy when installed. A small stdlib fallback keeps
 the project inspectable in bare Python environments.
+
+The current home screen separates core workflows from extended tools so repeat
+operations stay compact while recovery, export, and maintenance actions remain
+available.

@@ -10,6 +10,7 @@ except ModuleNotFoundError:  # pragma: no cover - dependency fallback
 from akshara_vision.cli.workflows import (
     apply_saved_ui_theme,
     batch_run,
+    chat_command,
     check_command,
     clean_command,
     combine_command,
@@ -26,6 +27,7 @@ from akshara_vision.cli.workflows import (
     onboard,
     profile_command,
     quick_run,
+    review_command,
     resume_command,
     run_guided,
     show_home,
@@ -98,6 +100,27 @@ if typer:
     ):
         batch_run(inputs=inputs, profile_name=profile, dry_run=dry_run)
 
+    @app.command("chat")
+    @app.command("ask")
+    def chat(
+        inputs: Optional[List[str]] = _input_argument(),
+        profile: Optional[str] = _profile_option(),
+        recursive: bool = _recursive_option(),
+        question: Optional[str] = typer.Option(
+            None, "--question", help="Ask a single question non-interactively."
+        ),
+        system_prompt: Optional[str] = typer.Option(
+            None, "--prompt", help="Override the default grounded chat instruction."
+        ),
+    ):
+        chat_command(
+            inputs=inputs,
+            profile_name=profile,
+            recursive=recursive,
+            question=question,
+            system_prompt=system_prompt,
+        )
+
     @app.command("process")
     def process_command(
         inputs: Optional[List[str]] = _input_argument(),
@@ -161,6 +184,14 @@ if typer:
         run_dir: Optional[str] = typer.Argument(None, help="Path to interrupted Akshara run folder."),
     ):
         resume_command(run_dir=run_dir)
+
+    @app.command("review")
+    @app.command("inspect")
+    @app.command("qa")
+    def review(
+        run_dir: Optional[str] = typer.Argument(None, help="Path to Akshara run folder."),
+    ):
+        review_command(run_dir=run_dir)
 
     @app.command("check")
     @app.command("test")
@@ -237,6 +268,8 @@ def _fallback_main(argv: List[str]) -> None:
     parser.add_argument("--profile", "-p", default=None)
     parser.add_argument("--recursive", "-R", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--question", default=None)
+    parser.add_argument("--prompt", default=None)
     parser.add_argument("--name", "-n", default="default")
     parser.add_argument("--source", "-s", default=None)
     parser.add_argument("--lock", action="store_true")
@@ -259,6 +292,14 @@ def _fallback_main(argv: List[str]) -> None:
         quick_run(args.inputs, recursive=args.recursive, dry_run=args.dry_run)
     elif command in {"batch", "b"}:
         batch_run(args.inputs, profile_name=args.profile, dry_run=args.dry_run)
+    elif command in {"chat", "ask"}:
+        chat_command(
+            args.inputs,
+            profile_name=args.profile,
+            recursive=args.recursive,
+            question=args.question,
+            system_prompt=args.prompt,
+        )
     elif command in {"profile", "p"}:
         action = args.inputs[0] if args.inputs else "menu"
         profile_command(action=action, name=args.name, source=args.source, lock=args.lock)
@@ -276,6 +317,8 @@ def _fallback_main(argv: List[str]) -> None:
         combine_command(args.inputs[0] if args.inputs else None)
     elif command in {"resume", "recover"}:
         resume_command(args.inputs[0] if args.inputs else None)
+    elif command in {"review", "inspect", "qa"}:
+        review_command(args.inputs[0] if args.inputs else None)
     elif command in {"check", "test", "t"}:
         raise SystemExit(check_command())
     elif command in {"export", "x"}:
