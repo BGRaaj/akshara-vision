@@ -7,7 +7,7 @@ import zipfile
 from unittest.mock import Mock, patch
 
 from akshara_vision.core.config import ConfigStore
-from akshara_vision.core.chat import answer_question, build_chat_bundle
+from akshara_vision.core.chat import ChatBundle, ChatSource, answer_question, build_chat_bundle
 from akshara_vision.core.env import load_env_files
 from akshara_vision.core.input_discovery import discover_inputs
 from akshara_vision.core.models import RunRequest, WorkflowProfile
@@ -550,6 +550,134 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(usage["total_tokens"], 7)
             self.assertEqual([source.source_id for source in sources], ["S1"])
             self.assertIn("Cite claims inline with source ids", seen_instruction["value"])
+
+    def test_chat_bundle_can_keep_single_visual_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "landscape.jpg"
+            image_path.write_bytes(b"fake-image")
+            bundle = build_chat_bundle([str(image_path)], profile=WorkflowProfile())
+            self.assertEqual(bundle.sources[0].metadata.get("kind"), "raw-visual")
+            self.assertEqual(bundle.sources[0].metadata.get("media_path"), str(image_path))
+
+            seen_media_path = {}
+
+            class VisualChatProvider:
+                name = "mock"
+
+                def restore_text(self, text, instruction, settings, media_path=None):
+                    del text, instruction, settings
+                    seen_media_path["value"] = media_path
+                    return ("A scenic landscape with a road and trees.", {})
+
+            with patch("akshara_vision.core.chat.get_provider", return_value=VisualChatProvider()):
+                answer, usage, sources = answer_question(bundle, "What do you see?")
+            self.assertIn("landscape", answer)
+            self.assertEqual(usage, {})
+            self.assertEqual([source.source_id for source in sources], ["S1"])
+            self.assertEqual(Path(seen_media_path["value"]), image_path)
+
+    def test_chat_on_single_image_passes_visual_context(self):
+        from akshara_vision.core.chat import build_chat_bundle
+
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "poster.png"
+            image_path.write_bytes(b"fake-image")
+            bundle = build_chat_bundle([str(image_path)], profile=WorkflowProfile())
+
+            class VisualOnlyProvider:
+                name = "mock"
+
+                def restore_text(self, text, instruction, settings, media_path=None):
+                    del text, instruction, settings
+                    self.media_path = media_path
+                    return ("A poster with bold title text and a figure.", {})
+
+            provider = VisualOnlyProvider()
+            with patch("akshara_vision.core.chat.get_provider", return_value=provider):
+                answer, usage, sources = answer_question(bundle, "What is shown?")
+            self.assertIn("poster", answer)
+            self.assertEqual(usage, {})
+            self.assertEqual(Path(provider.media_path), image_path)
+            self.assertEqual([source.source_id for source in sources], ["S1"])
+            self.assertEqual(bundle.sources[0].metadata.get("kind"), "raw-visual")
+
+    def test_chat_prefers_page_specific_visual_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            page_12 = Path(tmp) / "page-12.png"
+            page_66 = Path(tmp) / "page-66.png"
+            page_12.write_bytes(b"page-12")
+            page_66.write_bytes(b"page-66")
+            bundle = ChatBundle(
+                title="Demo Volume",
+                profile=WorkflowProfile(),
+                sources=[
+                    ChatSource(
+                        source_id="S1",
+                        label="page 12",
+                        text="The heading is on page 12.",
+                        metadata={"kind": "chunk", "page_number": 12, "media_path": str(page_12)},
+                    ),
+                    ChatSource(
+                        source_id="S2",
+                        label="page 66",
+                        text="The answer is on page 66.",
+                        metadata={"kind": "chunk", "page_number": 66, "media_path": str(page_66)},
+                    ),
+                ],
+            )
+
+            class PageAwareProvider:
+                name = "mock"
+
+                def restore_text(self, text, instruction, settings, media_path=None):
+                    self.media_path = media_path
+                    del text, instruction, settings
+                    return ("Page 66 shows the answer.", {})
+
+            provider = PageAwareProvider()
+            with patch("akshara_vision.core.chat.get_provider", return_value=provider):
+                answer, usage, sources = answer_question(bundle, "What is on page 66?")
+            self.assertIn("page 66", answer.lower())
+            self.assertEqual(usage, {})
+            self.assertEqual([source.source_id for source in sources], ["S2"])
+            self.assertEqual(Path(provider.media_path), page_66)
+
+    def test_chat_lazy_pdf_renders_only_requested_page(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf_path = Path(tmp) / "volume.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4")
+
+            def fake_render(pdftoppm, path, temp_root, page_number, dpi):
+                del pdftoppm, path, dpi
+                rendered = Path(temp_root) / f"page-{page_number:04d}.png"
+                rendered.write_bytes(b"rendered")
+                return rendered
+
+            class PdfChatProvider:
+                name = "mock"
+
+                def restore_text(self, text, instruction, settings, media_path=None):
+                    del instruction, settings
+                    self.prompt = text
+                    self.media_path = media_path
+                    return ("The requested PDF page contains a diagram. [S1]", {})
+
+            provider = PdfChatProvider()
+            with patch("akshara_vision.core.chat.run_pipeline", side_effect=AssertionError("should not pre-index")):
+                with patch("akshara_vision.core.chat.find_executable", return_value="/usr/bin/pdftoppm"):
+                    with patch("akshara_vision.core.chat._render_pdf_page", side_effect=fake_render):
+                        bundle = build_chat_bundle(
+                            [str(pdf_path)],
+                            profile=WorkflowProfile(),
+                            question="What is on page 66?",
+                        )
+                        with patch("akshara_vision.core.chat.get_provider", return_value=provider):
+                            answer, usage, sources = answer_question(bundle, "What is on page 66?")
+            self.assertIn("diagram", answer)
+            self.assertEqual(usage, {})
+            self.assertEqual([source.source_id for source in sources], ["S1"])
+            self.assertIn("page 66", provider.prompt)
+            self.assertEqual(Path(provider.media_path).name, "page-0066.png")
 
     def test_chat_history_helpers_round_trip(self):
         from akshara_vision.core.chat import load_chat_history, save_chat_history

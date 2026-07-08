@@ -890,8 +890,17 @@ def chat_command(
     if not input_values:
         ui.status("info", "Chat cancelled.")
         return None
+    pending_question = question
+    if not pending_question and ui.interactive() and _can_lazy_chat(input_values):
+        ui.note("For a single image or page-specific PDF question, Akshara can answer without pre-indexing the whole file.")
+        pending_question = ui.text("Ask your first question")
     with ui.progress("Indexing chat sources...") as reporter:
-        bundle = build_chat_bundle(input_values, profile=profile, recursive=recursive)
+        bundle = build_chat_bundle(
+            input_values,
+            profile=profile,
+            recursive=recursive,
+            question=pending_question,
+        )
         reporter.finish(f"Indexed {len(bundle.sources)} source chunk(s)")
     ui.section("Review")
     ui.table(
@@ -908,7 +917,6 @@ def chat_command(
         ui.status("info", f"Loaded {len(history)} previous chat turn(s).")
     if ui.interactive():
         ui.note("Chat tools: /sources, /find TERM, /open S1, /clear, /exit")
-    pending_question = question
     while True:
         if not pending_question:
             pending_question = ui.text("Ask a question about these sources")
@@ -951,6 +959,14 @@ def chat_command(
         _next_steps_for_context("chat", run_dir=Path(input_values[0]) if input_values else None)
     )
     return bundle
+
+
+def _can_lazy_chat(input_values: Iterable[str]) -> bool:
+    values = [str(value).strip() for value in input_values if str(value).strip()]
+    if len(values) != 1:
+        return False
+    suffix = Path(values[0]).expanduser().suffix.lower()
+    return suffix in {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
 
 
 def _handle_chat_tool(
@@ -1591,8 +1607,10 @@ def execute_run(
 
     def _interrupt_handler(signum, frame):
         del signum, frame
-        ui.status("warning", "Safe interruption requested. Preserving completed outputs...")
-        ui.status("info", "If a model request is active, Akshara will stop as soon as Python regains control.")
+        ui.section("Interrupting")
+        ui.status("warning", "Interrupt received. Preserving completed outputs...")
+        ui.write("Waiting for the active model request to finish cleanly.")
+        ui.write("Already written pages, chunks, and assets stay on disk.")
         raise KeyboardInterrupt
 
     try:
@@ -1607,6 +1625,7 @@ def execute_run(
         result = _run_with_progress(RunRequest(profile=profile, inputs=selection, dry_run=False))
     except KeyboardInterrupt:
         ui.section("Interrupted")
+        ui.status("warning", "Safe interruption received. Completed outputs were preserved.")
         latest = _latest_run_folder(Path(profile.output_dir).expanduser())
         if latest:
             ui.write(f"Latest run folder: {latest}")

@@ -11,7 +11,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from akshara_vision.core.config import ConfigStore
 from akshara_vision.core.input_discovery import discover_inputs
 from akshara_vision.core.models import RunRequest, WorkflowProfile
-from akshara_vision.core.pipeline import run_pipeline
+from akshara_vision.core.pipeline import _render_pdf_page, find_executable, run_pipeline
 from akshara_vision.registries.providers import get_provider
 
 
@@ -38,6 +38,7 @@ def build_chat_bundle(
     raw_inputs: Optional[Iterable[str]],
     profile: Optional[WorkflowProfile] = None,
     recursive: bool = False,
+    question: Optional[str] = None,
 ) -> ChatBundle:
     profile = copy.deepcopy(profile or ConfigStore().load_default_profile())
     inputs = [str(item).strip() for item in raw_inputs or [] if str(item).strip()]
@@ -67,6 +68,27 @@ def build_chat_bundle(
             )
             titles.append(path.stem)
             continue
+        if len(inputs) == 1 and _looks_like_visual_input(path):
+            collected.append(
+                ChatSource(
+                    source_id="S1",
+                    label=path.name,
+                    text="[visual image source]",
+                    metadata={
+                        "kind": "raw-visual",
+                        "path": str(path),
+                        "media_path": str(path),
+                        "source": path.name,
+                    },
+                )
+            )
+            titles.append(path.stem)
+            continue
+        page_refs = _question_page_numbers(question or "")
+        if len(inputs) == 1 and page_refs and _looks_like_pdf_input(path):
+            collected.extend(_raw_pdf_sources(path, page_refs))
+            titles.append(path.stem)
+            continue
         raw_queue.append(item)
 
     if raw_queue:
@@ -78,7 +100,9 @@ def build_chat_bundle(
             temp_profile.translation_mode = "off"
             selection = discover_inputs(raw_queue, recursive=recursive)
             if not selection.files:
-                raise RuntimeError("No supported chat inputs were found.")
+                raise RuntimeError(
+                    _unsupported_chat_input_message(selection.missing, selection.unsupported)
+                )
             result = run_pipeline(RunRequest(profile=temp_profile, inputs=selection))
             run_dir = Path(result["run_dir"])
             manifest_sources, run_title = _sources_from_run_path(run_dir)
@@ -107,7 +131,17 @@ def answer_question(
     system_prompt = (system_prompt or _default_chat_instruction(bundle)).strip()
     prompt = _build_chat_prompt(bundle, question, prompt_sources, history)
     provider = get_provider(bundle.profile.model.provider)
-    response, usage = provider.restore_text(prompt, system_prompt, bundle.profile.model)
+    media_path, media_temp = _chat_media_path(prompt_sources, question)
+    try:
+        response, usage = provider.restore_text(
+            prompt,
+            system_prompt,
+            bundle.profile.model,
+            media_path=media_path,
+        )
+    finally:
+        if media_temp is not None:
+            media_temp.cleanup()
     return (response or "").strip(), usage or {}, prompt_sources
 
 
@@ -169,12 +203,21 @@ def search_sources(sources: Sequence[ChatSource], query: str, limit: int = 8) ->
 
 
 def _default_chat_instruction(bundle: ChatBundle) -> str:
+    visual_hint = ""
+    if any(str(source.metadata.get("kind") or "") == "raw-visual" for source in bundle.sources):
+        visual_hint = (
+            "If the bundle contains a direct visual source, inspect the image itself first when the "
+            "indexed text is incomplete or does not answer the question.\n"
+        )
     return (
         "You are answering questions about a restored document corpus.\n"
         "Use only the provided sources and the conversation history.\n"
         "If the answer is not supported by the sources, say that clearly.\n"
         "Cite claims inline with source ids like [S1], [S2], or [S1/S3].\n"
+        "If a page, figure, label, or image is attached for a source, inspect it directly when the "
+        "indexed text is incomplete, missing, or only partially answers the question.\n"
         "Keep the answer concise, grounded, and factual.\n"
+        f"{visual_hint}"
         f"Document title: {bundle.title}\n"
     )
 
@@ -185,6 +228,7 @@ def _build_chat_prompt(
     sources: Sequence[ChatSource],
     history: Optional[Sequence[Tuple[str, str]]] = None,
 ) -> str:
+    visual_sources = [source for source in sources if str(source.metadata.get("kind") or "") == "raw-visual"]
     parts = [
         f"DOCUMENT TITLE: {bundle.title}",
         "",
@@ -216,8 +260,17 @@ def _build_chat_prompt(
             "Answer only from the sources above.",
             "If you reference a fact, cite the relevant source ids inline.",
             "If the question asks for a list or extraction, preserve the document's structure where possible.",
+            "If the selected text does not fully cover the question but a page image or visual source is available, re-check the image before answering.",
         ]
     )
+    if visual_sources:
+        parts.extend(
+            [
+                "",
+                "VISUAL SOURCE GUIDANCE",
+                "A direct image source is included. If the indexed text does not cover the question, inspect the image itself and answer from visible evidence.",
+            ]
+        )
     return "\n".join(parts).strip()
 
 
@@ -234,14 +287,150 @@ def _format_source_metadata(metadata: Dict[str, object]) -> str:
 
 def _select_relevant_sources(sources: Sequence[ChatSource], question: str, limit: int = 10) -> List[ChatSource]:
     question_terms = _question_terms(question)
+    page_refs = _question_page_numbers(question)
     scored: List[tuple[int, ChatSource]] = []
     for source in sources:
         text = f"{source.label}\n{source.text}".lower()
         score = sum(1 for term in question_terms if term in text)
         score += int(float(source.metadata.get("confidence") or 0) * 10)
+        page_number = _metadata_page_number(source.metadata)
+        if page_refs and page_number is not None:
+            if page_number in page_refs:
+                score += 40
+            elif any(abs(page_number - page_ref) <= 1 for page_ref in page_refs):
+                score += 16
+        if str(source.metadata.get("kind") or "") == "raw-visual":
+            score += 8
         scored.append((score, source))
     ranked = sorted(scored, key=lambda item: (-item[0], item[1].source_id))
+    if page_refs:
+        exact = [source for _score, source in ranked if _source_matches_page_refs(source, page_refs)]
+        if exact:
+            return exact[:limit]
     return [source for score, source in ranked[:limit] if score > 0] or list(sources[: min(limit, len(sources))])
+
+
+def _chat_media_path(
+    sources: Sequence[ChatSource], question: str = ""
+) -> tuple[Optional[Path], Optional[tempfile.TemporaryDirectory]]:
+    page_refs = _question_page_numbers(question)
+    if page_refs:
+        for source in sources:
+            if not _source_matches_page_refs(source, page_refs):
+                continue
+            path, temp = _source_media_path(source)
+            if path is not None:
+                return path, temp
+    if len(sources) == 1:
+        path, temp = _source_media_path(sources[0])
+        if path is not None:
+            return path, temp
+    for source in sources:
+        if str(source.metadata.get("kind") or "") == "raw-visual":
+            path, temp = _source_media_path(source)
+            if path is not None:
+                return path, temp
+    if _question_requests_visual_review(question):
+        for source in sources:
+            path, temp = _source_media_path(source)
+            if path is not None:
+                return path, temp
+    return None, None
+
+
+def _source_media_path(source: ChatSource) -> tuple[Optional[Path], Optional[tempfile.TemporaryDirectory]]:
+    media_path = str(source.metadata.get("media_path") or "").strip()
+    if media_path:
+        path = Path(media_path).expanduser()
+        if path.exists() and _looks_like_visual_input(path):
+            return path, None
+    source_path = Path(str(source.metadata.get("path") or "")).expanduser()
+    page_number = _metadata_page_number(source.metadata)
+    if source_path.exists() and _looks_like_visual_input(source_path):
+        return source_path, None
+    if source_path.exists() and source_path.suffix.lower() == ".pdf" and page_number:
+        return _render_pdf_page_for_chat(source_path, page_number)
+    return None, None
+
+
+def _render_pdf_page_for_chat(
+    path: Path, page_number: int
+) -> tuple[Optional[Path], Optional[tempfile.TemporaryDirectory]]:
+    pdftoppm = find_executable("pdftoppm")
+    if not pdftoppm:
+        return None, None
+    temp_dir = tempfile.TemporaryDirectory(prefix="akshara-chat-page-")
+    try:
+        rendered = _render_pdf_page(pdftoppm, path, Path(temp_dir.name), page_number, 300)
+    except Exception:
+        temp_dir.cleanup()
+        return None, None
+    if rendered and rendered.exists():
+        return rendered, temp_dir
+    temp_dir.cleanup()
+    return None, None
+
+
+def _metadata_page_number(metadata: Dict[str, object]) -> Optional[int]:
+    for key in ("page_number", "page", "index", "chunk_index"):
+        value = metadata.get(key)
+        if value in (None, "", []):
+            continue
+        try:
+            return int(str(value).strip())
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _source_matches_page_refs(source: ChatSource, page_refs: Sequence[int]) -> bool:
+    page_number = _metadata_page_number(source.metadata)
+    if page_number is None:
+        return False
+    return page_number in page_refs or any(abs(page_number - ref) <= 1 for ref in page_refs)
+
+
+def _question_page_numbers(question: str) -> List[int]:
+    refs: List[int] = []
+    patterns = [
+        r"\bpage\s*(\d{1,4})\b",
+        r"\bpp?\.?\s*(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?",
+        r"\bpages?\s*(\d{1,4})(?:\s*[-–/]\s*(\d{1,4}))?",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, question, flags=re.IGNORECASE):
+            first = int(match.group(1))
+            refs.append(first)
+            if match.lastindex and match.lastindex >= 2:
+                second = match.group(2)
+                if second:
+                    try:
+                        refs.append(int(second))
+                    except ValueError:
+                        pass
+    return sorted(set(refs))
+
+
+def _question_requests_visual_review(question: str) -> bool:
+    lowered = question.lower()
+    return any(
+        keyword in lowered
+        for keyword in (
+            "see",
+            "look",
+            "visual",
+            "image",
+            "figure",
+            "diagram",
+            "photo",
+            "poster",
+            "signboard",
+            "chart",
+            "what does it show",
+            "what is shown",
+            "describe",
+        )
+    )
 
 
 def _question_terms(question: str) -> List[str]:
@@ -287,6 +476,61 @@ def _looks_like_compiled_output(path: Path) -> bool:
     if not path.is_file():
         return False
     return path.suffix.lower() in {".txt", ".md", ".html", ".json", ".jsonl", ".yaml", ".yml"}
+
+
+def _looks_like_visual_input(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    return path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
+
+
+def _looks_like_pdf_input(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() == ".pdf"
+
+
+def _raw_pdf_sources(path: Path, page_refs: Sequence[int]) -> List[ChatSource]:
+    return [
+        ChatSource(
+            source_id=f"S{index}",
+            label=f"{path.name} page {page_number}",
+            text=(
+                "[raw PDF page source; this page will be rendered only when the "
+                "answer needs visual evidence]"
+            ),
+            metadata={
+                "kind": "raw-pdf-page",
+                "source": path.name,
+                "path": str(path),
+                "page_number": page_number,
+            },
+        )
+        for index, page_number in enumerate(page_refs, start=1)
+    ]
+
+
+def _unsupported_chat_input_message(missing: Sequence[str], unsupported: Sequence[Path]) -> str:
+    accepted = ", ".join(sorted(_supported_chat_inputs()))
+    parts = [
+        "No supported chat inputs were found.",
+        f"Accepted chat inputs: {accepted}.",
+    ]
+    if missing:
+        parts.append("Missing paths: " + ", ".join(missing[:8]))
+    if unsupported:
+        parts.append("Unsupported paths: " + ", ".join(str(path) for path in unsupported[:8]))
+    return " ".join(parts)
+
+
+def _supported_chat_inputs() -> List[str]:
+    return [
+        "run folders with run_manifest.json or staged outputs",
+        "compiled outputs (.txt, .md, .html, .json, .jsonl, .yaml, .yml)",
+        "PDFs",
+        "images (.jpg, .jpeg, .png, .webp, .tif, .tiff, .bmp)",
+        "text/OCR files (.txt, .md, .html, .hocr, .xml, .json)",
+        "archives (.zip)",
+        "manifests (.csv, .json)",
+    ]
 
 
 def _sources_from_run_path(path: Path) -> tuple[List[ChatSource], str]:
@@ -347,11 +591,14 @@ def _sources_from_manifest(path: Path, manifest: Dict[str, object]) -> List[Chat
                 if not text.strip():
                     continue
                 chunk_meta = dict(chunk.get("semantic_tags") or {})
+                page_number = chunk_meta.get("page_number") or chunk.get("page_number") or chunk.get("index")
                 chunk_meta.update(
                     {
                         "source": label,
                         "path": str(record.get("source") or path),
                         "chunk_index": chunk.get("index"),
+                        "page_number": page_number,
+                        "media_path": chunk.get("media_path") or chunk_meta.get("media_path") or "",
                         "kind": "chunk",
                     }
                 )

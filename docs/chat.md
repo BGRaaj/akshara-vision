@@ -23,6 +23,14 @@ Inside interactive chat, Akshara also supports local chat tools:
 - compiled outputs such as `.txt`, `.md`, `.html`, `.json`, `.jsonl`, and `.yaml`
 - raw input files or folders, which are first processed through the existing
   pipeline when needed
+- a single raw image file can be discussed directly in vision mode when the
+  selected model supports image inputs
+- a single raw PDF can be handled lazily for page-specific questions, so
+  `page 66` style questions render only that page instead of pre-indexing the
+  full file
+- if a question points to a page or a direct visual source is available, the
+  chat layer can reopen that image and use it again when the indexed text is
+  incomplete
 
 ## Behavior
 
@@ -42,6 +50,10 @@ Inside interactive chat, Akshara also supports local chat tools:
 - Ask follow-up questions after batch processing, review, or export.
 - Search a large run for a phrase and open the exact cited chunk before asking
   the model to reason over it.
+- Ask a direct question about a single uploaded image, such as a photo,
+  illustration, signboard, chart, or poster, when the model supports vision.
+- Ask a page-specific question against a raw PDF before deciding whether to run
+  a full restoration.
 
 ## Notes
 

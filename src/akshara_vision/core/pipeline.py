@@ -2856,13 +2856,15 @@ def _verify_figure_assets(
             continue
         prompt = (
             "Return only JSON: {\"keep\": true|false, \"label\": \"short label\", \"reason\": \"short reason\"}.\n"
-            "The attached crop was detected as a possible figure from a scanned archival page.\n"
-            "Keep it only if it is a real non-text illustration, photograph, map, plate, seal, chart, "
-            "diagram, or meaningful visual element. Reject it if it is mostly text, page border, bleed-through, "
-            "mirrored back-page impression, stain, crack, scanner noise, blank margin, or accidental crop.\n"
+            "The attached crop was already pre-screened as a possible figure from a scanned archival page.\n"
+            "Keep it only if you are confident it is a real non-text illustration, photograph, map, plate, seal, chart, "
+            "diagram, or meaningful visual element.\n"
+            "Reject it if it is mostly text, a page border, bleed-through, mirrored back-page impression, stain, crack, "
+            "scanner noise, blank margin, or an accidental crop.\n"
+            "If you are unsure, reject it.\n"
         )
         try:
-            response, usage = _restore_with_retry(
+            response, usage = _provider_restore_with_heartbeat(
                 provider, prompt, "", profile.model, media_path=local_path, progress=progress
             )
             _notify_usage(progress, f"Verified figure crop {asset.get('path')}", usage, usage or {})
@@ -2912,7 +2914,7 @@ def _parse_figure_verification(response: str) -> Dict[str, object]:
     lowered = (response or "").strip().lower()
     if lowered.startswith("false") or "reject" in lowered:
         return {"keep": False, "label": "", "reason": "provider rejected crop"}
-    return {"keep": True, "label": "", "reason": "verification inconclusive"}
+    return {"keep": False, "label": "", "reason": "verification inconclusive"}
 
 
 def _candidate_figure_boxes(image) -> List[tuple[int, int, int, int]]:
@@ -2941,7 +2943,7 @@ def _candidate_figure_boxes(image) -> List[tuple[int, int, int, int]]:
             if 0.10 <= dark_ratio <= 0.80:
                 active.add((gx, gy))
 
-    boxes = []
+    scored_boxes: List[tuple[float, tuple[int, int, int, int]]] = []
     seen = set()
     for cell in sorted(active):
         if cell in seen:
@@ -2967,8 +2969,11 @@ def _candidate_figure_boxes(image) -> List[tuple[int, int, int, int]]:
         top = max(min_y * cell_h - cell_h, 0)
         right = min((max_x + 2) * cell_w, width)
         bottom = min((max_y + 2) * cell_h, height)
-        if _looks_like_figure_box(gray, (left, top, right, bottom), width, height):
-            boxes.append((left, top, right, bottom))
+        bbox = (left, top, right, bottom)
+        score = _figure_box_score(gray, bbox, width, height)
+        if score >= 0.34 and _looks_like_figure_box(gray, bbox, width, height):
+            scored_boxes.append((score, bbox))
+    boxes = [bbox for _score, bbox in sorted(scored_boxes, key=lambda item: (-item[0], item[1][1], item[1][0]))]
     return _dedupe_boxes(boxes)
 
 
@@ -2987,6 +2992,36 @@ def _looks_like_figure_box(gray, bbox: tuple[int, int, int, int], page_w: int, p
     if dark_ratio < 0.06 or dark_ratio > 0.70:
         return False
     return True
+
+
+def _figure_box_score(gray, bbox: tuple[int, int, int, int], page_w: int, page_h: int) -> float:
+    left, top, right, bottom = bbox
+    box_w = right - left
+    box_h = bottom - top
+    if box_w <= 0 or box_h <= 0:
+        return 0.0
+    area_ratio = (box_w * box_h) / max(page_w * page_h, 1)
+    crop = gray.crop(bbox)
+    histogram = crop.histogram()
+    dark_ratio = sum(histogram[:96]) / max(box_w * box_h, 1)
+    mid_ratio = sum(histogram[96:192]) / max(box_w * box_h, 1)
+    aspect_ratio = box_w / max(box_h, 1)
+    score = 0.0
+    if 0.04 <= area_ratio <= 0.42:
+        score += 0.30
+    elif 0.025 <= area_ratio <= 0.55:
+        score += 0.18
+    if 0.10 <= dark_ratio <= 0.55:
+        score += 0.25
+    elif 0.06 <= dark_ratio <= 0.70:
+        score += 0.12
+    if mid_ratio >= 0.12:
+        score += 0.08
+    if 0.45 <= aspect_ratio <= 2.8:
+        score += 0.12
+    if box_w >= page_w * 0.18 and box_h >= page_h * 0.12:
+        score += 0.15
+    return min(score, 1.0)
 
 
 def _dedupe_boxes(boxes: List[tuple[int, int, int, int]]) -> List[tuple[int, int, int, int]]:
@@ -4015,6 +4050,7 @@ def _restore_multimodal_image(
                 "failure_reason": failure_reason,
                 "assets": assets,
                 "native_layout": native_layout,
+                "media_path": str(path),
                 **({"pre_review_text": pre_review_text} if pre_review_text else {}),
             }
         ],
@@ -4682,6 +4718,7 @@ def _restore_multimodal_pdf(
                 "failure_reason": failure_reason,
                 "assets": page_assets,
                 "native_layout": native_layout,
+                "media_path": str(page_img),
             }
             if pre_review_text:
                 chunk_record["pre_review_text"] = pre_review_text
@@ -5079,6 +5116,7 @@ def _restore_multimodal_zip(
                             "notes": "resumed from existing staged output",
                             "status": "restored",
                             "failure_reason": "",
+                            "media_path": str(ext_file),
                         }
                     )
                     _notify(
@@ -5176,6 +5214,7 @@ def _restore_multimodal_zip(
                     "failure_reason": failure_reason,
                     "assets": assets,
                     "native_layout": native_layout,
+                    "media_path": str(ext_file),
                 }
                 if pre_review_text:
                     chunk_record["pre_review_text"] = pre_review_text

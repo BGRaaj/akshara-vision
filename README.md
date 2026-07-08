@@ -30,7 +30,7 @@ model, provider, scan quality, script complexity, and document damage.
 | Restoration | Text cleanup, OCR error correction, uncertainty markers, chunked long-text processing, raw OCR preservation |
 | Vision input | Direct multimodal processing for scanned images and rendered PDF pages with dense-page and multilingual-script extraction guidance |
 | Document intelligence | Document-type-specific extraction guidance plus semantic roles, native page block geometry, optional ML layout backends, layout hints, and detected structure metadata for books, manuscripts, magazines, newspapers, articles, letters, and archive bundles |
-| Chat | Grounded `akv chat` / `akv ask` mode over runs, outputs, or raw files with source citations, saved history, source search, and source opening |
+| Chat | Grounded `akv chat` / `akv ask` mode over runs, outputs, raw files, or a single direct image with source citations, saved history, source search, source opening, and page-aware visual rechecks when indexed text is incomplete |
 | Assembly enrichment | Optional figure markers plus candidate figure crops with bounding boxes, page zones, relative positions, size, DPI, and placement metadata |
 | Review | `akv review` visual block-map preview, low-confidence block audit, and asset inspection for run folders |
 | Compare | `akv compare` side-by-side source/output browser report for run folders |
