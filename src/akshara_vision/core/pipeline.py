@@ -47,7 +47,7 @@ _LAYOUT_MODEL_CACHE: Dict[str, object] = {}
 DOCUMENT_ROLE_GUIDANCE = {
     "book": {
         "front": {"title", "contents", "preface", "foreword", "introduction"},
-        "main": {"chapter", "section", "part", "appendix", "index"},
+        "main": {"chapter", "section", "part", "appendix", "index", "table", "chart"},
         "roles": {
             "title": "title matter",
             "contents": "table of contents",
@@ -56,6 +56,8 @@ DOCUMENT_ROLE_GUIDANCE = {
             "section": "section text",
             "appendix": "appendix",
             "index": "index",
+            "table": "table",
+            "chart": "chart or graph",
             "footnotes": "notes",
             "body": "body text",
         },
@@ -72,6 +74,8 @@ DOCUMENT_ROLE_GUIDANCE = {
             "sidebar": "sidebar",
             "caption": "caption",
             "multi-column": "multi-column article flow",
+            "table": "table",
+            "chart": "chart or graph",
             "illustrated": "illustrated page",
             "body": "periodical body",
         },
@@ -88,6 +92,8 @@ DOCUMENT_ROLE_GUIDANCE = {
             "continuation": "continued article",
             "multi-column": "column flow",
             "caption": "caption",
+            "table": "table",
+            "chart": "chart or graph",
             "body": "newspaper body",
         },
     },
@@ -100,6 +106,8 @@ DOCUMENT_ROLE_GUIDANCE = {
             "colophon": "colophon",
             "damaged": "damaged passage",
             "lineated-text": "lineated manuscript text",
+            "table": "table",
+            "chart": "chart or graph",
             "body": "manuscript body",
         },
     },
@@ -113,6 +121,8 @@ DOCUMENT_ROLE_GUIDANCE = {
             "bibliography": "bibliography",
             "footnotes": "notes",
             "figure-table": "figure or table",
+            "table": "table",
+            "chart": "chart or graph",
             "body": "article body",
         },
     },
@@ -148,6 +158,8 @@ DOCUMENT_ROLE_GUIDANCE = {
             "schedule": "schedule or annexure",
             "exhibits": "exhibits",
             "signature": "signature block",
+            "table": "table",
+            "chart": "chart or graph",
             "body": "legal body",
         },
     },
@@ -159,6 +171,8 @@ DOCUMENT_ROLE_GUIDANCE = {
             "account": "account details",
             "summary": "summary",
             "notes": "notes",
+            "table": "table",
+            "chart": "chart or graph",
             "body": "finance body",
         },
     },
@@ -170,6 +184,8 @@ DOCUMENT_ROLE_GUIDANCE = {
             "diagnosis": "diagnosis",
             "medications": "medications",
             "instructions": "instructions",
+            "table": "table",
+            "chart": "chart or graph",
             "body": "healthcare body",
         },
     },
@@ -182,6 +198,8 @@ DOCUMENT_ROLE_GUIDANCE = {
             "exclusions": "exclusions",
             "premium": "premium details",
             "terms": "terms",
+            "table": "table",
+            "chart": "chart or graph",
             "body": "insurance body",
         },
     },
@@ -1063,6 +1081,8 @@ def _asset_markers(assets: object) -> str:
 
 def _asset_display_label(asset: Dict[str, object]) -> str:
     label = str(asset.get("label") or asset.get("kind") or "figure").strip()
+    label = label.split(" | ", 1)[0].strip()
+    label = re.sub(r"\s*\([^)]*\)\s*$", "", label).strip()
     return label or "figure"
 
 
@@ -2035,6 +2055,7 @@ def _new_consistency_state(profile: WorkflowProfile) -> Dict[str, object]:
         "page_marker_style": "",
         "layout_notes": [],
         "encountered_scripts": [],
+        "encountered_structures": [],
         "recent_text_excerpt": "",
     }
 
@@ -2046,30 +2067,30 @@ def _document_type_guidance(profile: WorkflowProfile) -> str:
         "book": (
             "Book restoration skill: preserve title pages, subtitles, author/editor lines, "
             "preface/foreword sections, table of contents, chapter headings, page numbers, "
-            "footnotes, indexes, appendices, publisher lines, and running headers without inventing missing data. "
+            "footnotes, indexes, appendices, publisher lines, running headers, tables, and chart captions without inventing missing data. "
             "Restore body prose as natural paragraphs for later book assembly; do not preserve artificial "
             "scan line wrapping unless the lineation itself carries meaning. "
             "Keep the page readable in one pass; do not spend time reconstructing invisible words."
         ),
         "magazine": (
             "Magazine restoration skill: identify columns, article boundaries, headlines, decks, "
-            "captions, bylines, page numbers, advertisements, and sidebars. Do not merge text from "
+            "captions, bylines, page numbers, advertisements, sidebars, tables, and charts. Do not merge text from "
             "different columns or adjacent articles. Read each article block in its natural flow and "
             "move on promptly when a damaged word is uncertain."
         ),
         "newspaper": (
             "Newspaper restoration skill: preserve column order, article boundaries, headlines, "
-            "datelines, bylines, captions, advertisements, and continuation markers. Avoid mixing "
+            "datelines, bylines, captions, advertisements, continuation markers, tables, and charts. Avoid mixing "
             "rows across columns. Do not infer show-through or back-page impressions as front-page text."
         ),
         "manuscript": (
             "Manuscript restoration skill: preserve folio/page markers, marginalia, corrections, "
-            "scribal marks, uncertain readings, line breaks, and damaged text honestly. Do not force "
+            "scribal marks, uncertain readings, line breaks, tables, charts, and damaged text honestly. Do not force "
             "modern spelling or complete damaged readings."
         ),
         "journal article": (
             "Article restoration skill: preserve title, authors, abstract, section headings, "
-            "citations, footnotes, tables, figures, captions, and bibliography structure. Keep citation "
+            "citations, footnotes, tables, figures, charts, captions, and bibliography structure. Keep citation "
             "order exactly as visible."
         ),
         "letter": (
@@ -2083,22 +2104,22 @@ def _document_type_guidance(profile: WorkflowProfile) -> str:
         ),
         "legal document": (
             "Legal document skill: preserve parties, recitals, clauses, schedules, exhibits, signatures, "
-            "defined terms, and numbering exactly as visible. Keep clause order, references, and quoted text "
+            "defined terms, numbering, tables, and charts exactly as visible. Keep clause order, references, and quoted text "
             "stable. Do not merge separate clauses or infer missing legal text."
         ),
         "finance document": (
             "Finance document skill: preserve statements, account labels, line items, totals, tables, notes, "
-            "dates, and monetary values exactly as visible. Keep numerical alignment and do not reformat figures "
+            "charts, dates, and monetary values exactly as visible. Keep numerical alignment and do not reformat figures "
             "into prose."
         ),
         "healthcare document": (
             "Healthcare document skill: preserve report headings, patient details, findings, measurements, "
-            "diagnoses, medications, and instructions exactly as visible. Do not invent missing results or "
+            "diagnoses, medications, tables, charts, and instructions exactly as visible. Do not invent missing results or "
             "medical interpretation."
         ),
         "insurance document": (
             "Insurance document skill: preserve policy terms, coverage sections, exclusions, claim fields, "
-            "premium details, and signatures exactly as visible. Keep numbering and policy labels stable."
+            "premium details, signatures, tables, and charts exactly as visible. Keep numbering and policy labels stable."
         ),
     }
     selected = guidance.get(kind, "General restoration skill: preserve document order, headings, labels, notes, page markers, and uncertain text.")
@@ -2175,6 +2196,8 @@ def _document_structure(
     layouts: Dict[str, int] = {}
     content_features: Dict[str, int] = {}
     asset_count = 0
+    table_block_count = 0
+    chart_block_count = 0
     layout_profile_pages = []
     for item in observations:
         title_candidates.extend(item.get("title_candidates", []))
@@ -2196,6 +2219,10 @@ def _document_structure(
         for feature in item.get("content_features", []):
             feature_name = str(feature)
             content_features[feature_name] = content_features.get(feature_name, 0) + 1
+        if item.get("table_rows"):
+            table_block_count += 1
+        if item.get("chart_signals"):
+            chart_block_count += 1
         layout_profile_pages.append(_layout_page_profile(item))
     for chunk in chunks:
         chunk_assets = chunk.get("assets")
@@ -2215,6 +2242,8 @@ def _document_structure(
         "content_kinds": content_kinds,
         "layouts": layouts,
         "content_features": content_features,
+        "table_block_count": table_block_count,
+        "chart_block_count": chart_block_count,
         "semantic_units": semantic_units,
         "layout_tree": layout_tree,
         "layout_profile": _layout_profile(layout_profile_pages, document_type),
@@ -2243,6 +2272,8 @@ def _layout_tree_node(
             "page_marker": semantic.get("page_marker") or "",
             "headings": semantic.get("headings") or [],
             "contents_entries": semantic.get("contents_entries") or [],
+            "table_rows": semantic.get("table_rows") or [],
+            "chart_signals": semantic.get("chart_signals") or [],
             "footnotes": semantic.get("footnotes") or [],
             "running_header": semantic.get("running_header") or "",
             "has_figure_marker": semantic.get("has_figures") or False,
@@ -2262,6 +2293,8 @@ def _layout_tree_node(
         "page_marker": semantic.get("page_marker") or "",
         "headings": semantic.get("headings") or [],
         "content_features": semantic.get("content_features") or [],
+        "table_rows": semantic.get("table_rows") or [],
+        "chart_signals": semantic.get("chart_signals") or [],
         "page_layout": page_layout,
         "native_layout": native_layout,
         "assets": [_layout_asset_entry(asset) for asset in assets if isinstance(asset, dict)],
@@ -2299,7 +2332,13 @@ def _piece_observations(text: str, document_type: str, index: int) -> Dict[str, 
         if re.fullmatch(r"(?:page\s*)?[ivxlcdm\d]+", line, flags=re.I):
             page_marker = line
             break
+    table_rows = _table_rows(lines)
+    chart_signals = _chart_signals(lines)
     detected_kind = _content_kind(lines, document_type)
+    if table_rows and detected_kind == "body":
+        detected_kind = "table"
+    elif chart_signals and detected_kind == "body" and len(lines) <= 48:
+        detected_kind = "chart"
     kind = "title" if detected_kind == "body" and _looks_like_title_page(lines, index) else detected_kind
     features = _content_features(lines, kind, document_type)
     layout = _layout_class(lines, kind, features)
@@ -2314,6 +2353,8 @@ def _piece_observations(text: str, document_type: str, index: int) -> Dict[str, 
         "title_candidates": first_lines[:2] if index <= 2 else [],
         "section_headings": headings[:6],
         "contents_entries": _contents_entries(lines) if kind == "contents" else [],
+        "table_rows": table_rows,
+        "chart_signals": chart_signals,
         "footnotes": _footnotes(lines),
         "contributors": _contributors(lines),
         "publishers": _publishers(lines),
@@ -2344,6 +2385,8 @@ def _semantic_tags_for_chunk(
         "headings": observations.get("section_headings") or [],
         "title_candidates": observations.get("title_candidates") or [],
         "contents_entries": observations.get("contents_entries") or [],
+        "table_rows": observations.get("table_rows") or [],
+        "chart_signals": observations.get("chart_signals") or [],
         "footnotes": observations.get("footnotes") or [],
         "contributors": observations.get("contributors") or [],
         "publishers": observations.get("publishers") or [],
@@ -2455,6 +2498,11 @@ def _content_kind(lines: List[str], document_type: str) -> str:
     first = lines[0].strip().lower() if lines else ""
     if "contents" in joined or "table of contents" in joined:
         return "contents"
+    chart_signals = _chart_signals(lines)
+    if chart_signals and len(lines) <= 60 and re.search(r"\b(chart|graph|plot|diagram|axis|legend)\b", joined):
+        return "chart"
+    if _table_rows(lines) and len(lines) <= 80:
+        return "table"
     if "preface" in joined or "foreword" in joined:
         return "preface"
     if "abstract" in first or first == "summary":
@@ -2512,6 +2560,10 @@ def _content_kind(lines: List[str], document_type: str) -> str:
             return "policy" if len(lines) <= 10 else "coverage"
     if kind in {"magazine", "newspaper"} and _has_column_spacing(lines):
         return "multi-column"
+    if _table_rows(lines):
+        return "table"
+    if _chart_signals(lines):
+        return "chart"
     if any("[image:" in line.lower() for line in lines):
         return "illustrated"
     return "body"
@@ -2630,12 +2682,20 @@ def _content_features(lines: List[str], role: str, document_type: str) -> List[s
         features.append("visual_reference")
     if re.search(r"\S\s{6,}\S", "\n".join(lines[:80])):
         features.append("table_or_columns")
+    if _table_rows(lines):
+        features.append("table_rows")
+    if _chart_signals(lines):
+        features.append("chart_candidate")
     if role in {"marginalia", "annotation", "correction", "folio"} or str(document_type).lower() == "manuscript":
         features.append("manuscript_layout")
     return _unique_limited(features, 12)
 
 
 def _layout_class(lines: List[str], role: str, features: List[str]) -> str:
+    if "table_rows" in features or role == "table":
+        return "tabular"
+    if "chart_candidate" in features or role == "chart":
+        return "chart-led"
     if "multi_column" in features:
         return "multi-column"
     if role in {"contents", "references", "bibliography", "index", "classifieds"}:
@@ -2650,6 +2710,71 @@ def _layout_class(lines: List[str], role: str, features: List[str]) -> str:
 def _has_column_spacing(lines: List[str]) -> bool:
     spaced = sum(1 for line in lines[:80] if re.search(r"\S\s{4,}\S", line))
     return spaced >= 2
+
+
+def _table_rows(lines: List[str]) -> List[Dict[str, object]]:
+    rows: List[Dict[str, object]] = []
+    if len(lines) < 2:
+        return rows
+    candidates: List[tuple[str, List[str]]] = []
+    for line in lines[:120]:
+        raw = line.strip()
+        cleaned = re.sub(r"\s+", " ", raw)
+        if len(cleaned) < 3 or len(cleaned) > 220:
+            continue
+        lowered = cleaned.lower()
+        if lowered.startswith(("contents", "table of contents")):
+            continue
+        if _looks_like_body_line(cleaned):
+            continue
+        cells: List[str] = []
+        if "|" in raw:
+            cells = [part.strip() for part in raw.split("|") if part.strip()]
+        elif re.search(r"\s{2,}", raw):
+            cells = [part.strip() for part in re.split(r"\s{2,}", raw) if part.strip()]
+        if len(cells) < 2:
+            continue
+        if sum(1 for cell in cells if re.search(r"\d", cell)) == 0 and len(cells) < 3:
+            continue
+        candidates.append((line.strip(), cells[:8]))
+    if not candidates:
+        return rows
+    counts: Dict[int, int] = {}
+    for _line, cells in candidates:
+        counts[len(cells)] = counts.get(len(cells), 0) + 1
+    best_column_count = max(counts, key=lambda key: (counts[key], key))
+    for raw, cells in candidates:
+        if len(cells) != best_column_count:
+            continue
+        rows.append(
+            {
+                "cells": cells,
+                "cell_count": len(cells),
+                "raw": raw,
+            }
+        )
+    return rows[:24]
+
+
+def _chart_signals(lines: List[str]) -> List[str]:
+    joined = "\n".join(lines[:120]).lower()
+    signals = []
+    if re.search(r"\b(chart|graph|plot|diagram|figure|axis|legend|trend|bar|line chart|pie chart)\b", joined):
+        signals.append("chart_terms")
+    numeric_lines = 0
+    for line in lines[:120]:
+        cleaned = re.sub(r"\s+", " ", line.strip())
+        if not cleaned:
+            continue
+        if re.search(r"\b(?:x|y)\s*[- ]?axis\b", cleaned, re.I):
+            signals.append("axis")
+        if re.search(r"\b\d+(?:\.\d+)?%?\b", cleaned):
+            numeric_lines += 1
+    if numeric_lines >= 4:
+        signals.append("numeric_labels")
+    if re.search(r"\b(legend|key|scale|rate|percentage|axis|graph|chart|plot)\b", joined):
+        signals.append("chart_annotations")
+    return _unique_limited(signals, 6)
 
 
 def _role_label(role: str, document_type: str) -> str:
@@ -2672,6 +2797,8 @@ def _assembly_hint(role: str, document_type: str) -> str:
         return "introductory"
     if role in {"chapter", "section", "article", "feature", "record", "letter", "body", "lineated-text"}:
         return "main_flow"
+    if role in {"table", "chart", "figure-table"}:
+        return "tabular"
     if role in {"index", "references", "bibliography", "footnotes"}:
         return "back_matter"
     if role in {"advertisement", "classifieds", "sidebar", "caption", "illustrated", "figure-table"}:
@@ -2683,6 +2810,8 @@ def _assembly_hint(role: str, document_type: str) -> str:
 
 def _looks_like_title_page(lines: List[str], index: int) -> bool:
     if index > 2 or not lines or len(lines) > 18:
+        return False
+    if _table_rows(lines) or _chart_signals(lines):
         return False
     text_lines = [
         line for line in lines
@@ -2744,7 +2873,7 @@ def _assembly_profile(document_type: str, output_formats: List[str]) -> Dict[str
             "docx": "reader-friendly word-processing layout",
             "epub": "book-style reading layout with embedded assets",
             "searchable-pdf": "text-first PDF with stable margins and reading order",
-            "image-pdf": "visually composed PDF with preserved figures",
+            "image-pdf": "compatibility alias for the same HTML-backed PDF layout",
         },
     }
 
@@ -2994,6 +3123,48 @@ def _looks_like_figure_box(gray, bbox: tuple[int, int, int, int], page_w: int, p
     return True
 
 
+def _native_table_signals(gray, bbox: tuple[int, int, int, int], page_w: int, page_h: int) -> bool:
+    left, top, right, bottom = bbox
+    box_w = right - left
+    box_h = bottom - top
+    if box_w <= 0 or box_h <= 0:
+        return False
+    area_ratio = (box_w * box_h) / max(page_w * page_h, 1)
+    if area_ratio < 0.03 or area_ratio > 0.70:
+        return False
+    if box_w < page_w * 0.25 or box_h < page_h * 0.08:
+        return False
+    crop = gray.crop(bbox)
+    histogram = crop.histogram()
+    dark_ratio = sum(histogram[:96]) / max(box_w * box_h, 1)
+    mid_ratio = sum(histogram[96:160]) / max(box_w * box_h, 1)
+    if dark_ratio < 0.04 or dark_ratio > 0.72:
+        return False
+    return mid_ratio >= 0.12 or box_w / max(box_h, 1) >= 1.15
+
+
+def _native_chart_signals(gray, bbox: tuple[int, int, int, int], page_w: int, page_h: int) -> List[str]:
+    left, top, right, bottom = bbox
+    box_w = right - left
+    box_h = bottom - top
+    if box_w <= 0 or box_h <= 0:
+        return []
+    area_ratio = (box_w * box_h) / max(page_w * page_h, 1)
+    if area_ratio < 0.02 or area_ratio > 0.75:
+        return []
+    crop = gray.crop(bbox)
+    histogram = crop.histogram()
+    dark_ratio = sum(histogram[:96]) / max(box_w * box_h, 1)
+    signals = []
+    if box_w > page_w * 0.32 and box_h > page_h * 0.18 and 0.07 <= dark_ratio <= 0.60:
+        signals.append("chart-region-shape")
+    if box_h > box_w * 0.72 and 0.08 <= dark_ratio <= 0.55:
+        signals.append("chart-axis-shape")
+    if sum(histogram[96:160]) / max(box_w * box_h, 1) >= 0.12:
+        signals.append("mixed-text-and-graphics")
+    return _unique_limited(signals, 4)
+
+
 def _figure_box_score(gray, bbox: tuple[int, int, int, int], page_w: int, page_h: int) -> float:
     left, top, right, bottom = bbox
     box_w = right - left
@@ -3052,6 +3223,10 @@ def _page_layout(image_path: Path, profile: Optional[WorkflowProfile] = None) ->
         backend_name = "native"
     if backend_name in {"off", "none", "disabled"}:
         return {}
+    if backend_name in {"native", "auto"}:
+        preferred = _preferred_layout_backend()
+        if preferred and preferred not in {"native", "off"}:
+            backend_name = preferred
     backend = _LAYOUT_BACKENDS.get(backend_name) or _LAYOUT_BACKENDS.get("native")
     if backend is None:
         return _native_page_layout(image_path)
@@ -3062,6 +3237,14 @@ def _page_layout(image_path: Path, profile: Optional[WorkflowProfile] = None) ->
             return {}
         layout = _native_page_layout(image_path)
     return layout if isinstance(layout, dict) else {}
+
+
+def _preferred_layout_backend() -> str:
+    preferred_order = ("doctr", "layoutparser", "paddleocr", "native")
+    for name in preferred_order:
+        if name in _LAYOUT_BACKENDS:
+            return name
+    return "native"
 
 
 def _native_page_layout(image_path: Path) -> Dict[str, object]:
@@ -3177,16 +3360,20 @@ def _native_layout_block(
     crop = gray.crop(bbox)
     histogram = crop.histogram()
     dark_ratio = sum(histogram[:104]) / max(box_w * box_h, 1)
+    chart_signals = _native_chart_signals(gray, bbox, page_w, page_h)
+    table_signals = _native_table_signals(gray, bbox, page_w, page_h)
     area_ratio = round((box_w * box_h) / max(page_w * page_h, 1), 4)
     width_ratio = box_w / max(page_w, 1)
     height_ratio = box_h / max(page_h, 1)
     role = "text-region"
     if _looks_like_figure_box(gray, bbox, page_w, page_h):
-        role = "figure-region"
+        role = "chart-region" if chart_signals else "figure-region"
     elif width_ratio > 0.65 and height_ratio < 0.08:
         role = "running-header-or-footer"
     elif area_ratio < 0.01 and dark_ratio > 0.18:
         role = "small-mark-or-page-number"
+    elif table_signals:
+        role = "table-region"
     confidence = _native_block_confidence(role, area_ratio, dark_ratio, width_ratio, height_ratio)
     return {
         "order": order,
@@ -3196,6 +3383,8 @@ def _native_layout_block(
         "page_zone": _page_zone(((left + right) / 2) / page_w, ((top + bottom) / 2) / page_h),
         "area_ratio": area_ratio,
         "dark_ratio": round(dark_ratio, 4),
+        "chart_signals": chart_signals,
+        "table_signals": table_signals,
         "confidence": confidence,
     }
 
@@ -3216,6 +3405,12 @@ def _native_block_confidence(
             confidence += 0.10
         if 0.08 <= dark_ratio <= 0.62:
             confidence += 0.06
+    elif role in {"chart-region", "table-region"}:
+        confidence += 0.13
+        if 0.03 <= area_ratio <= 0.65:
+            confidence += 0.09
+        if 0.06 <= dark_ratio <= 0.68:
+            confidence += 0.05
     elif role == "running-header-or-footer":
         confidence += 0.08
         if width_ratio > 0.55 and height_ratio < 0.10:
@@ -3403,6 +3598,8 @@ def _average_doctr_confidence(block) -> float:
 
 def _external_role(label: object) -> str:
     text = str(label or "").lower()
+    if any(term in text for term in ("chart", "graph", "plot", "axis", "legend")):
+        return "chart-region"
     if any(term in text for term in ("figure", "image", "table", "formula")):
         return "figure-region" if "table" not in text else "table-region"
     if any(term in text for term in ("header", "footer")):
@@ -3646,6 +3843,9 @@ def _layout_page_profile(observation: Dict[str, object]) -> Dict[str, object]:
     if "multi_column" in features or layout == "multi-column":
         column_count = 2
         dominant_flow = "multi-column"
+    elif role in {"table", "chart"} or "table_rows" in features:
+        column_count = 1 if role == "chart" else 2
+        dominant_flow = "chart-led" if role == "chart" else "tabular"
     elif "table_or_columns" in features:
         column_count = 2 if avg_line_length < 70 else 3
         dominant_flow = "tabular"
@@ -3725,6 +3925,10 @@ def _layout_profile_notes(dominant_flow: str, column_count: int, flow_counts: Di
         notes.append("Front matter detected on at least one page.")
     if flow_counts.get("structured-list", 0):
         notes.append("List-like pages such as contents or references detected.")
+    if flow_counts.get("tabular", 0):
+        notes.append("Tabular pages detected and should keep row/cell order.")
+    if flow_counts.get("chart-led", 0):
+        notes.append("Chart-like pages detected and should keep labels and numeric signals.")
     if dominant_flow == "dense-prose":
         notes.append("Pages are text-dense and should stay paragraph-oriented.")
     return notes[:6]
@@ -3756,6 +3960,7 @@ def _consistency_prompt(state: Optional[Dict[str, object]]) -> str:
         "page_marker_style": state.get("page_marker_style") or "",
         "layout_notes": notes,
         "encountered_scripts": state.get("encountered_scripts") or [],
+        "encountered_structures": state.get("encountered_structures") or [],
         "recent_text_excerpt": state.get("recent_text_excerpt") or "",
     }
     if not any(values[key] for key in ("paragraph_style", "heading_style", "page_marker_style", "layout_notes")):
@@ -3804,6 +4009,11 @@ def _update_consistency_state(state: Optional[Dict[str, object]], text: str) -> 
         if script not in encountered:
             encountered.append(script)
     state["encountered_scripts"] = encountered[:8]
+    structures = list(state.get("encountered_structures") or [])
+    for structure in _detect_structures(sample):
+        if structure not in structures:
+            structures.append(structure)
+    state["encountered_structures"] = structures[:8]
     state["recent_text_excerpt"] = _recent_words(sample, 100)
 
 
@@ -3876,6 +4086,20 @@ def _detect_layout_notes(lines: List[str]) -> List[str]:
     return notes
 
 
+def _detect_structures(text: str) -> List[str]:
+    structures = []
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if _table_rows(lines):
+        structures.append("table-like")
+    if _chart_signals(lines):
+        structures.append("chart-like")
+    if _has_column_spacing(lines):
+        structures.append("multi-column")
+    if _contents_entries(lines):
+        structures.append("contents-like")
+    return structures
+
+
 def _task_text(
     raw_text: str,
     profile: WorkflowProfile,
@@ -3936,6 +4160,8 @@ def _task_text(
             "scan line wraps into readable paragraphs and keep paragraph breaks. Preserve exact line "
             "breaks only for verse, tables, contents pages, manuscript lineation, addresses, captions, "
             "and other places where lineation carries meaning.\n"
+            "If the page contains a table or chart, keep rows, cells, labels, axis text, and legend text "
+            "together in reading order; do not collapse them into prose or invent missing cells.\n"
             "Do not skip non-English, Indic, Sanskrit, Kannada, Hindi, Tamil, Telugu, Malayalam, "
             "Bengali, Marathi, Urdu, or mixed-script text.\n"
             "Apply the language policy above exactly. Preserve clear mixed-language snippets only when "
@@ -3969,6 +4195,9 @@ def _task_text(
         "Apply the language policy exactly. Preserve readable mixed-language snippets only when present "
         "in the source; never invent or normalize language labels.\n"
         "Keep the pass bounded. Fix clear OCR corruption, but do not run an extended review loop.\n"
+        "If the chunk is clearly a table, preserve rows and cells instead of rewriting into prose. "
+        "If it is a chart or graph, preserve visible labels, tick marks, captions, and legend text in order; "
+        "do not invent numeric values.\n"
         "Ignore mirrored, reversed, faint, or bleed-through impressions from the back side of a page. "
         "Do not restore shadows, stains, cracks, or scan noise as text.\n"
         "If the chunk is empty or unreadable, return "
@@ -4266,8 +4495,14 @@ def _maybe_review_restored_text(
     label: str,
     consistency_state: Optional[Dict[str, object]] = None,
 ) -> tuple[str, str, dict, str]:
-    if not _needs_restoration_review(restored_text):
+    mode = _execution_mode(profile)
+    if not _needs_restoration_review(restored_text, mode, consistency_state):
         return restored_text, "", {}, ""
+    if consistency_state is not None:
+        try:
+            consistency_state["review_count"] = int(consistency_state.get("review_count") or 0) + 1
+        except (TypeError, ValueError):
+            consistency_state["review_count"] = 1
     _notify(progress, "review", f"Reviewing suspicious restoration for {label}", advance=0)
     prompt = _restoration_review_prompt(restored_text, profile, consistency_state)
     try:
@@ -4300,16 +4535,36 @@ def _bounded_model_settings(settings, context_window: int, generation_limit: int
     return bounded
 
 
-def _needs_restoration_review(text: str) -> bool:
+def _needs_restoration_review(
+    text: str, execution_mode: str = "balanced", consistency_state: Optional[Dict[str, object]] = None
+) -> bool:
     candidate = text.strip()
     if not candidate or _is_blank_or_missing_text(candidate):
         return False
+    if consistency_state is not None:
+        try:
+            review_count = int(consistency_state.get("review_count") or 0)
+        except (TypeError, ValueError):
+            review_count = 0
+        if review_count >= 6:
+            return False
     if _extract_json_object(candidate):
         return True
     if "\ufffd" in candidate:
         return True
     if re.search(r"([A-Za-z])\1{5,}", candidate):
         return True
+    if execution_mode in {"fast", "balanced"}:
+        words = re.findall(r"[A-Za-z]{3,}", candidate)
+        if len(words) >= 18:
+            vowel_words = sum(1 for word in words if re.search(r"[aeiouAEIOU]", word))
+            if vowel_words / len(words) < 0.28:
+                return True
+        if len(candidate) > 180:
+            symbol_count = sum(1 for char in candidate if not char.isalnum() and not char.isspace())
+            if symbol_count / len(candidate) > 0.48:
+                return True
+        return False
     words = re.findall(r"[A-Za-z]{3,}", candidate)
     if len(words) >= 12:
         vowel_words = sum(1 for word in words if re.search(r"[aeiouAEIOU]", word))

@@ -78,9 +78,11 @@ complex page layouts:
 python -m pip install -e ".[layout]"
 ```
 
-For best PDF output, Akshara Vision prefers an HTML-to-PDF renderer already
-available on your machine. It will try `weasyprint`, `wkhtmltopdf`, or a
-headless Chromium/Chrome browser before falling back to the built-in PDF path.
+For best PDF output, Akshara Vision now uses the HTML export path plus a
+headless Chromium-family browser. Install `chromium`, `chromium-browser`, or
+`google-chrome`/`brave-browser` before running PDF exports. The older internal
+PDF fallback is disabled on purpose so PDF output stays publication-like.
+`image-pdf` is kept only as a compatibility alias for the same renderer.
 
 ## Quick Start
 
@@ -154,7 +156,7 @@ processed.
 | Structured | `.json`, `.jsonl`, `.yaml` |
 | OCR sidecars | `.hocr`, `.alto.xml`, `.page.xml` portable sidecars with restored text and available metadata |
 | Review | `.review.md`, `raw_ocr.txt`, copied source files, `run_manifest.json` |
-| PDF exports | `.searchable.pdf`, `.image.pdf` structured PDF reports built from restored text and run metadata |
+| PDF exports | `.searchable.pdf` publication-style PDF output; `.image.pdf` is a compatibility alias |
 
 The `.txt` export is the primary default. Structured exports include metadata
 for inputs, provider, model, workflow, translation state, usage, restoration
@@ -411,8 +413,8 @@ project checks, use `akv check`.
 
 - PDF page rendering for multimodal processing depends on Poppler `pdftoppm`.
 - PDF exports are generated as publication-style documents from restored text and
-  available figure assets. Searchable PDF remains text-first; image PDF is a
-  composed reading PDF.
+  available figure assets. Searchable PDF is the preferred PDF path; `image-pdf`
+  is kept as a compatibility alias to the same HTML-backed renderer.
 - OCR sidecar exports are portable text sidecars with available restored text and
   metadata. They are not replacements for specialized hOCR/ALTO/PAGE output from
   a dedicated OCR segmentation model.

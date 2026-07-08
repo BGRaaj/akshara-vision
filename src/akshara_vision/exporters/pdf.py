@@ -4,7 +4,7 @@ import shutil
 import subprocess
 from pathlib import Path
 import re
-from typing import Dict, Iterable, List
+from typing import TYPE_CHECKING, Dict, Iterable, List, Optional
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -12,6 +12,15 @@ except ModuleNotFoundError:  # pragma: no cover - optional rendering fallback
     Image = None
     ImageDraw = None
     ImageFont = None
+
+if TYPE_CHECKING:  # pragma: no cover - type hints only
+    from PIL import Image as PILImage
+    from PIL.ImageDraw import ImageDraw as PILImageDraw
+    from PIL.ImageFont import ImageFont as PILImageFont
+else:
+    PILImage = object
+    PILImageDraw = object
+    PILImageFont = object
 
 from akshara_vision.exporters.base import ExportResult
 from akshara_vision.exporters.text import HtmlExporter
@@ -28,165 +37,10 @@ class PdfExporter:
         path = destination.with_suffix(self.suffix)
         if _render_pdf_from_html(path, text, metadata):
             return ExportResult(self.name, path)
-        if self.kind == "image":
-            _build_image_pdf(path, self.heading, text, metadata)
-        else:
-            pdf_bytes = _build_pdf_document(self.heading, text, metadata)
-            path.write_bytes(pdf_bytes)
-        return ExportResult(self.name, path)
-
-
-def _build_pdf_document(_heading: str, text: str, metadata: Dict[str, object]) -> bytes:
-    pages = _paginate_pdf_lines(_pdf_book_lines(text, metadata), metadata)
-    return _render_pdf_pages(pages)
-
-
-def _build_image_pdf(path: Path, heading: str, text: str, metadata: Dict[str, object]) -> None:
-    if _render_pdf_from_html(path, text, metadata):
-        return
-    if Image is None or ImageDraw is None or ImageFont is None:
-        path.write_bytes(_build_pdf_document(heading, text, metadata))
-        return
-    pages = _paginate_pdf_lines(_pdf_book_lines(text, metadata), metadata)
-    page_count = max(len(pages), 1)
-    rendered_pages = [
-        _render_image_page(page_lines, index + 1, page_count, metadata)
-        for index, page_lines in enumerate(pages)
-    ]
-    if not rendered_pages:
-        rendered_pages = [_render_image_page([""], 1, 1, metadata)]
-    rendered_pages[0].save(
-        path,
-        format="PDF",
-        save_all=True,
-        append_images=rendered_pages[1:],
-    )
-
-
-def _pdf_book_lines(text: str, metadata: Dict[str, object]) -> List[str]:
-    title = str(metadata.get("title") or "Untitled").strip() or "Untitled"
-    text = _text_with_missing_asset_markers(text, metadata)
-    lines: List[str] = [
-        *_wrap_heading(title),
-        "",
-    ]
-    for credit in _publication_credits(metadata):
-        lines.extend(_wrap_heading(credit, width=58))
-    if len(lines) > 2:
-        lines.append("")
-    contents_lines = _contents_lines(metadata)
-    if contents_lines:
-        for idx, entry in enumerate(contents_lines):
-            lines.extend(_wrap_heading(entry, width=58 if idx == 0 else 62))
-        lines.append("")
-    lines.append("")
-    for paragraph in _paragraphs(text):
-        if paragraph == "\f":
-            lines.append("\f")
-            continue
-        paragraph = _clean_visible_text(paragraph)
-        if _parse_image_marker(paragraph):
-            lines.append(paragraph)
-        else:
-            lines.extend(_wrap_paragraph(paragraph))
-        lines.append("")
-    return [line.rstrip() for line in lines]
-
-
-def _paginate_pdf_lines(lines: Iterable[str], metadata: Dict[str, object] | None = None) -> List[List[str]]:
-    wrapped_pages: List[List[str]] = []
-    page: List[str] = []
-    usable_lines = 43
-    for line in lines:
-        if line == "\f":
-            if page:
-                wrapped_pages.append(page)
-                page = []
-            continue
-        cost = _pdf_line_cost(line, metadata)
-        current_cost = sum(_pdf_line_cost(item, metadata) for item in page)
-        if page and current_cost + cost > usable_lines:
-            wrapped_pages.append(page)
-            page = []
-        page.append(line)
-    if page or not wrapped_pages:
-        wrapped_pages.append(page or [""])
-    return wrapped_pages
-
-
-def _pdf_line_cost(line: str, metadata: Dict[str, object] | None = None) -> int:
-    marker = _parse_image_marker(line)
-    if marker:
-        return _asset_line_cost(marker[1], metadata or {})
-    if not str(line).strip():
-        return 1
-    return 1
-
-
-def _asset_line_cost(path: str, metadata: Dict[str, object]) -> int:
-    if Image is None:
-        return 14
-    source = _asset_source_path(path, metadata)
-    if not source or not source.exists():
-        return 2
-    try:
-        with Image.open(source) as asset_image:
-            available_width = 1240 - 92 * 2
-            render_width = _asset_render_width(path, metadata, available_width)
-            scale = min(render_width / max(asset_image.width, 1), 1.0)
-            render_height = max(int(asset_image.height * scale), 1)
-            return max(6, min(28, (render_height + 92) // 34 + 1))
-    except Exception:
-        return 14
-
-
-def _render_pdf_pages(pages: List[List[str]]) -> bytes:
-    page_count = max(len(pages), 1)
-    page_numbers = [6 + index * 2 for index in range(page_count)]
-    content_numbers = [7 + index * 2 for index in range(page_count)]
-
-    objects: Dict[int, bytes] = {
-        1: b"<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman >>",
-        2: b"<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold >>",
-        3: b"<< /Type /Font /Subtype /Type1 /BaseFont /Times-Italic >>",
-        4: (
-            f"<< /Type /Pages /Kids [{' '.join(f'{num} 0 R' for num in page_numbers)}] "
-            f"/Count {page_count} >>"
-        ).encode("utf-8"),
-        5: b"<< /Type /Catalog /Pages 4 0 R >>",
-    }
-    for index, page_lines in enumerate(pages or [[""]]):
-        content_obj = content_numbers[index]
-        page_obj = page_numbers[index]
-        objects[content_obj] = _pdf_stream_obj(
-            _page_content_stream(page_lines, index + 1, page_count)
+        raise RuntimeError(
+            "PDF export requires an HTML-to-PDF renderer such as Chromium or Google Chrome "
+            "installed on PATH. Legacy raster/PDF fallbacks are disabled."
         )
-        objects[page_obj] = (
-            "<< /Type /Page /Parent 4 0 R /MediaBox [0 0 595 842] "
-            f"/Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents {content_obj} 0 R >>"
-        ).encode("utf-8")
-
-    rendered: List[bytes] = [b"%PDF-1.4\n"]
-    offsets: Dict[int, int] = {}
-    for obj_num in range(1, max(objects) + 1):
-        offsets[obj_num] = sum(len(chunk) for chunk in rendered)
-        rendered.append(f"{obj_num} 0 obj\n".encode("utf-8"))
-        rendered.append(objects[obj_num])
-        rendered.append(b"\nendobj\n")
-    xref_offset = sum(len(chunk) for chunk in rendered)
-    rendered.append(f"xref\n0 {max(objects) + 1}\n".encode("utf-8"))
-    rendered.append(b"0000000000 65535 f \n")
-    for obj_num in range(1, max(objects) + 1):
-        offset = offsets[obj_num]
-        rendered.append(f"{offset:010d} 00000 n \n".encode("utf-8"))
-    rendered.append(
-        (
-            "trailer\n"
-            f"<< /Size {max(objects) + 1} /Root 5 0 R >>\n"
-            f"startxref\n{xref_offset}\n%%EOF\n"
-        ).encode("utf-8")
-    )
-    return b"".join(rendered)
 
 
 def _render_pdf_from_html(path: Path, text: str, metadata: Dict[str, object]) -> bool:
@@ -194,8 +48,6 @@ def _render_pdf_from_html(path: Path, text: str, metadata: Dict[str, object]) ->
     html_result = HtmlExporter().export(text, html_destination, metadata)
     html_path = html_result.path
     renderer_commands = [
-        ["weasyprint", str(html_path), str(path)],
-        ["wkhtmltopdf", str(html_path), str(path)],
         [
             "google-chrome",
             "--headless",
@@ -358,7 +210,7 @@ def _looks_like_page_marker(text: str) -> bool:
     return bool(re.fullmatch(r"(?:page\s*)?[ivxlcdm\d]+", text.strip(), re.I))
 
 
-def _wrap_for_draw(text: str, font: ImageFont.ImageFont, max_width: int) -> List[str]:
+def _wrap_for_draw(text: str, font: PILImageFont, max_width: int) -> List[str]:
     words = str(text).split()
     if not words:
         return [""]
@@ -375,7 +227,7 @@ def _wrap_for_draw(text: str, font: ImageFont.ImageFont, max_width: int) -> List
     return lines
 
 
-def _draw_text_width(text: str, font: ImageFont.ImageFont) -> int:
+def _draw_text_width(text: str, font: PILImageFont) -> int:
     try:
         return int(font.getlength(text))
     except Exception:
@@ -409,7 +261,7 @@ def _render_image_page(
     page_number: int,
     page_count: int,
     metadata: Dict[str, object],
-) -> Image.Image:
+) -> PILImage:
     page_width = 1240
     page_height = 1754
     background = "#f4ecd8"
@@ -456,8 +308,8 @@ def _render_image_page(
 
 
 def _draw_asset_marker(
-    canvas: Image.Image,
-    draw: ImageDraw.ImageDraw,
+    canvas: PILImage,
+    draw: PILImageDraw,
     line: str,
     marker: tuple[str, str],
     metadata: Dict[str, object],
@@ -512,7 +364,7 @@ def _asset_render_width(path: str, metadata: Dict[str, object], available_width:
     return max(int(available_width * ratio), 160)
 
 
-def _asset_source_path(path: str, metadata: Dict[str, object]) -> Path | None:
+def _asset_source_path(path: str, metadata: Dict[str, object]) -> Optional[Path]:
     candidate = Path(path)
     if candidate.is_absolute():
         return candidate
@@ -522,7 +374,7 @@ def _asset_source_path(path: str, metadata: Dict[str, object]) -> Path | None:
     return candidate
 
 
-def _asset_for_path(path: str, metadata: Dict[str, object]) -> Dict[str, object] | None:
+def _asset_for_path(path: str, metadata: Dict[str, object]) -> Optional[Dict[str, object]]:
     normalized = path.replace("\\", "/")
     for asset in metadata.get("assets") or []:
         if not isinstance(asset, dict):
@@ -533,7 +385,7 @@ def _asset_for_path(path: str, metadata: Dict[str, object]) -> Dict[str, object]
     return None
 
 
-def _parse_image_marker(text: str) -> tuple[str, str] | None:
+def _parse_image_marker(text: str) -> Optional[tuple[str, str]]:
     match = re.match(r"^\[image:\s*(?P<label>.+?)\s*\|\s*(?P<path>[^\]]+)\]$", text.strip(), re.I)
     if not match:
         return None
@@ -673,13 +525,26 @@ def _normalize_match_text(text: str) -> str:
     return re.sub(r"\s+", " ", _clean_visible_text(text)).strip().lower()
 
 
-def _asset_insertion_index(asset: Dict[str, object], paragraphs: List[str]) -> int | None:
+def _asset_insertion_index(asset: Dict[str, object], paragraphs: List[str]) -> Optional[int]:
     if not paragraphs:
         return None
     layout = asset.get("layout") if isinstance(asset.get("layout"), dict) else {}
+    relative_bbox = layout.get("relative_bbox") if isinstance(layout.get("relative_bbox"), list) else None
+    if isinstance(relative_bbox, list) and len(relative_bbox) == 4:
+        try:
+            top = float(relative_bbox[1])
+            bottom = float(relative_bbox[3])
+            center_y = (top + bottom) / 2.0
+            if center_y <= 0.24:
+                return 0
+            if center_y >= 0.76:
+                return len(paragraphs)
+            return max(1, min(int(round(center_y * len(paragraphs))), len(paragraphs) - 1))
+        except (TypeError, ValueError):
+            pass
     zone = str(layout.get("page_zone") or "").strip().lower()
     if zone.startswith("top"):
-        return min(1, len(paragraphs))
+        return 0
     if zone.startswith("bottom"):
         return len(paragraphs)
     if zone.startswith("middle"):
@@ -739,10 +604,12 @@ def _asset_size_label(asset: Dict[str, object]) -> str:
 
 def _asset_display_label(asset: Dict[str, object]) -> str:
     label = str(asset.get("label") or asset.get("kind") or "Figure").strip()
+    label = label.split(" | ", 1)[0].strip()
+    label = re.sub(r"\s*\([^)]*\)\s*$", "", label).strip()
     return label or "Figure"
 
 
-def _reading_font(size: int) -> ImageFont.ImageFont:
+def _reading_font(size: int) -> PILImageFont:
     for candidate in _font_candidates():
         try:
             return ImageFont.truetype(candidate, size=size)

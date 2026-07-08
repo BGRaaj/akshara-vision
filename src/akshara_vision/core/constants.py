@@ -38,8 +38,8 @@ OUTPUT_FORMATS = {
     "hocr": "Layout sidecar for OCR tooling",
     "alto": "ALTO XML sidecar for archive tooling",
     "pagexml": "PAGE XML sidecar for layout-aware workflows",
-    "searchable-pdf": "Text-first PDF with calm reading layout",
-    "image-pdf": "Visually composed PDF with clean page rendering",
+    "searchable-pdf": "Preferred HTML-backed PDF with calm reading layout",
+    "image-pdf": "Compatibility alias for the same HTML-backed PDF renderer",
     "review": "Review notes and before/after diff",
 }
 

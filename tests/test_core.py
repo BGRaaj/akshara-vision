@@ -24,6 +24,16 @@ from akshara_vision.registries.exporters import exporter_registry
 from akshara_vision.registries.providers import provider_registry
 
 
+def _write_dummy_pdf(path):
+    path.write_bytes(
+        b"%PDF-1.4\n1 0 obj<<>>endobj\n2 0 obj<< /Type /Catalog /Pages 3 0 R >>endobj\n"
+        b"3 0 obj<< /Type /Pages /Kids [4 0 R] /Count 1 >>endobj\n"
+        b"4 0 obj<< /Type /Page /Parent 3 0 R /MediaBox [0 0 612 792] >>endobj\n"
+        b"xref\n0 5\n0000000000 65535 f \n0000000000 00000 n \n0000000000 00000 n \n"
+        b"0000000000 00000 n \n0000000000 00000 n \ntrailer<< /Size 5 /Root 2 0 R >>\nstartxref\n0\n%%EOF\n"
+    )
+
+
 class CoreTests(unittest.TestCase):
     def test_default_instruction_is_loaded(self):
         instruction = load_instruction()
@@ -213,13 +223,14 @@ class CoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             destination = Path(tmp) / "akshara_output"
             metadata = {"title": "Export Test", "output_language": "en"}
-            for name, exporter in exporter_registry().items():
-                result = exporter.export("First paragraph\n\nSecond paragraph\n", destination, metadata)
-                self.assertEqual(result.format, name)
-                self.assertTrue(result.path.exists(), name)
-                self.assertGreaterEqual(result.path.stat().st_size, 0, name)
-                if name in {"searchable-pdf", "image-pdf"}:
-                    self.assertTrue(result.path.read_bytes().startswith(b"%PDF-"))
+            with patch("akshara_vision.exporters.pdf._render_pdf_from_html", side_effect=lambda path, text, metadata: (_write_dummy_pdf(path) or True)):
+                for name, exporter in exporter_registry().items():
+                    result = exporter.export("First paragraph\n\nSecond paragraph\n", destination, metadata)
+                    self.assertEqual(result.format, name)
+                    self.assertTrue(result.path.exists(), name)
+                    self.assertGreaterEqual(result.path.stat().st_size, 0, name)
+                    if name in {"searchable-pdf", "image-pdf"}:
+                        self.assertTrue(result.path.read_bytes().startswith(b"%PDF-"))
 
     def test_publication_exporters_style_figure_markers(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -273,6 +284,24 @@ class CoreTests(unittest.TestCase):
         self.assertIn("2", pages)
         self.assertIn("xiv", pages)
         self.assertIn("vii", pages)
+
+    def test_piece_observations_detects_table_and_chart_like_blocks(self):
+        from akshara_vision.core.pipeline import _piece_observations
+
+        table_text = "Item    Value\nA       10\nB       20\nC       30"
+        chart_text = "Sales chart\nQ1 10\nQ2 20\nQ3 30\nQ4 40\nLegend"
+        table_observation = _piece_observations(table_text, "finance document", 1)
+        chart_observation = _piece_observations(chart_text, "book", 2)
+        self.assertEqual(table_observation["content_kind"], "table")
+        self.assertIn("table_rows", table_observation)
+        self.assertEqual(chart_observation["content_kind"], "chart")
+        self.assertIn("chart_candidate", chart_observation["content_features"])
+
+    def test_asset_display_label_strips_inline_metadata(self):
+        from akshara_vision.core.pipeline import _asset_display_label
+
+        asset = {"label": "seal (middle-center, small, 468x600) | figure.png", "kind": "figure-crop"}
+        self.assertEqual(_asset_display_label(asset), "seal")
 
     def test_publication_exporters_use_semantic_contents_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -343,8 +372,19 @@ class CoreTests(unittest.TestCase):
                 content = archive.read("OEBPS/content.xhtml").decode("utf-8")
                 self.assertIn("<img", content)
                 self.assertIn("figure.png", content)
-            pdf_result = exporter_registry()["image-pdf"].export("Body text", destination, metadata)
-            self.assertTrue(pdf_result.path.read_bytes().startswith(b"%PDF-"))
+            with patch(
+                "akshara_vision.exporters.pdf._render_pdf_from_html",
+                side_effect=lambda path, text, metadata: (_write_dummy_pdf(path) or True),
+            ):
+                pdf_result = exporter_registry()["image-pdf"].export("Body text", destination, metadata)
+                self.assertTrue(pdf_result.path.read_bytes().startswith(b"%PDF-"))
+
+    def test_asset_insertion_prefers_top_placement(self):
+        from akshara_vision.exporters.text import _asset_insertion_index
+
+        paragraphs = ["First paragraph", "Second paragraph", "Third paragraph"]
+        asset = {"layout": {"relative_bbox": [0.1, 0.05, 0.5, 0.18], "page_zone": "top-left"}}
+        self.assertEqual(_asset_insertion_index(asset, paragraphs), 0)
 
     def test_mock_pipeline_exports_text_manifest_and_markdown(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -967,7 +1007,17 @@ class CoreTests(unittest.TestCase):
                 name = "mock"
 
                 def restore_text(self, text, instruction, settings, media_path=None):
-                    del text, instruction, settings, media_path
+                    del settings, media_path
+                    if "Return only JSON" in text:
+                        return (
+                            '{"keep": true, "label": "illustration", "reason": "looks like a figure"}',
+                            {
+                                "prompt_tokens": 2,
+                                "completion_tokens": 3,
+                                "total_tokens": 5,
+                                "truncated": False,
+                            },
+                        )
                     return "Page text\n", {
                         "prompt_tokens": 2,
                         "completion_tokens": 3,
@@ -1083,7 +1133,11 @@ class CoreTests(unittest.TestCase):
             (pieces_dir / "0002-restored__english.txt").write_text(
                 "Second part\n", encoding="utf-8"
             )
-            result = combine_stage_outputs(run_dir)
+            with patch(
+                "akshara_vision.exporters.pdf._render_pdf_from_html",
+                side_effect=lambda path, text, metadata: (_write_dummy_pdf(path) or True),
+            ):
+                result = combine_stage_outputs(run_dir)
             self.assertTrue(result["output_path"].exists())
             combined = result["output_path"].read_text(encoding="utf-8")
             self.assertIn("First part", combined)
@@ -1105,7 +1159,11 @@ class CoreTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            result = combine_stage_outputs(run_dir)
+            with patch(
+                "akshara_vision.exporters.pdf._render_pdf_from_html",
+                side_effect=lambda path, text, metadata: (_write_dummy_pdf(path) or True),
+            ):
+                result = combine_stage_outputs(run_dir)
             manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["metadata"]["title"], "Untitled")
 
@@ -1119,7 +1177,11 @@ class CoreTests(unittest.TestCase):
             (item_one / "restored__english.txt").write_text("Restored first\n", encoding="utf-8")
             (item_one / "final__kannada.txt").write_text("Final first\n", encoding="utf-8")
             (item_two / "final__kannada.txt").write_text("Final second\n", encoding="utf-8")
-            result = combine_stage_outputs(run_dir)
+            with patch(
+                "akshara_vision.exporters.pdf._render_pdf_from_html",
+                side_effect=lambda path, text, metadata: (_write_dummy_pdf(path) or True),
+            ):
+                result = combine_stage_outputs(run_dir)
             combined = result["output_path"].read_text(encoding="utf-8")
             self.assertIn("Final first", combined)
             self.assertIn("Final second", combined)
@@ -1136,7 +1198,11 @@ class CoreTests(unittest.TestCase):
                 json.dumps({"text": "Structured text"}, ensure_ascii=False),
                 encoding="utf-8",
             )
-            result = combine_stage_outputs(run_dir)
+            with patch(
+                "akshara_vision.exporters.pdf._render_pdf_from_html",
+                side_effect=lambda path, text, metadata: (_write_dummy_pdf(path) or True),
+            ):
+                result = combine_stage_outputs(run_dir)
             combined = result["output_path"].read_text(encoding="utf-8")
             self.assertIn("Structured text", combined)
             self.assertNotIn("Old text", combined)
@@ -1258,7 +1324,11 @@ class CoreTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            result = combine_stage_outputs(run_dir)
+            with patch(
+                "akshara_vision.exporters.pdf._render_pdf_from_html",
+                side_effect=lambda path, text, metadata: (_write_dummy_pdf(path) or True),
+            ):
+                result = combine_stage_outputs(run_dir)
             combined = result["output_path"].read_text(encoding="utf-8")
             self.assertIn("[image: plate", combined)
             self.assertLess(
@@ -1284,7 +1354,11 @@ class CoreTests(unittest.TestCase):
                 self.assertTrue(any(name.startswith("word/media/") for name in names))
                 document = archive.read("word/document.xml").decode("utf-8")
                 self.assertIn("rIdImage", document)
-            self.assertTrue((run_dir / "akshara_output.image.pdf").read_bytes().startswith(b"%PDF-"))
+            with patch(
+                "akshara_vision.exporters.pdf._render_pdf_from_html",
+                side_effect=lambda path, text, metadata: (_write_dummy_pdf(path) or True),
+            ):
+                self.assertTrue((run_dir / "akshara_output.image.pdf").read_bytes().startswith(b"%PDF-"))
             json_payload = json.loads((run_dir / "akshara_output.json").read_text(encoding="utf-8"))
             self.assertEqual(json_payload["metadata"]["assets"][0]["label"], "plate")
 
@@ -1535,7 +1609,7 @@ class CoreTests(unittest.TestCase):
             )
             self.assertIn("Recovered text", output_text)
 
-    def test_suspicious_restoration_gets_quality_review(self):
+    def test_balanced_mode_skips_costly_quality_review_for_gibberish(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             source = tmp_path / "gibberish.png"
@@ -1546,6 +1620,55 @@ class CoreTests(unittest.TestCase):
                 output_dir=str(tmp_path / "out"),
             )
             profile.model.model = "gemma4:12b"
+            profile.model.execution_mode = "balanced"
+            selection = discover_inputs([str(source)])
+
+            class ReviewProvider:
+                name = "mock"
+
+                def __init__(self):
+                    self.calls = 0
+
+                def restore_text(self, text, instruction, settings, media_path=None):
+                    del instruction, settings, media_path
+                    self.calls += 1
+                    usage = {
+                        "prompt_tokens": 2,
+                        "completion_tokens": 2,
+                        "total_tokens": 4,
+                        "truncated": False,
+                    }
+                    if "RESTORED TEXT TO REVIEW" in text:
+                        return (
+                            '{"restored_text":"This is corrected text.","uncertain":[],"notes":"","status":"restored","failure_reason":""}',
+                            usage,
+                        )
+                    return (
+                        "bcdfg hjklm npqrst vwxyz bcdfg hjklm npqrst vwxyz "
+                        "bcdfg hjklm npqrst vwxyz bcdfg hjklm npqrst vwxyz\n"
+                    ), usage
+
+            provider = ReviewProvider()
+            with patch("akshara_vision.core.pipeline.get_provider", return_value=provider):
+                result = run_pipeline(RunRequest(profile=profile, inputs=selection))
+            output_text = (Path(result["run_dir"]) / "akshara_output.txt").read_text(
+                encoding="utf-8"
+            )
+            self.assertEqual(provider.calls, 1)
+            self.assertIn("bcdfg hjklm", output_text)
+
+    def test_quality_mode_reviews_suspicious_restoration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "gibberish.png"
+            source.write_bytes(b"image bytes")
+            profile = WorkflowProfile(
+                name="quality-review",
+                output_formats=["txt"],
+                output_dir=str(tmp_path / "out"),
+            )
+            profile.model.model = "gemma4:12b"
+            profile.model.execution_mode = "quality"
             selection = discover_inputs([str(source)])
 
             class ReviewProvider:

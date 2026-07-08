@@ -1073,6 +1073,7 @@ def review_command(run_dir: Optional[str] = None):
     layout_tree = structure.get("layout_tree") if isinstance(structure.get("layout_tree"), list) else []
     assets = _manifest_assets(metadata)
     low_confidence = _low_confidence_layout_blocks(layout_tree)
+    table_blocks, chart_blocks = _special_layout_blocks(layout_tree)
 
     ui.section("Summary")
     ui.table(
@@ -1083,6 +1084,8 @@ def review_command(run_dir: Optional[str] = None):
             ["Dominant flow", str(layout_profile.get("dominant_flow") or "unknown")],
             ["Columns", str(layout_profile.get("column_count_estimate") or "unknown")],
             ["Layout nodes", str(len(layout_tree))],
+            ["Table blocks", str(len(table_blocks))],
+            ["Chart blocks", str(len(chart_blocks))],
             ["Assets", str(len(assets))],
             ["Low-confidence blocks", str(len(low_confidence))],
         ]
@@ -1100,6 +1103,12 @@ def review_command(run_dir: Optional[str] = None):
     if low_confidence:
         ui.section("Low-Confidence Blocks")
         ui.table([["Source", "Role", "Zone", "Confidence"]] + low_confidence[:12])
+    if table_blocks:
+        ui.section("Tabular Blocks")
+        ui.table([["Source", "Role", "Zone", "Confidence"]] + table_blocks[:12])
+    if chart_blocks:
+        ui.section("Chart Blocks")
+        ui.table([["Source", "Role", "Zone", "Confidence"]] + chart_blocks[:12])
     if assets:
         ui.section("Figure Assets")
         ui.table([["Label", "Zone", "Size", "Path"]] + _asset_review_rows(assets[:16]))
@@ -1193,6 +1202,32 @@ def _low_confidence_layout_blocks(layout_tree: List[object]) -> List[List[str]]:
     return rows
 
 
+def _special_layout_blocks(layout_tree: List[object]) -> tuple[List[List[str]], List[List[str]]]:
+    tables: List[List[str]] = []
+    charts: List[List[str]] = []
+    for node in layout_tree:
+        if not isinstance(node, dict):
+            continue
+        native = node.get("native_layout") if isinstance(node.get("native_layout"), dict) else {}
+        blocks = native.get("blocks") if isinstance(native.get("blocks"), list) else []
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            role = str(block.get("role") or "")
+            confidence = float(block.get("confidence") or 0.0)
+            row = [
+                str(node.get("source") or ""),
+                role,
+                str(block.get("page_zone") or ""),
+                f"{confidence:.2f}",
+            ]
+            if role == "table-region":
+                tables.append(row)
+            elif role == "chart-region":
+                charts.append(row)
+    return tables, charts
+
+
 def _asset_review_rows(assets: List[Dict[str, object]]) -> List[List[str]]:
     rows = []
     for asset in assets:
@@ -1257,6 +1292,10 @@ def _render_native_layout_block_map(blocks: List[Dict[str, object]]) -> str:
 
 def _block_mark(role: object) -> str:
     role_text = str(role or "").lower()
+    if "chart" in role_text:
+        return "C"
+    if "table" in role_text:
+        return "B"
     if "figure" in role_text:
         return "F"
     if "header" in role_text or "footer" in role_text:
@@ -1283,6 +1322,8 @@ def _layout_review_markdown(
         f"- Dominant flow: {layout_profile.get('dominant_flow') or 'unknown'}",
         f"- Column estimate: {layout_profile.get('column_count_estimate') or 'unknown'}",
         f"- Layout nodes: {len(layout_tree)}",
+        f"- Table blocks: {len(_special_layout_blocks(layout_tree)[0])}",
+        f"- Chart blocks: {len(_special_layout_blocks(layout_tree)[1])}",
         f"- Assets: {len(assets)}",
         f"- Low-confidence blocks: {len(low_confidence)}",
         "",
@@ -2224,6 +2265,20 @@ def doctor_command() -> None:
     rows = [["Check", "State", "Purpose"]]
     for command, purpose in tools:
         rows.append([command, "found" if find_executable(command) else "missing", purpose])
+    html_pdf_renderers = (
+        "chromium",
+        "chromium-browser",
+        "google-chrome",
+        "google-chrome-stable",
+        "brave-browser",
+    )
+    rows.append(
+        [
+            "Chromium/Chrome",
+            "found" if any(find_executable(command) for command in html_pdf_renderers) else "missing",
+            "HTML-backed PDF export",
+        ]
+    )
     for env_name, purpose in [
         ("SARVAM_API_KEY", "Sarvam cloud models"),
         ("OPENAI_API_KEY", "OpenAI cloud models"),

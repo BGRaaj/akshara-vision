@@ -922,9 +922,22 @@ def _asset_insertion_index(asset: Dict[str, object], paragraphs: list[str]) -> O
     if not paragraphs:
         return None
     layout = asset.get("layout") if isinstance(asset.get("layout"), dict) else {}
+    relative_bbox = layout.get("relative_bbox") if isinstance(layout.get("relative_bbox"), list) else None
+    if isinstance(relative_bbox, list) and len(relative_bbox) == 4:
+        try:
+            top = float(relative_bbox[1])
+            bottom = float(relative_bbox[3])
+            center_y = (top + bottom) / 2.0
+            if center_y <= 0.24:
+                return 0
+            if center_y >= 0.76:
+                return len(paragraphs)
+            return max(1, min(int(round(center_y * len(paragraphs))), len(paragraphs) - 1))
+        except (TypeError, ValueError):
+            pass
     zone = str(layout.get("page_zone") or "").strip().lower()
     if zone.startswith("top"):
-        return min(1, len(paragraphs))
+        return 0
     if zone.startswith("bottom"):
         return len(paragraphs)
     if zone.startswith("middle"):
@@ -976,6 +989,8 @@ def _asset_size_label(asset: Dict[str, object]) -> str:
 
 def _asset_display_label(asset: Dict[str, object]) -> str:
     label = str(asset.get("label") or asset.get("kind") or "Figure").strip()
+    label = label.split(" | ", 1)[0].strip()
+    label = re.sub(r"\s*\([^)]*\)\s*$", "", label).strip()
     return label or "Figure"
 
 
