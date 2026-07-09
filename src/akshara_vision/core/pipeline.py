@@ -1316,14 +1316,6 @@ def _write_consistency_checkpoint(
     )
 
 
-def estimate_progress_units(request: RunRequest) -> int:
-    total = 6 + len(request.profile.output_formats)
-    for path in request.inputs.files:
-        total += 3
-        total += max(_estimate_input_words(path), 1) * 2
-    return max(total, 1)
-
-
 def _restore_text(
     raw_text: str,
     instruction: str,
@@ -1648,7 +1640,6 @@ def _provider_restore_with_heartbeat(
 
     thread = threading.Thread(target=worker, name="akshara-provider-call")
     thread.start()
-    last_notice = 0.0
     last_tick = 0.0
     try:
         while thread.is_alive():
@@ -1664,14 +1655,6 @@ def _provider_restore_with_heartbeat(
                     _notify(
                         progress,
                         "waiting",
-                        f"Model still working on {label} ({_format_elapsed(elapsed)} elapsed)",
-                        advance=0,
-                    )
-                if elapsed - last_notice >= 20:
-                    last_notice = elapsed
-                    _notify(
-                        progress,
-                        "waiting-log",
                         f"Model still working on {label} ({_format_elapsed(elapsed)} elapsed)",
                         advance=0,
                     )
@@ -2187,30 +2170,6 @@ def _common_executable_candidates(system: str, name: str) -> List[Path]:
         }
         return browser_candidates.get(name, [])
     return []
-
-
-def _count_words(text: str) -> int:
-    return len([part for part in text.split() if part])
-
-
-def _estimate_input_words(path: Path) -> int:
-    suffix = path.suffix.lower()
-    if suffix in TEXT_EXTENSIONS:
-        try:
-            return max(_count_words(path.read_text(encoding="utf-8")), 1)
-        except UnicodeDecodeError:
-            return max(_count_words(path.read_text(encoding="latin-1")), 1)
-        except OSError:
-            return 40
-    try:
-        size = path.stat().st_size
-    except OSError:
-        return 40
-    if suffix == ".pdf":
-        return max(size // 64, 60)
-    if suffix == ".zip":
-        return max(size // 48, 80)
-    return max(size // 24, 40)
 
 
 def _new_consistency_state(profile: WorkflowProfile) -> Dict[str, object]:
@@ -4706,15 +4665,6 @@ def _bounded_model_settings(settings, context_window: int, generation_limit: int
     current_generation = getattr(bounded, "generation_limit", None)
     bounded.context_window = min(int(current_context or context_window), context_window)
     bounded.generation_limit = min(int(current_generation or generation_limit), generation_limit)
-    current_timeout = getattr(bounded, "request_timeout_seconds", None)
-    try:
-        timeout_value = int(current_timeout) if current_timeout is not None else None
-    except (TypeError, ValueError):
-        timeout_value = None
-    if timeout_value is None or timeout_value <= 0:
-        bounded.request_timeout_seconds = 90
-    else:
-        bounded.request_timeout_seconds = min(timeout_value, 90)
     return bounded
 
 

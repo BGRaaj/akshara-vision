@@ -2,6 +2,7 @@ import shutil
 import sys
 import time
 import textwrap
+import re
 from typing import Iterable, List, Optional
 
 
@@ -126,9 +127,10 @@ class MonoUI:
             self._print_colored(row.center(width), self.accent_style())
         self._print_colored("Restore. Read. Preserve.".center(width), self.accent_style())
         self._print_colored(line, self.accent_style())
-        self.write("Use /help for every command and /menu to open the action picker.".center(width))
+        self.write("Open /home for the board, /help for commands.".center(width))
+        self.write("Use /guide to tune how much help Akshara shows.".center(width))
         if guide == "full":
-            self.write("Use /guide to choose how much guidance Akshara Vision shows.".center(width))
+            self.write("Press Enter for the action picker when you want the full menu.".center(width))
 
     def status(self, level: str, message: str) -> None:
         """Minimal monochrome status marker."""
@@ -157,6 +159,16 @@ class MonoUI:
 
     def note(self, message: str) -> None:
         self.write(f"  {message}")
+
+    def stream(self, message: str, pause: float = 0.0) -> None:
+        parts = [part for part in re.split(r"(\n\n+|\n)", str(message)) if part]
+        if not parts:
+            self.write("")
+            return
+        for part in parts:
+            self.write(part)
+            if pause > 0:
+                time.sleep(pause)
 
     def table(self, rows: Iterable[Iterable[str]]) -> None:
         materialized = [list(row) for row in rows]

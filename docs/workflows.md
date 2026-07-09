@@ -37,8 +37,8 @@ Execution modes:
 The run uses chunked restoration for long raw text inputs, so it is processed in
 smaller model batches instead of one large prompt. Progress is timer-based and indeterminate;
 it shows the active step and elapsed time rather than a fake percentage. After a
-page, image, text chunk, or translation chunk completes, the progress line also
-shows item token usage and cumulative run token totals in plain language when
+page, image, text chunk, or translation chunk completes, Akshara writes a usage
+log with item token usage and cumulative run token totals in plain language when
 the provider reports usage.
 
 While a provider request is active, Akshara periodically reports that the model
@@ -131,9 +131,9 @@ visual block-map previews, low-confidence blocks, and figure assets. It writes
 signals before final assembly.
 
 Use `akv compare path/to/run-folder` to open a browser-friendly before/after
-report. The compare view renders source pages or images next to the generated
-output so you can check whether placement, reading order, and figures still
-match the source material.
+report. The compare view renders source pages and PDF pages as images whenever
+possible, then places the detected overlays on top so you can check whether
+placement, reading order, and figures still match the source material.
 
 Dense pages and non-English scripts still depend heavily on the chosen vision
 model. Quality mode gives the model stronger page-order, region-by-region, and
@@ -155,7 +155,10 @@ skips existing PDF pages, archive entries, and staged text chunks. If the inputs
 are unavailable, it combines whatever completed checkpoints are already present.
 
 `akv chat` can read either a run folder, a compiled output, or a raw input path
-and answer grounded questions from the same restored material.
+and answer grounded questions from the same restored material. If you launch it
+without a file path, it starts in general conversation mode and lets you attach
+documents later. General chat sessions are saved under the Akshara config
+folder so they can be resumed or deleted later.
 
 Press `Ctrl+C` to stop a long run. Completed pages and sources remain on disk
 under `items/` and `stages/`, and the CLI prints the latest run folder for
@@ -215,3 +218,6 @@ akv q raw-ocr.txt
 
 This is useful when text extraction was done elsewhere and you only want restoration, cleanup,
 translation, or export.
+The home board can be reopened at any time with `/home`, and the interactive
+session help stays focused on the current workflow rather than listing every
+command at once.

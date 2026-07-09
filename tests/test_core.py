@@ -52,6 +52,8 @@ class CoreTests(unittest.TestCase):
             profile.extract_figures = True
             profile.language_policy = "strict-source"
             profile.layout_backend = "custom-layout"
+            profile.chat_model.provider = "openai"
+            profile.chat_model.model = "gpt-4.1-mini"
             store.save_profile(profile)
             loaded = store.load_profile("book-cleanup")
             self.assertEqual(loaded.name, "book-cleanup")
@@ -62,6 +64,8 @@ class CoreTests(unittest.TestCase):
             self.assertTrue(loaded.extract_figures)
             self.assertEqual(loaded.language_policy, "strict-source")
             self.assertEqual(loaded.layout_backend, "custom-layout")
+            self.assertEqual(loaded.chat_model.provider, "openai")
+            self.assertEqual(loaded.chat_model.model, "gpt-4.1-mini")
 
     def test_profile_delete_updates_default(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -708,7 +712,9 @@ class CoreTests(unittest.TestCase):
                 answer, usage, sources = answer_question(bundle, "What is the opening passage about?")
             self.assertIn("[S1]", answer)
             self.assertEqual(usage["total_tokens"], 7)
-            self.assertEqual([source.source_id for source in sources], ["S1"])
+            self.assertGreaterEqual(len(sources), 1)
+            self.assertIn(sources[0].source_id, {"S1", "S2"})
+            self.assertTrue(any(source.metadata.get("kind") == "page-record" for source in sources))
             self.assertIn("Cite claims inline with source ids", seen_instruction["value"])
 
     def test_chat_bundle_can_keep_single_visual_source(self):
@@ -735,6 +741,65 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(usage, {})
             self.assertEqual([source.source_id for source in sources], ["S1"])
             self.assertEqual(Path(seen_media_path["value"]), image_path)
+
+    def test_chat_retries_truncated_response_with_partial_context(self):
+        bundle = ChatBundle(
+            title="Demo",
+            profile=WorkflowProfile(),
+            sources=[
+                ChatSource(
+                    source_id="S1",
+                    label="page 1",
+                    text="The restored page discusses a preserved letter.",
+                    metadata={"kind": "page-record"},
+                )
+            ],
+        )
+
+        class TruncatedProvider:
+            name = "mock"
+
+            def __init__(self):
+                self.calls = []
+
+            def restore_text(self, text, instruction, settings, media_path=None):
+                del settings, media_path
+                self.calls.append((text, instruction))
+                if len(self.calls) == 1:
+                    return (
+                        "The page discusses",
+                        {
+                            "prompt_tokens": 5,
+                            "completion_tokens": 3,
+                            "total_tokens": 8,
+                            "truncated": True,
+                        },
+                    )
+                return (
+                    "The page discusses a preserved letter. [S1]",
+                    {
+                        "prompt_tokens": 7,
+                        "completion_tokens": 6,
+                        "total_tokens": 13,
+                        "truncated": False,
+                    },
+                )
+
+        provider = TruncatedProvider()
+        with patch("akshara_vision.core.chat.get_provider", return_value=provider):
+            answer, usage, sources = answer_question(bundle, "What is the page about?")
+
+        self.assertEqual(len(provider.calls), 2)
+        self.assertIn("PARTIAL ANSWER FROM PREVIOUS ATTEMPT", provider.calls[1][0])
+        self.assertIn("The page discusses", provider.calls[1][0])
+        self.assertIn("[S1]", answer)
+        self.assertEqual(usage["prompt_tokens"], 12)
+        self.assertEqual(usage["completion_tokens"], 9)
+        self.assertEqual(usage["total_tokens"], 21)
+        self.assertFalse(usage["truncated"])
+        self.assertTrue(usage["retry_attempted"])
+        self.assertTrue(usage["original_truncated"])
+        self.assertEqual(sources[0].source_id, "S1")
 
     def test_chat_on_single_image_passes_visual_context(self):
         from akshara_vision.core.chat import build_chat_bundle
@@ -896,7 +961,7 @@ class CoreTests(unittest.TestCase):
             self.assertIn("Processed Newton", bundle.sources[0].text)
 
     def test_chat_history_helpers_round_trip(self):
-        from akshara_vision.core.chat import load_chat_history, load_chat_notes, save_chat_history
+        from akshara_vision.core.chat import load_chat_history, load_chat_metadata, load_chat_notes, save_chat_history
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "chat_session.json"
@@ -904,10 +969,12 @@ class CoreTests(unittest.TestCase):
                 path,
                 [("What is here?", "A passage. [S1]")],
                 notes=["Prefer page 12", "Use source S3"],
+                metadata={"title": "Saved chat", "mode": "general"},
             )
             history = load_chat_history(path)
             self.assertEqual(history, [("What is here?", "A passage. [S1]")])
             self.assertEqual(load_chat_notes(path), ["Prefer page 12", "Use source S3"])
+            self.assertEqual(load_chat_metadata(path), {"title": "Saved chat", "mode": "general"})
 
     def test_chat_tools_where_cite_scope_and_remember(self):
         from akshara_vision.cli.workflows import _handle_chat_tool
@@ -1065,6 +1132,29 @@ class CoreTests(unittest.TestCase):
             self.assertIn("<img", report_text)
             self.assertIn("Restored text", report_text)
 
+    def test_compare_command_accepts_compiled_output_path(self):
+        from akshara_vision.cli.workflows import compare_command
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            source_dir = run_dir / "sources" / "0001"
+            item_dir = run_dir / "items" / "0001" / "page-0001"
+            source_dir.mkdir(parents=True)
+            item_dir.mkdir(parents=True)
+            (source_dir / "page-0001.png").write_bytes(b"fake-image")
+            compiled = item_dir / "akshara_output.md"
+            compiled.write_text("Restored text", encoding="utf-8")
+            (run_dir / "run_manifest.json").write_text(
+                json.dumps({"metadata": {"title": "Compareable", "restoration": []}}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            with patch("akshara_vision.cli.workflows.ui.heading"):
+                with patch("akshara_vision.cli.workflows.ui.section"):
+                    with patch("akshara_vision.cli.workflows.ui.status"):
+                        with patch("akshara_vision.cli.workflows._next_recommendations"):
+                            report = compare_command(str(compiled))
+            self.assertTrue(report.exists())
+
     def test_native_layout_preview_renders_block_map(self):
         from akshara_vision.cli.workflows import _native_layout_previews
 
@@ -1086,6 +1176,44 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(len(preview), 1)
         self.assertIn("+", preview[0])
         self.assertIn("figure-region", preview[0])
+
+    def test_chat_manifest_adds_page_level_sources(self):
+        from akshara_vision.core.chat import _sources_from_manifest
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            run_dir.mkdir()
+            manifest = {
+                "metadata": {
+                    "restoration": [
+                        {
+                            "source": "book.pdf",
+                            "label": "book.pdf",
+                            "media_path": "page-0001.png",
+                            "chunks": [
+                                {
+                                    "index": 1,
+                                    "page_number": 1,
+                                    "restored_text": "First chunk.",
+                                    "media_path": "page-0001.png",
+                                },
+                                {
+                                    "index": 2,
+                                    "page_number": 1,
+                                    "restored_text": "Second chunk.",
+                                },
+                            ],
+                        }
+                    ]
+                }
+            }
+            sources = _sources_from_manifest(run_dir, manifest)
+            kinds = [source.metadata.get("kind") for source in sources]
+            self.assertIn("page-record", kinds)
+            page_source = next(source for source in sources if source.metadata.get("kind") == "page-record")
+            self.assertIn("First chunk.", page_source.text)
+            self.assertIn("Second chunk.", page_source.text)
+            self.assertEqual(page_source.metadata.get("media_path"), "page-0001.png")
 
     def test_translation_auto_enables_when_output_language_differs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1989,6 +2117,19 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(_review_limit("fast"), 0)
         self.assertEqual(_review_limit("balanced"), 1)
         self.assertEqual(_review_limit("quality"), 3)
+
+    def test_wait_forever_request_timeout_reaches_provider(self):
+        from akshara_vision.providers.cloud import _request_timeout as cloud_timeout
+        from akshara_vision.providers.local import _request_timeout as local_timeout
+
+        settings = WorkflowProfile().model
+        settings.request_timeout_seconds = None
+        self.assertIsNone(local_timeout(settings))
+        self.assertIsNone(cloud_timeout(settings))
+
+        settings.request_timeout_seconds = 600
+        self.assertEqual(local_timeout(settings), 600.0)
+        self.assertEqual(cloud_timeout(settings), 600.0)
 
     def test_ollama_provider_handles_missing_stdout_and_uses_utf8(self):
         from unittest.mock import Mock, patch

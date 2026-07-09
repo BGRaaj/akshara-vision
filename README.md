@@ -95,6 +95,7 @@ akv chat examples/sample.txt --question "What is this file about?"
 Inside the interactive shell:
 
 ```text
+/home
 /menu
 /run
 /quick examples/sample.txt --dry-run
@@ -199,10 +200,10 @@ Large PDFs are rendered and restored page by page. The CLI shows the current
 page being rendered or restored instead of waiting for the entire PDF to convert
 before the model starts.
 
-After each page, image, or text chunk model call, the progress line includes
-plain-language token usage for that item and cumulative run totals. Suspicious
-restorations that look malformed or gibberish-like are sent through a constrained
-review pass before they are checkpointed.
+After each page, image, or text chunk model call, Akshara writes a durable usage
+log with input tokens, output tokens, and cumulative run totals. Suspicious
+restorations that look malformed or gibberish-like may be sent through a
+mode-aware constrained review pass before they are checkpointed.
 
 Akshara also tags restored chunks with deterministic semantic roles. Books get
 roles such as title matter, contents, preface, chapter, section, appendix, index,
@@ -371,10 +372,10 @@ A profile stores:
 | `balanced` | 400 DPI PDF rendering, default prompt, one informed retry |
 | `quality` | 500 DPI PDF rendering, careful prompt, up to three retries |
 
-Profile context and generation limits are passed through to compatible backends.
-The CLI offers suggested values, but does not artificially cap them. If a model
-truncates output, the run finishes with a visible warning and records the reason
-in the manifest.
+Primary extraction and translation context/generation limits are passed through
+to compatible backends. The CLI offers suggested values, but does not
+artificially cap those primary calls. If a model truncates output, the run
+finishes with a visible warning and records the reason in the manifest.
 
 Actual model calls wait indefinitely by default. In the CLI, profiles and each
 interactive run can optionally choose a slow-page policy such as skip after 5,

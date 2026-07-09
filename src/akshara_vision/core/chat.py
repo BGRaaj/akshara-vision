@@ -4,11 +4,13 @@ import copy
 import json
 import re
 import tempfile
+from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from akshara_vision.core.config import ConfigStore
+from akshara_vision.core.constants import default_config_dir
 from akshara_vision.core.input_discovery import discover_inputs
 from akshara_vision.core.models import RunRequest, WorkflowProfile
 from akshara_vision.core.pipeline import _render_pdf_page, find_executable, run_pipeline
@@ -152,7 +154,8 @@ def answer_question(
     provider = get_provider(bundle.profile.model.provider)
     media_path, media_temp = _chat_media_path(prompt_sources, question)
     try:
-        response, usage = provider.restore_text(
+        response, usage = _restore_text_with_retry(
+            provider,
             prompt,
             system_prompt,
             bundle.profile.model,
@@ -164,12 +167,117 @@ def answer_question(
     return (response or "").strip(), usage or {}, prompt_sources
 
 
+def answer_general_question(
+    profile: WorkflowProfile,
+    question: str,
+    system_prompt: Optional[str] = None,
+    history: Optional[Sequence[Tuple[str, str]]] = None,
+    notes: Optional[Sequence[str]] = None,
+) -> tuple[str, dict]:
+    instruction = (
+        system_prompt
+        or (
+            "You are a helpful document assistant and general conversation partner.\n"
+            "Answer clearly, keep the response grounded in the conversation, and ask a brief follow-up "
+            "only when it helps move the task forward.\n"
+        )
+    ).strip()
+    prompt = _build_general_chat_prompt(question, history=history, notes=notes)
+    model = getattr(profile, "chat_model", None) or profile.model
+    provider = get_provider(model.provider)
+    response, usage = _restore_text_with_retry(provider, prompt, instruction, model)
+    return (response or "").strip(), usage or {}
+
+
+def _restore_text_with_retry(provider, prompt: str, instruction: str, model, media_path: Optional[Path] = None):
+    response, usage = provider.restore_text(
+        prompt,
+        instruction,
+        model,
+        media_path=media_path,
+    )
+    if not _response_needs_retry(response, usage):
+        return response, usage or {}
+    retry_instruction = (
+        instruction
+        + "\n\n"
+        + "The previous answer was incomplete or clipped. Return one complete final answer now. "
+        + "Use the partial answer only as context, do not mention this retry, and do not add unsupported claims."
+    )
+    retry_prompt = (
+        prompt
+        + "\n\nPARTIAL ANSWER FROM PREVIOUS ATTEMPT:\n"
+        + (response or "").strip()
+        + "\n\nReturn the complete answer."
+    )
+    retry_response, retry_usage = provider.restore_text(
+        retry_prompt,
+        retry_instruction,
+        model,
+        media_path=media_path,
+    )
+    merged_usage = _merge_usage(usage or {}, retry_usage or {})
+    if len((retry_response or "").strip()) >= len((response or "").strip()):
+        return retry_response, merged_usage
+    return response, merged_usage
+
+
+def _response_needs_retry(response: str, usage: Optional[dict]) -> bool:
+    text = str(response or "").strip()
+    if not text:
+        return True
+    if isinstance(usage, dict) and usage.get("truncated"):
+        return True
+    return text.endswith(("...", "—", "-", ":", "(", "[", "{", "/"))
+
+
+def _merge_usage(first: dict, second: dict) -> dict:
+    merged = dict(first or {})
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        merged[key] = int(first.get(key, 0) or 0) + int(second.get(key, 0) or 0)
+    merged["truncated"] = bool(second.get("truncated"))
+    merged["retry_attempted"] = True
+    merged["original_truncated"] = bool(first.get("truncated"))
+    return merged
+
+
 def chat_session_path(raw_inputs: Iterable[str]) -> Optional[Path]:
     for item in raw_inputs:
         path = Path(str(item)).expanduser()
         if _looks_like_run_folder(path):
             return path / "chat_session.json"
     return None
+
+
+def chat_sessions_root() -> Path:
+    root = default_config_dir() / "chats"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def new_chat_session_path(title: Optional[str] = None) -> Path:
+    slug = _session_slug(title or "chat")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return chat_sessions_root() / f"{slug}-{stamp}.json"
+
+
+def list_chat_sessions() -> List[Path]:
+    root = chat_sessions_root()
+    return sorted(
+        [path for path in root.glob("*.json") if path.is_file()],
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+
+
+def delete_chat_session(path: Path) -> bool:
+    try:
+        if path.exists() and path.is_file():
+            path.unlink()
+            return True
+    except OSError:
+        return False
+    return False
 
 
 def load_chat_history(path: Optional[Path]) -> List[Tuple[str, str]]:
@@ -205,10 +313,22 @@ def load_chat_notes(path: Optional[Path]) -> List[str]:
     return [str(note).strip() for note in notes if str(note).strip()][:24]
 
 
+def load_chat_metadata(path: Optional[Path]) -> Dict[str, object]:
+    if path is None or not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    metadata = payload.get("metadata") if isinstance(payload, dict) else {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
 def save_chat_history(
     path: Optional[Path],
     history: Sequence[Tuple[str, str]],
     notes: Optional[Sequence[str]] = None,
+    metadata: Optional[Dict[str, object]] = None,
 ) -> None:
     if path is None:
         return
@@ -221,6 +341,8 @@ def save_chat_history(
     }
     if notes is not None:
         payload["notes"] = [str(note).strip() for note in notes if str(note).strip()][:24]
+    if metadata is not None:
+        payload["metadata"] = metadata
     try:
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     except OSError:
@@ -320,6 +442,40 @@ def _build_chat_prompt(
     return "\n".join(parts).strip()
 
 
+def _build_general_chat_prompt(
+    question: str,
+    history: Optional[Sequence[Tuple[str, str]]] = None,
+    notes: Optional[Sequence[str]] = None,
+) -> str:
+    parts = [
+        "CONVERSATION MODE",
+        "General chat. No document sources are attached yet.",
+    ]
+    if history:
+        parts.extend(["CONVERSATION HISTORY"])
+        for index, (user_text, assistant_text) in enumerate(history[-4:], start=1):
+            parts.append(f"Previous question {index}: {user_text.strip()}")
+            parts.append(f"Previous answer {index}: {assistant_text.strip()}")
+            parts.append("")
+    if notes:
+        clean_notes = [str(note).strip() for note in notes if str(note).strip()]
+        if clean_notes:
+            parts.extend(["SESSION NOTES"])
+            for index, note in enumerate(clean_notes[-8:], start=1):
+                parts.append(f"Note {index}: {note}")
+            parts.append("")
+    parts.extend(
+        [
+            "QUESTION",
+            question.strip(),
+            "",
+            "INSTRUCTIONS",
+            "Answer naturally and keep the conversation useful and concise.",
+        ]
+    )
+    return "\n".join(parts).strip()
+
+
 def _format_source_metadata(metadata: Dict[str, object]) -> str:
     if not metadata:
         return "Metadata: none"
@@ -350,14 +506,19 @@ def _select_relevant_sources(
         text = f"{source.label}\n{source.text}".lower()
         score = sum(1 for term in question_terms if term in text)
         score += int(float(source.metadata.get("confidence") or 0) * 10)
+        kind = str(source.metadata.get("kind") or "")
+        if kind == "page-record":
+            score += 22
+        elif kind == "raw-visual":
+            score += 14
+        elif kind == "chunk":
+            score += 6
         page_number = _metadata_page_number(source.metadata)
         if page_refs and page_number is not None:
             if page_number in page_refs:
                 score += 40
             elif any(abs(page_number - page_ref) <= 1 for page_ref in page_refs):
                 score += 16
-        if str(source.metadata.get("kind") or "") == "raw-visual":
-            score += 8
         scored.append((score, source))
     ranked = sorted(scored, key=lambda item: (-item[0], item[1].source_id))
     if page_refs:
@@ -438,6 +599,37 @@ def _metadata_page_number(metadata: Dict[str, object]) -> Optional[int]:
         except (TypeError, ValueError):
             continue
     return None
+
+
+def _record_page_number(record: Dict[str, object], chunks: Sequence[Dict[str, object]]) -> Optional[int]:
+    for key in ("page_number", "page", "index"):
+        value = record.get(key)
+        if value in (None, "", []):
+            continue
+        try:
+            return int(str(value).strip())
+        except (TypeError, ValueError):
+            continue
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        number = _metadata_page_number(chunk)
+        if number is not None:
+            return number
+    return None
+
+
+def _record_media_path(record: Dict[str, object], chunks: Sequence[Dict[str, object]]) -> str:
+    media_path = str(record.get("media_path") or record.get("image_path") or "").strip()
+    if media_path:
+        return media_path
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        chunk_media = str(chunk.get("media_path") or chunk.get("image_path") or "").strip()
+        if chunk_media:
+            return chunk_media
+    return ""
 
 
 def _source_matches_page_refs(source: ChatSource, page_refs: Sequence[int]) -> bool:
@@ -760,6 +952,29 @@ def _sources_from_manifest(path: Path, manifest: Dict[str, object]) -> List[Chat
                     )
                     counter += 1
                 continue
+            page_number = _record_page_number(record, chunks)
+            record_media_path = _record_media_path(record, chunks)
+            page_text = _record_text(record).strip()
+            if page_text:
+                page_label = label
+                if page_number is not None:
+                    page_label = f"{label} page {page_number}"
+                sources.append(
+                    ChatSource(
+                        source_id=f"S{counter}",
+                        label=page_label,
+                        text=page_text,
+                        metadata={
+                            "kind": "page-record",
+                            "source": label,
+                            "path": str(record.get("source") or path),
+                            "chunk_count": len(chunks),
+                            "page_number": page_number,
+                            "media_path": record_media_path or "",
+                        },
+                    )
+                )
+                counter += 1
             for chunk in chunks:
                 if not isinstance(chunk, dict):
                     continue
@@ -774,7 +989,7 @@ def _sources_from_manifest(path: Path, manifest: Dict[str, object]) -> List[Chat
                         "path": str(record.get("source") or path),
                         "chunk_index": chunk.get("index"),
                         "page_number": page_number,
-                        "media_path": chunk.get("media_path") or chunk_meta.get("media_path") or "",
+                        "media_path": chunk.get("media_path") or chunk_meta.get("media_path") or record_media_path or "",
                         "kind": "chunk",
                     }
                 )
@@ -838,6 +1053,12 @@ def _read_best_text(path: Path) -> Optional[str]:
     if path.is_file():
         return _read_text_file(path)
     return None
+
+
+def _session_slug(value: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", value.strip().lower())
+    slug = slug.strip("-")
+    return slug or "chat"
 
 
 def _read_text_file(path: Path) -> str:

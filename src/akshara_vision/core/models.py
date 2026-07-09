@@ -28,6 +28,7 @@ class WorkflowProfile:
     output_formats: List[str] = field(default_factory=lambda: list(DEFAULT_OUTPUT_FORMATS))
     instruction_preset: str = "book_restoration_default"
     model: ModelSettings = field(default_factory=ModelSettings)
+    chat_model: ModelSettings = field(default_factory=ModelSettings)
     locked: bool = False
     output_dir: str = "akshara-output"
     extract_figures: bool = False
@@ -59,6 +60,16 @@ class WorkflowProfile:
                 "generation_limit": self.model.generation_limit,
                 "request_timeout_seconds": self.model.request_timeout_seconds,
             },
+            "chat_model": {
+                "provider": self.chat_model.provider,
+                "model": self.chat_model.model,
+                "endpoint": self.chat_model.endpoint or "",
+                "temperature": self.chat_model.temperature,
+                "execution_mode": self.chat_model.execution_mode,
+                "context_window": self.chat_model.context_window,
+                "generation_limit": self.chat_model.generation_limit,
+                "request_timeout_seconds": self.chat_model.request_timeout_seconds,
+            },
         }
 
     @classmethod
@@ -66,6 +77,9 @@ class WorkflowProfile:
         model_data = data.get("model") or {}
         if not isinstance(model_data, dict):
             model_data = {}
+        chat_model_data = data.get("chat_model") or model_data
+        if not isinstance(chat_model_data, dict):
+            chat_model_data = model_data
         output_formats = data.get("output_formats") or DEFAULT_OUTPUT_FORMATS
         if isinstance(output_formats, str):
             output_formats = [item.strip() for item in output_formats.split(",") if item.strip()]
@@ -101,6 +115,40 @@ class WorkflowProfile:
                 if model_data.get("request_timeout_seconds") is not None
                 and str(model_data.get("request_timeout_seconds")).strip() not in {"", "None"}
                 else None,
+            ),
+            chat_model=ModelSettings(
+                provider=str(chat_model_data.get("provider") or model_data.get("provider") or "mock"),
+                model=str(chat_model_data.get("model") or model_data.get("model") or "offline-restoration-preview"),
+                endpoint=str(chat_model_data.get("endpoint") or model_data.get("endpoint") or "") or None,
+                temperature=float(chat_model_data.get("temperature") or model_data.get("temperature") or 0.1),
+                execution_mode=str(chat_model_data.get("execution_mode") or model_data.get("execution_mode") or "balanced"),
+                context_window=int(chat_model_data.get("context_window"))
+                if chat_model_data.get("context_window") is not None
+                and str(chat_model_data.get("context_window")).strip() not in {"", "None"}
+                else (
+                    int(model_data.get("context_window"))
+                    if model_data.get("context_window") is not None
+                    and str(model_data.get("context_window")).strip() not in {"", "None"}
+                    else None
+                ),
+                generation_limit=int(chat_model_data.get("generation_limit"))
+                if chat_model_data.get("generation_limit") is not None
+                and str(chat_model_data.get("generation_limit")).strip() not in {"", "None"}
+                else (
+                    int(model_data.get("generation_limit"))
+                    if model_data.get("generation_limit") is not None
+                    and str(model_data.get("generation_limit")).strip() not in {"", "None"}
+                    else None
+                ),
+                request_timeout_seconds=int(chat_model_data.get("request_timeout_seconds"))
+                if chat_model_data.get("request_timeout_seconds") is not None
+                and str(chat_model_data.get("request_timeout_seconds")).strip() not in {"", "None"}
+                else (
+                    int(model_data.get("request_timeout_seconds"))
+                    if model_data.get("request_timeout_seconds") is not None
+                    and str(model_data.get("request_timeout_seconds")).strip() not in {"", "None"}
+                    else None
+                ),
             ),
         )
 

@@ -63,7 +63,7 @@ Interactive session commands:
 | `/chat [inputs...]` | Ask grounded questions over runs or files |
 | `/init` | Create a default profile |
 | `/profiles` | Manage profiles |
-| `/models` | Check model providers |
+| `/models` | Manage or check model providers |
 | `/env` | Show API key and endpoint setup |
 | `/instructions` | View or edit prompts |
 | `/guide` | Choose guidance level |

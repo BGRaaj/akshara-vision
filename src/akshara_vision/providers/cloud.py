@@ -505,9 +505,9 @@ def _request_timeout(settings: object) -> Optional[float]:
     fallback_mode = getattr(settings, "execution_mode", "balanced")
     fallback_timeout = float(_provider_timeout(str(fallback_mode)))
     if value is None:
-        return fallback_timeout
+        return None
     try:
         seconds = int(value)
     except (TypeError, ValueError):
         return fallback_timeout
-    return float(seconds) if seconds > 0 else fallback_timeout
+    return float(seconds) if seconds > 0 else None

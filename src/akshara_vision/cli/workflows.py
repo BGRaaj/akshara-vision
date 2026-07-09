@@ -1,4 +1,5 @@
 import copy
+import base64
 import html
 import json
 import os
@@ -9,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
@@ -22,8 +24,13 @@ from akshara_vision.core.constants import (
 )
 from akshara_vision.core.chat import (
     answer_question,
+    answer_general_question,
+    delete_chat_session,
     build_chat_bundle,
     chat_session_path,
+    chat_sessions_root,
+    list_chat_sessions,
+    load_chat_metadata,
     load_chat_history,
     load_chat_notes,
     save_chat_history,
@@ -40,8 +47,8 @@ from akshara_vision.core.models import (
 from akshara_vision.core.pipeline import (
     available_layout_backends,
     combine_stage_outputs,
-    estimate_progress_units,
     find_executable,
+    _render_pdf_page,
     run_pipeline,
 )
 from akshara_vision.instructions import (
@@ -84,7 +91,7 @@ HOME_ACTIONS = [
 
 
 def show_home(interactive: bool = False) -> None:
-    _render_home()
+    _render_home(expanded=False)
     if interactive:
         interactive_session()
 
@@ -95,64 +102,71 @@ def apply_saved_ui_theme(clear: bool = False) -> None:
     ui.apply_terminal_theme(clear=clear)
 
 
-def _render_home() -> None:
+def _render_home(expanded: bool = True) -> None:
     store = ConfigStore()
     profile = store.load_default_profile()
     prefs = store.load_ui_preferences()
     ui.set_theme(prefs["theme"])
     ui.apply_terminal_theme()
     ui.hero(guide=prefs["guide"])
-    ui.section("Core Workflows")
+    ui.section("Start Here")
     ui.board(
         [
             ("Run", "/run", "Full guided workflow"),
             ("Quick", "/quick", "Use saved defaults"),
-            ("Batch", "/batch", "Folders and manifests"),
             ("Chat", "/chat", "Ask questions over files"),
-            ("Setup", "/init", "Create your workflow"),
             ("Profiles", "/profiles", "Defaults and locks"),
             ("Models", "/models", "Local and cloud choices"),
-            ("Instructions", "/instructions", "Restoration prompt presets"),
         ],
         compact=prefs["density"] == "compact",
     )
-    ui.section("Extended Tools")
-    ui.board(
-        [
-            ("Resume", "/resume", "Continue interrupted work"),
-            ("Review", "/review", "Inspect layout and assets"),
-            ("Compare", "/compare", "Source and output side by side"),
-            ("Combine", "/combine", "Assemble staged outputs"),
-            ("Export", "/export", "Convert existing outputs"),
-            ("Docs", "/docs", "Open project guides"),
-            ("Guide", "/guide", "Adjust CLI guidance"),
-            ("Modes", "/mode", "Speed and quality tradeoffs"),
-            ("Customize", "/ui", "Light/dark terminal theme"),
-        ],
-        compact=prefs["density"] == "compact",
-    )
-    ui.section("Suggested Next")
-    ui.board(
-        [
-            ("Review", "/review", "Inspect the latest layout map"),
-            ("Resume", "/resume", "Recover interrupted work"),
-            ("Combine", "/combine", "Rebuild staged outputs"),
-            ("Export", "/export", "Change output format"),
-        ],
-        compact=prefs["density"] == "compact",
-    )
-    ui.section("Setup And Maintenance")
-    ui.board(
-        [
-            ("API Keys", "/env", "Provider key status"),
-            ("Doctor", "/doctor", "System readiness"),
-            ("Install", "/install", "PDF/image dependencies"),
-            ("Status", "/status", "Current configuration"),
-            ("Checks", "/check", "Compile and test"),
-            ("Clean", "/clean", "Remove generated artifacts"),
-        ],
-        compact=prefs["density"] == "compact",
-    )
+    if expanded:
+        ui.section("Core Workflows")
+        ui.board(
+            [
+                ("Batch", "/batch", "Folders and manifests"),
+                ("Setup", "/init", "Create your workflow"),
+                ("Instructions", "/instructions", "Restoration prompt presets"),
+            ],
+            compact=prefs["density"] == "compact",
+        )
+        ui.section("Extended Tools")
+        ui.board(
+            [
+                ("Resume", "/resume", "Continue interrupted work"),
+                ("Review", "/review", "Inspect layout and assets"),
+                ("Compare", "/compare", "Source and output side by side"),
+                ("Combine", "/combine", "Assemble staged outputs"),
+                ("Export", "/export", "Convert existing outputs"),
+                ("Docs", "/docs", "Open project guides"),
+                ("Guide", "/guide", "Adjust CLI guidance"),
+                ("Modes", "/mode", "Speed and quality tradeoffs"),
+                ("Customize", "/ui", "Light/dark terminal theme"),
+            ],
+            compact=prefs["density"] == "compact",
+        )
+        ui.section("Suggested Next")
+        ui.board(
+            [
+                ("Review", "/review", "Inspect the latest layout map"),
+                ("Resume", "/resume", "Recover interrupted work"),
+                ("Combine", "/combine", "Rebuild staged outputs"),
+                ("Export", "/export", "Change output format"),
+            ],
+            compact=prefs["density"] == "compact",
+        )
+        ui.section("Setup And Maintenance")
+        ui.board(
+            [
+                ("API Keys", "/env", "Provider key status"),
+                ("Doctor", "/doctor", "System readiness"),
+                ("Install", "/install", "PDF/image dependencies"),
+                ("Status", "/status", "Current configuration"),
+                ("Checks", "/check", "Compile and test"),
+                ("Clean", "/clean", "Remove generated artifacts"),
+            ],
+            compact=prefs["density"] == "compact",
+        )
     ui.section("Default Workflow")
     ui.table(
         [
@@ -165,12 +179,13 @@ def _render_home() -> None:
     )
     ui.section("Session")
     if prefs["guide"] == "minimal":
-        ui.write("/menu  /run  /quick  /doctor  /exit")
+        ui.write("/run  /quick  /chat  /exit")
     elif prefs["guide"] == "full":
         ui.write("Press Enter for the action picker, or type /help for every command.")
-        ui.write("Use /guide to choose how much guidance Akshara Vision shows.")
+        ui.write("Open /home for the board and /guide to tune the help level.")
     else:
-        ui.write("Press Enter for options, /help for commands, or /exit to leave.")
+        ui.write("Press Enter for options, /home for the board, or /help for commands.")
+        ui.write("Use /guide to choose how much guidance Akshara Vision shows.")
     ui.status("info", "Press Ctrl+C at any time to cancel")
 
 
@@ -251,6 +266,10 @@ def _dispatch_session_command(raw: str) -> bool:
         ui.write("Akshara Vision uses slash commands in the interactive session.")
         ui.write("Try /run, /quick, /batch, /chat, /doctor, /models, /profiles, or /help.")
         return True
+    if command in {"/where", "/scope", "/focus", "/cite", "/remember", "/sources", "/find", "/open"}:
+        ui.write(f"{command} is available inside /chat after you attach or open a document source.")
+        ui.write("Use /chat to work with document sources, or /help to see the full command list.")
+        return True
     if command in {"/exit", "/quit", "/q!"}:
         ui.write("Namaskara.")
         return False
@@ -260,7 +279,7 @@ def _dispatch_session_command(raw: str) -> bool:
         selected = _menu_command()
         return _dispatch_session_command(selected)
     elif command in {"/home"}:
-        _render_home()
+        _render_home(expanded=True)
     elif command in {"/status"}:
         _status_panel()
     elif command in {"/guide"}:
@@ -294,7 +313,7 @@ def _dispatch_session_command(raw: str) -> bool:
     elif command in {"/profiles", "/profile", "/p"}:
         profile_command(action=args[0] if args else "menu")
     elif command in {"/models", "/model", "/m"}:
-        model_command(action=args[0] if args else "status")
+        model_command(action=args[0] if args else "menu")
     elif command in {"/env", "/keys"}:
         env_command()
     elif command in {"/instructions", "/instruct", "/ins"}:
@@ -344,22 +363,19 @@ def _session_help() -> None:
         [
             ["Command", "Action"],
             ["/menu", "Open the action picker"],
+            ["/home", "Show the home board"],
             ["/run [inputs...]", "Guided full workflow"],
             ["/quick [inputs...]", "Run locked/default profile"],
             ["/batch [folder...]", "Recursive batch workflow"],
             ["/chat [inputs...]", "Ask grounded questions over runs or files"],
             ["/init", "Create a default profile"],
             ["/profiles", "List or manage profiles"],
-            ["/models", "Check model providers"],
+            ["/models", "Manage or check model providers"],
             ["/env", "Show API key and endpoint setup"],
             ["/instructions", "View or edit prompts"],
             ["/guide", "Choose guidance level"],
             ["/mode", "Choose speed versus quality mode"],
             ["/ui", "Customize theme and guidance"],
-            ["/where TERM", "Jump to the best matching source"],
-            ["/cite S1 S2", "Force the answer to use specific sources"],
-            ["/scope TERM", "Narrow the current document target"],
-            ["/remember NOTE", "Store a tiny run-local note"],
             ["/doctor", "Check local setup"],
             ["/combine [run-folder]", "Rebuild staged outputs into one document"],
             ["/resume [run-folder]", "Recover completed checkpoints from an interrupted run"],
@@ -387,6 +403,7 @@ def _status_panel() -> None:
             ["Workflow", profile.workflow],
             ["Provider", profile.model.provider],
             ["Model", profile.model.model],
+            ["Chat model", _chat_model(profile).model],
             ["Mode", profile.model.execution_mode],
             ["Output folder", profile.output_dir],
             ["Theme", prefs["theme"]],
@@ -506,6 +523,14 @@ def onboard(
     if chosen_model is None:
         return None
     profile.model = chosen_model
+    ui.write("You can keep a separate chat model if you prefer lighter conversation over the vision model.")
+    if ui.confirm("Set a separate chat model?", False):
+        chat_model = choose_model(profile.chat_model)
+        if chat_model is None:
+            return None
+        profile.chat_model = chat_model
+    else:
+        profile.chat_model = copy.deepcopy(profile.model)
     profile.model.execution_mode = ui.choose(
         "Execution mode", EXECUTION_MODES + ["Back"], profile.model.execution_mode
     )
@@ -630,6 +655,35 @@ def choose_model(current: Optional[ModelSettings] = None) -> Optional[ModelSetti
         context_window=context_window,
         generation_limit=generation_limit,
     )
+
+
+def _prompt_missing_model(
+    profile: WorkflowProfile,
+    target: str,
+    store: Optional[ConfigStore] = None,
+    persist: bool = False,
+) -> Optional[bool]:
+    if not (ui.interactive() and sys.stdin.isatty() and sys.stdout.isatty()):
+        return None
+    if target == "chat":
+        current = _chat_model(profile)
+        label = "chat model"
+    else:
+        current = profile.model
+        label = "vision model"
+    if not ui.confirm(f"No usable {label} is configured. Add one now?", True):
+        return False
+    chosen = choose_model(current)
+    if chosen is None:
+        return False
+    if target == "chat":
+        profile.chat_model = chosen
+    else:
+        profile.model = chosen
+    if persist and store is not None:
+        store.save_profile(profile)
+        ui.status("success", f"Saved {label} to profile: {profile.name}")
+    return True
 
 
 def choose_output_formats(
@@ -885,22 +939,36 @@ def run_guided(
         profile.document_type = ui.choose("Document type", DOCUMENT_TYPES + ["Back"], profile.document_type)
         if profile.document_type == "Back":
             return None
-
-        chosen_model = choose_model(profile.model)
-        if chosen_model is None:
-            return None
-        profile.model = chosen_model
+        if ui.interactive() and not _model_usable(profile.model):
+            prompted = _prompt_missing_model(profile, "restore", store=store, persist=True)
+            if prompted is False:
+                return None
+        else:
+            chosen_model = choose_model(profile.model)
+            if chosen_model is None:
+                return None
+            profile.model = chosen_model
         runtime = prompt_runtime_mode(profile)
         if runtime is None:
             return None
         profile = runtime
         profile.output_formats = choose_output_formats(profile.output_formats)
     else:
+        if ui.interactive() and not _model_usable(profile.model):
+            prompted = _prompt_missing_model(profile, "restore", store=store, persist=True)
+            if prompted is False:
+                return None
         runtime = prompt_runtime_mode(profile)
         if runtime is None:
             return None
         profile = runtime
-    return execute_run(profile, inputs=inputs, recursive=recursive, dry_run=dry_run)
+    return execute_run(
+        profile,
+        inputs=inputs,
+        recursive=recursive,
+        dry_run=dry_run,
+        prompt_runtime_controls=False,
+    )
 
 
 def quick_run(
@@ -909,7 +977,17 @@ def quick_run(
     store = ConfigStore()
     profile = store.load_default_profile()
     ui.heading("Akshara Vision", "Quick Run")
-    return execute_run(profile, inputs=inputs, recursive=recursive, dry_run=dry_run)
+    if ui.interactive() and not _model_usable(profile.model):
+        prompted = _prompt_missing_model(profile, "restore", store=store, persist=True)
+        if prompted is False:
+            return None
+    return execute_run(
+        profile,
+        inputs=inputs,
+        recursive=recursive,
+        dry_run=dry_run,
+        prompt_runtime_controls=False,
+    )
 
 
 def batch_run(
@@ -920,7 +998,17 @@ def batch_run(
     store = ConfigStore()
     profile = store.load_profile(profile_name) if profile_name else store.load_default_profile()
     ui.heading("Akshara Vision", "Batch Run")
-    return execute_run(profile, inputs=inputs, recursive=True, dry_run=dry_run)
+    if ui.interactive() and not _model_usable(profile.model):
+        prompted = _prompt_missing_model(profile, "restore", store=store, persist=True)
+        if prompted is False:
+            return None
+    return execute_run(
+        profile,
+        inputs=inputs,
+        recursive=True,
+        dry_run=dry_run,
+        prompt_runtime_controls=False,
+    )
 
 
 def chat_command(
@@ -934,40 +1022,92 @@ def chat_command(
     profile = store.load_profile(profile_name) if profile_name else store.load_default_profile()
     ui.heading("Akshara Vision", "Document Chat")
     input_values = list(inputs or [])
-    if not input_values:
-        entered = ui.text("Path(s) to run folders, output files, files, folders, or globs")
-        input_values = [item.strip() for item in entered.split(",") if item.strip()]
-    if not input_values:
-        ui.status("info", "Chat cancelled.")
-        return None
+    session_path: Optional[Path] = None
+    if ui.interactive() and not _chat_model_usable(_chat_model(profile)):
+        prompted = _prompt_missing_model(profile, "chat", store=store, persist=True)
+        if prompted is False:
+            ui.status(
+                "warning",
+                "No usable chat model is configured. Open /models or edit the profile to choose a chat model.",
+            )
+            return None
+    if not input_values and ui.interactive():
+        while True:
+            chat_mode = ui.choose(
+                "Chat mode",
+                ["General conversation", "Document chat", "Saved conversations", "Back"],
+                "Document chat",
+            )
+            if chat_mode == "Back":
+                ui.status("info", "Chat cancelled.")
+                return None
+            if chat_mode == "Saved conversations":
+                selected_session = _choose_saved_chat_session()
+                if selected_session is None:
+                    continue
+                session_path = selected_session
+                input_values = []
+                history = load_chat_history(session_path)
+                session_notes = load_chat_notes(session_path)
+                metadata = load_chat_metadata(session_path)
+                title = str(metadata.get("title") or session_path.stem)
+                ui.status("info", f"Resumed saved conversation: {title}")
+                chat_model = _chat_model(profile)
+                if ui.interactive() and not _chat_model_usable(chat_model):
+                    prompted = _prompt_missing_model(profile, "chat", store=store, persist=True)
+                    if prompted is False:
+                        return None
+                break
+            if chat_mode == "Document chat":
+                entered = ui.text("Path(s) to run folders, output files, files, folders, or globs")
+                input_values = [item.strip() for item in entered.split(",") if item.strip()]
+                break
+            input_values = []
+            break
     pending_question = question
-    if not pending_question and ui.interactive() and (_can_lazy_chat(input_values) or _has_folder_input(input_values)):
+    if not pending_question and ui.interactive() and input_values and (_can_lazy_chat(input_values) or _has_folder_input(input_values)):
         if _can_lazy_chat(input_values):
             ui.note("For a single image or page-specific PDF question, Akshara can answer without pre-indexing the whole file.")
         if _has_folder_input(input_values):
             ui.note("For folders, describe the file, nested folder, page, or topic so Akshara can focus before indexing.")
         pending_question = ui.text("Ask your first question")
-    with ui.progress("Indexing chat sources...") as reporter:
-        bundle = build_chat_bundle(
-            input_values,
-            profile=profile,
-            recursive=recursive,
-            question=pending_question,
-        )
-        reporter.finish(f"Indexed {len(bundle.sources)} source chunk(s)")
-    if ui.interactive() and _has_folder_input(input_values):
-        _review_chat_sources(bundle)
-    _remember_chat_source_pool(bundle)
+    bundle = None
+    if input_values:
+        with ui.progress("Indexing chat sources...") as reporter:
+            bundle = build_chat_bundle(
+                input_values,
+                profile=profile,
+                recursive=recursive,
+                question=pending_question,
+            )
+            reporter.finish(f"Indexed {len(bundle.sources)} source chunk(s)")
+        bundle.profile.model = copy.deepcopy(_chat_model(profile))
+        if ui.interactive() and _has_folder_input(input_values):
+            _review_chat_sources(bundle)
+        _remember_chat_source_pool(bundle)
+        if session_path is None:
+            session_path = chat_session_path(input_values)
     ui.section("Review")
-    ui.table(
-        [
-            ["Title", bundle.title],
-            ["Provider", profile.model.provider],
-            ["Model", profile.model.model],
-            ["Sources", str(len(bundle.sources))],
-        ]
-    )
-    session_path = chat_session_path(input_values)
+    if bundle is not None:
+        ui.table(
+            [
+                ["Title", bundle.title],
+                ["Provider", _chat_model(profile).provider],
+                ["Model", _chat_model(profile).model],
+                ["Sources", str(len(bundle.sources))],
+            ]
+        )
+    else:
+        ui.table(
+            [
+                ["Title", "General conversation"],
+                ["Provider", _chat_model(profile).provider],
+                ["Model", _chat_model(profile).model],
+                ["Sources", "0"],
+            ]
+        )
+    if session_path is None and not input_values:
+        session_path = _new_general_chat_session(profile)
     history: List[tuple[str, str]] = load_chat_history(session_path)
     session_notes: List[str] = load_chat_notes(session_path)
     citation_source_ids: List[str] = []
@@ -979,9 +1119,9 @@ def chat_command(
             ui.section("Chat Controls")
             ui.table(
                 [
-                    ["/where TERM", "jump to the best matching source"],
+                    ["/where TERM", "jump to the best matching source by keyword, page, source id, file name, or topic"],
                     ["/cite S1 S2", "pin the next answer to specific sources"],
-                    ["/scope TERM", "narrow the active source set"],
+                    ["/scope TERM", "narrow the active source set by keyword, page, source id, file name, or topic"],
                     ["/remember NOTE", "store a small local preference or fact"],
                 ]
             )
@@ -995,6 +1135,31 @@ def chat_command(
         if not pending_question:
             break
         if pending_question.startswith("/"):
+            command_name = pending_question.split(maxsplit=1)[0].lower()
+            if command_name == "/help":
+                _show_chat_help()
+                pending_question = ""
+                continue
+            if command_name == "/attach":
+                attached = _attach_chat_sources(
+                    pending_question,
+                    profile=profile,
+                    recursive=recursive,
+                )
+                if attached is not None:
+                    bundle, attached_inputs = attached
+                    input_values = attached_inputs
+                    session_path = chat_session_path(input_values)
+                    history = load_chat_history(session_path)
+                    session_notes = load_chat_notes(session_path)
+                    citation_source_ids = []
+                    ui.status("success", f"Attached {len(bundle.sources)} source(s).")
+                pending_question = ""
+                continue
+            if bundle is None:
+                ui.status("warning", "Chat tools like /where and /cite need a document source. Use /attach to add one first.")
+                pending_question = ""
+                continue
             result = _handle_chat_tool(
                 pending_question,
                 bundle,
@@ -1016,34 +1181,89 @@ def chat_command(
                     history = list(result["history"] or history)
             pending_question = ""
             continue
-        with ui.progress("Answering...") as reporter:
-            answer, usage, selected_sources = answer_question(
-                bundle,
-                pending_question,
-                system_prompt=system_prompt,
-                history=history,
-                notes=session_notes,
-                citation_source_ids=citation_source_ids,
-            )
-            reporter.finish("Complete")
+        chat_model = _chat_model(profile)
+        if ui.interactive() and not _chat_model_usable(chat_model):
+            ui.section("Chat Model")
+            prompted = _prompt_missing_model(profile, "chat", store=store, persist=True)
+            if prompted is False:
+                ui.status(
+                    "warning",
+                    "No usable chat model is configured. Open /models or edit the profile to choose a chat model.",
+                )
+                return None
+            chat_model = _chat_model(profile)
+        if bundle is None:
+            with ui.progress("Answering...") as reporter:
+                answer, usage = answer_general_question(
+                    copy.deepcopy(profile),
+                    pending_question,
+                    system_prompt=system_prompt,
+                    history=history,
+                    notes=session_notes,
+                )
+                reporter.finish("Complete")
+            selected_sources = []
+        else:
+            with ui.progress("Answering...") as reporter:
+                answer, usage, selected_sources = answer_question(
+                    bundle,
+                    pending_question,
+                    system_prompt=system_prompt,
+                    history=history,
+                    notes=session_notes,
+                    citation_source_ids=citation_source_ids,
+                )
+                reporter.finish("Complete")
         ui.section("Answer")
-        ui.write(answer or "[no answer]")
-        ui.section("Sources")
-        ui.bullet_list(
-            [
-                f"{source.source_id}: {source.label}"
-                for source in selected_sources
-            ]
-        )
-        usage_row = usage.get("total_tokens") if isinstance(usage, dict) else None
-        if usage_row:
-            ui.write(f"Token usage: {usage_row}")
+        ui.stream(answer or "[no answer]", pause=0.0)
+        if selected_sources:
+            ui.section("Sources")
+            ui.bullet_list(
+                [
+                    f"{source.source_id}: {source.label}"
+                    for source in selected_sources
+                ]
+            )
+        if isinstance(usage, dict) and (
+            usage.get("prompt_tokens") or usage.get("completion_tokens") or usage.get("total_tokens")
+        ):
+            prompt_tokens = int(usage.get("prompt_tokens") or 0)
+            completion_tokens = int(usage.get("completion_tokens") or 0)
+            total_tokens = int(usage.get("total_tokens") or (prompt_tokens + completion_tokens))
+            if usage.get("truncated"):
+                suffix = " (still truncated after retry)" if usage.get("retry_attempted") else " (truncated)"
+            else:
+                suffix = " (retry recovered clipped answer)" if usage.get("retry_attempted") else ""
+            ui.write(
+                f"Token usage: input {prompt_tokens}, output {completion_tokens}, total {total_tokens}{suffix}"
+            )
         history.append((pending_question, answer))
-        save_chat_history(session_path, history, notes=session_notes)
+        save_chat_history(
+            session_path,
+            history,
+            notes=session_notes,
+            metadata=_chat_session_metadata(profile, bundle, input_values, session_path),
+        )
         if question is not None or not ui.interactive():
             break
         if not ui.confirm("Ask another question?", True):
             break
+        if bundle is None and ui.interactive():
+            if ui.confirm("Attach a document or folder for the next question?", False):
+                entered = ui.text("Path(s) to run folders, output files, files, folders, or globs")
+                next_inputs = [item.strip() for item in entered.split(",") if item.strip()]
+                if next_inputs:
+                    with ui.progress("Indexing chat sources...") as reporter:
+                        bundle = build_chat_bundle(
+                            next_inputs,
+                            profile=profile,
+                            recursive=recursive,
+                            question=None,
+                        )
+                        reporter.finish(f"Indexed {len(bundle.sources)} source chunk(s)")
+                    bundle.profile.model = copy.deepcopy(_chat_model(profile))
+                    _remember_chat_source_pool(bundle)
+                    session_path = chat_session_path(next_inputs)
         pending_question = ""
     _next_recommendations(
         _next_steps_for_context("chat", run_dir=Path(input_values[0]) if input_values else None)
@@ -1083,6 +1303,119 @@ def _review_chat_sources(bundle) -> None:
     ui.status("success", f"Focused chat to {len(bundle.sources)} source(s).")
 
 
+def _attach_chat_sources(
+    command: str,
+    profile: WorkflowProfile,
+    recursive: bool = False,
+):
+    parts = command.split(maxsplit=1)
+    raw_paths = parts[1].strip() if len(parts) > 1 else ""
+    if not raw_paths:
+        raw_paths = ui.text("Path(s) to run folders, output files, files, folders, or globs")
+    input_values = [item.strip() for item in raw_paths.split(",") if item.strip()]
+    if not input_values:
+        ui.status("info", "Attach cancelled.")
+        return None
+    with ui.progress("Indexing attached sources...") as reporter:
+        bundle = build_chat_bundle(
+            input_values,
+            profile=profile,
+            recursive=recursive,
+            question=None,
+        )
+        reporter.finish(f"Indexed {len(bundle.sources)} source chunk(s)")
+    bundle.profile.model = copy.deepcopy(_chat_model(profile))
+    if ui.interactive() and _has_folder_input(input_values):
+        _review_chat_sources(bundle)
+    _remember_chat_source_pool(bundle)
+    return bundle, input_values
+
+
+def _chat_model(profile: WorkflowProfile) -> ModelSettings:
+    chat_model = getattr(profile, "chat_model", None)
+    if isinstance(chat_model, ModelSettings):
+        return chat_model
+    return profile.model
+
+
+def _chat_model_usable(model: ModelSettings) -> bool:
+    if not model.provider or not model.model:
+        return False
+    if model.provider == "mock":
+        return False
+    provider = provider_registry().get(model.provider)
+    if provider is None:
+        return False
+    try:
+        status = provider.status()
+    except Exception:
+        return False
+    return bool(status.available)
+
+
+def _model_usable(model: ModelSettings) -> bool:
+    if not model.provider or not model.model:
+        return False
+    if model.provider == "mock":
+        return False
+    provider = provider_registry().get(model.provider)
+    if provider is None:
+        return False
+    try:
+        status = provider.status()
+    except Exception:
+        return False
+    return bool(status.available)
+
+
+def _new_general_chat_session(profile: WorkflowProfile) -> Path:
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", f"{profile.name}-chat".lower()).strip("-") or "chat"
+    return chat_sessions_root() / f"{slug}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+
+
+def _chat_session_metadata(
+    profile: WorkflowProfile,
+    bundle,
+    input_values: List[str],
+    session_path: Optional[Path],
+) -> Dict[str, object]:
+    model = _chat_model(profile)
+    return {
+        "title": getattr(bundle, "title", "General conversation"),
+        "mode": "document" if bundle is not None else "general",
+        "provider": model.provider,
+        "model": model.model,
+        "inputs": list(input_values),
+        "path": str(session_path) if session_path else "",
+    }
+
+
+def _choose_saved_chat_session() -> Optional[Path]:
+    sessions = list_chat_sessions()
+    if not sessions:
+        ui.status("info", "No saved chat sessions found.")
+        return None
+    choices: List[str] = []
+    mapping: Dict[str, Path] = {}
+    for session in sessions[:24]:
+        metadata = load_chat_metadata(session)
+        title = str(metadata.get("title") or session.stem.replace("-", " ").strip().title())
+        label = f"{title} | {session.name}"
+        choices.append(label)
+        mapping[label] = session
+    choice = ui.choose("Saved conversation", choices + ["Delete saved conversation", "Back"], choices[0])
+    if choice == "Back":
+        return None
+    if choice == "Delete saved conversation":
+        target_label = ui.choose("Delete which saved conversation?", choices, choices[0])
+        target = mapping.get(target_label)
+        if target and ui.confirm(f"Delete saved conversation '{target.name}'?", False):
+            if delete_chat_session(target):
+                ui.status("success", f"Deleted saved conversation: {target.name}")
+            else:
+                ui.status("warning", "Could not delete the selected conversation.")
+        return None
+    return mapping.get(choice)
 def _filter_chat_sources(sources, term: str):
     lowered_terms = [item.lower() for item in re.findall(r"[A-Za-z0-9][A-Za-z0-9._-]{1,}", term)]
     requested_ids = {item.upper() for item in re.findall(r"\bS\d+\b", term, flags=re.I)}
@@ -1237,6 +1570,19 @@ def _handle_chat_tool(
             save_chat_history(session_path, history, notes=session_notes)
         ui.status("success", "Stored a run-local note for this chat.")
         return {"session_notes": session_notes or []}
+    if name == "/sessions":
+        sessions = list_chat_sessions()
+        if not sessions:
+            ui.status("info", "No saved conversations found.")
+            return True
+        rows = [["Title", "Path"]]
+        for session in sessions[:12]:
+            metadata = load_chat_metadata(session)
+            title = str(metadata.get("title") or session.stem.replace("-", " ").strip().title())
+            rows.append([title, str(session)])
+        ui.section("Saved Conversations")
+        ui.table(rows)
+        return True
     if name == "/open":
         source = next((item for item in bundle.sources if item.source_id.lower() == arg.lower()), None)
         if source is None:
@@ -1251,24 +1597,30 @@ def _handle_chat_tool(
         ui.status("success", "Chat history cleared for this run.")
         return True
     if name == "/help":
-        ui.section("Chat Tools")
-        ui.table(
-            [
-                ["/where TERM", "Jump to the best matching source"],
-                ["/cite S1 S2", "Anchor answers to specific sources"],
-                ["/scope TERM", "Narrow the active document target; /scope all resets"],
-                ["/focus TERM", "Keep only matching sources; /focus all resets"],
-                ["/remember NOTE", "Store a tiny run-local note"],
-                ["/sources", "List indexed source chunks"],
-                ["/find TERM", "Search source chunks locally"],
-                ["/open S1", "Open a cited source excerpt"],
-                ["/clear", "Clear saved chat history for this run"],
-                ["/exit", "Leave chat"],
-            ]
-        )
+        _show_chat_help()
         return True
     ui.status("warning", "Unknown chat tool. Try /help.")
     return True
+
+
+def _show_chat_help() -> None:
+    ui.section("Chat Tools")
+    ui.table(
+        [
+            ["/attach PATH", "Attach a run folder, file, folder, or manifest"],
+            ["/sessions", "List saved conversations"],
+            ["/where TERM", "Jump to the best matching source by keyword, page, source id, file name, or topic"],
+            ["/cite S1 S2", "Anchor answers to specific sources"],
+            ["/scope TERM", "Narrow the active document target; use /scope all to reset"],
+            ["/focus TERM", "Keep only matching sources; use /focus all to reset"],
+            ["/remember NOTE", "Store a tiny run-local note"],
+            ["/sources", "List indexed source chunks"],
+            ["/find TERM", "Search source chunks locally"],
+            ["/open S1", "Open a cited source excerpt"],
+            ["/clear", "Clear saved chat history for this run"],
+            ["/exit", "Leave chat"],
+        ]
+    )
 
 
 def _excerpt_for_query(text: str, query: str, limit: int = 160) -> str:
@@ -1369,6 +1721,13 @@ def compare_command(run_dir: Optional[str] = None):
         ui.status("info", "Compare cancelled.")
         return None
     path = Path(run_dir).expanduser()
+    path = _resolve_compare_run_dir(path)
+    if path is None:
+        ui.status(
+            "error",
+            "Point compare at a run folder or a compiled output file inside a run folder.",
+        )
+        return None
     manifest_path = path / "run_manifest.json"
     if not manifest_path.exists():
         ui.status("error", f"No run_manifest.json found in {path}")
@@ -1379,7 +1738,9 @@ def compare_command(run_dir: Optional[str] = None):
         ui.status("error", f"Could not read manifest: {exc}")
         return None
     metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
-    comparisons = _compare_views(path, metadata)
+    with ui.progress("Preparing comparison previews...") as reporter:
+        comparisons = _compare_views(path, metadata)
+        reporter.finish(f"Prepared {len(comparisons)} comparison preview(s)")
     if not comparisons:
         ui.status("warning", "No comparable source/output pairs were found.")
         return None
@@ -1391,6 +1752,21 @@ def compare_command(run_dir: Optional[str] = None):
     ui.status("success", f"Saved compare report: {report_path}")
     _next_recommendations(_next_steps_for_context("compare", run_dir=path))
     return report_path
+
+
+def _resolve_compare_run_dir(path: Path) -> Optional[Path]:
+    candidates = [path]
+    if path.is_file():
+        candidates.insert(0, path.parent)
+    candidates.extend(path.parents)
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate.is_dir() and (candidate / "run_manifest.json").exists():
+            return candidate
+    return None
 
 
 def _manifest_assets(metadata: Dict[str, object]) -> List[Dict[str, object]]:
@@ -1597,14 +1973,19 @@ def _compare_views(run_dir: Path, metadata: Dict[str, object]) -> List[Dict[str,
         record = restoration[index - 1] if index - 1 < len(restoration) else {}
         assets = _compare_assets(record)
         layout_tree = _compare_layout_nodes(record, index, metadata)
+        page_number = _compare_page_number(item_dir, record, index)
+        source_html = _source_preview_html(source_path, run_dir, page_number=page_number)
+        layout_html = _compare_layout_overlay_html(source_path, layout_tree, run_dir, page_number=page_number)
+        if layout_html:
+            source_html = layout_html
         comparisons.append(
             {
                 "label": str(item_dir.relative_to(items_root)).replace("\\", "/"),
                 "source_path": source_path,
-                "source_html": _source_preview_html(source_path, run_dir),
+                "source_html": source_html,
                 "output_path": output_path,
-                "output_html": _output_preview_html(output_path, run_dir),
-                "layout_html": _compare_layout_overlay_html(source_path, layout_tree, run_dir),
+                "output_html": _output_preview_html(output_path, run_dir, page_number=page_number),
+                "layout_html": layout_html,
                 "assets_html": _compare_assets_html(assets, run_dir),
             }
         )
@@ -1620,6 +2001,9 @@ def _preferred_compare_outputs(items_root: Path) -> List[Path]:
         "final__*.md",
         "translated__*.md",
         "restored__*.md",
+        "akshara_output.md",
+        "akshara_output.txt",
+        "akshara_output.json",
         "final__*.txt",
         "translated__*.txt",
         "restored__*.txt",
@@ -1741,7 +2125,7 @@ def _compare_layout_nodes(
     return nodes
 
 
-def _source_preview_html(source_path: Optional[Path], run_dir: Path) -> str:
+def _source_preview_html(source_path: Optional[Path], run_dir: Path, page_number: Optional[int] = None) -> str:
     if source_path is None:
         return '<p class="missing">Source file not found.</p>'
     try:
@@ -1755,6 +2139,8 @@ def _source_preview_html(source_path: Optional[Path], run_dir: Path) -> str:
             f'alt="" /></figure>'
         )
     if suffix == ".pdf":
+        if page_number and (preview := _pdf_page_preview_html(source_path, page_number)):
+            return preview
         return (
             f'<object data="{html.escape(str(rel), quote=True)}" type="application/pdf" '
             f'class="preview-pdf"><p class="missing">{html.escape(source_path.name)}</p></object>'
@@ -1775,7 +2161,7 @@ def _source_preview_html(source_path: Optional[Path], run_dir: Path) -> str:
     return f'<p class="missing">{html.escape(source_path.name)}</p>'
 
 
-def _output_preview_html(output_path: Path, run_dir: Path) -> str:
+def _output_preview_html(output_path: Path, run_dir: Path, page_number: Optional[int] = None) -> str:
     try:
         rel = output_path.resolve().relative_to(run_dir.resolve())
     except Exception:
@@ -1787,6 +2173,8 @@ def _output_preview_html(output_path: Path, run_dir: Path) -> str:
             f'alt="" /></figure>'
         )
     if suffix == ".pdf":
+        if page_number and (preview := _pdf_page_preview_html(output_path, page_number)):
+            return preview
         return (
             f'<object data="{html.escape(str(rel), quote=True)}" type="application/pdf" '
             f'class="preview-pdf"><p class="missing">{html.escape(output_path.name)}</p></object>'
@@ -1822,17 +2210,19 @@ def _compare_assets_html(assets: List[Dict[str, object]], run_dir: Path) -> str:
 
 
 def _compare_layout_overlay_html(
-    source_path: Optional[Path], layout_tree: List[object], run_dir: Path
+    source_path: Optional[Path],
+    layout_tree: List[object],
+    run_dir: Path,
+    page_number: Optional[int] = None,
 ) -> str:
-    if source_path is None or source_path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
+    if source_path is None:
         return ""
     blocks = _compare_layout_blocks(layout_tree)
     if not blocks:
         return ""
-    try:
-        rel = source_path.resolve().relative_to(run_dir.resolve())
-    except Exception:
-        rel = source_path.name
+    image_src = _compare_image_src(source_path, run_dir, page_number=page_number)
+    if not image_src:
+        return ""
     overlay = []
     for block in blocks[:18]:
         left, top, width, height = block["box"]
@@ -1844,11 +2234,67 @@ def _compare_layout_overlay_html(
         )
     return (
         '<figure class="overlay-figure">'
-        f'<img src="{html.escape(str(rel), quote=True)}" alt="" />'
+        f'<img src="{image_src}" alt="" />'
         '<div class="overlay-layer">'
         + "".join(overlay)
         + "</div></figure>"
     )
+
+
+def _compare_image_src(source_path: Path, run_dir: Path, page_number: Optional[int] = None) -> str:
+    suffix = source_path.suffix.lower()
+    if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
+        try:
+            rel = source_path.resolve().relative_to(run_dir.resolve())
+        except Exception:
+            rel = source_path.name
+        return html.escape(str(rel), quote=True)
+    if suffix == ".pdf" and page_number:
+        preview = _pdf_page_preview_html(source_path, page_number)
+        if preview:
+            match = re.search(r'src="([^"]+)"', preview)
+            if match:
+                return match.group(1)
+    return ""
+
+
+def _pdf_page_preview_html(path: Path, page_number: int) -> str:
+    pdftoppm_exe = find_executable("pdftoppm")
+    if not pdftoppm_exe:
+        return ""
+    try:
+        with tempfile.TemporaryDirectory(prefix="akshara-compare-pdf-") as temp_root:
+            rendered = _render_pdf_page(pdftoppm_exe, path, Path(temp_root), page_number, 180)
+            if not rendered or not rendered.exists():
+                return ""
+            data = rendered.read_bytes()
+    except Exception:
+        return ""
+    mime = "image/png"
+    encoded = base64.b64encode(data).decode("ascii")
+    return f'<figure class="preview-image"><img src="data:{mime};base64,{encoded}" alt="" /></figure>'
+
+
+def _compare_page_number(item_dir: Path, record: object, index: int) -> int:
+    if isinstance(record, dict):
+        chunks = record.get("chunks") if isinstance(record.get("chunks"), list) else []
+        for chunk in chunks:
+            if not isinstance(chunk, dict):
+                continue
+            for key in ("page_number", "page", "index"):
+                value = chunk.get(key)
+                if value not in (None, "", []):
+                    try:
+                        return int(str(value).strip())
+                    except (TypeError, ValueError):
+                        continue
+    match = re.search(r"(?:page[-_ ]?)?(\d{1,5})", item_dir.name, flags=re.IGNORECASE)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            pass
+    return index
 
 
 def _compare_layout_blocks(layout_tree: List[object]) -> List[Dict[str, object]]:
@@ -1905,6 +2351,10 @@ def _compare_review_html(run_dir: Path, metadata: Dict[str, object], comparisons
     title = html.escape(str(metadata.get("title") or run_dir.name))
     cards = []
     for item in comparisons:
+        source_html = str(item["source_html"])
+        layout_html = str(item["layout_html"])
+        if layout_html and layout_html == source_html:
+            layout_html = ""
         cards.append(
             f'''
             <section class="compare-card">
@@ -1914,8 +2364,8 @@ def _compare_review_html(run_dir: Path, metadata: Dict[str, object], comparisons
               <div class="compare-grid">
                 <div class="panel">
                   <h3>Source</h3>
-                  {item["source_html"]}
-                  {item["layout_html"]}
+                  {source_html}
+                  {layout_html}
                 </div>
                 <div class="panel">
                   <h3>Output</h3>
@@ -1969,6 +2419,7 @@ def execute_run(
     inputs: Optional[Iterable[str]] = None,
     recursive: bool = False,
     dry_run: bool = False,
+    prompt_runtime_controls: bool = True,
 ):
     profile = copy.deepcopy(profile)
     profile.sync_translation_defaults()
@@ -1984,9 +2435,10 @@ def execute_run(
         profile.output_dir = choose_output_folder(profile.output_dir)
         profile.language_policy = choose_language_policy(profile.language_policy)
         profile.layout_backend = choose_layout_backend(profile.layout_backend)
-        profile.model.request_timeout_seconds = choose_request_timeout(
-            profile.model.request_timeout_seconds
-        )
+        if prompt_runtime_controls:
+            profile.model.request_timeout_seconds = choose_request_timeout(
+                profile.model.request_timeout_seconds
+            )
         profile.extract_figures = ui.confirm(
             "Enable figure/image markers and page image assets for this run?", profile.extract_figures
         )
@@ -2061,6 +2513,8 @@ def review_run(profile: WorkflowProfile, selection) -> None:
         ["Translation", _translation_label(profile)],
         ["Provider", profile.model.provider],
         ["Model", profile.model.model],
+        ["Chat provider", _chat_model(profile).provider],
+        ["Chat model", _chat_model(profile).model],
         ["Mode", profile.model.execution_mode],
         ["Mode behavior", _mode_behavior(profile.model.execution_mode)],
         ["Slow request policy", _request_timeout_display(profile.model.request_timeout_seconds)],
@@ -2082,7 +2536,11 @@ def review_run(profile: WorkflowProfile, selection) -> None:
 
 def _run_with_progress(request: RunRequest):
     ui.section("Working")
-    with ui.progress("Processing", total=estimate_progress_units(request)) as reporter:
+    # Long document runs advance by heterogeneous units: PDF rendering, model
+    # calls, retries, figure verification, translation chunks, and exports.
+    # A numeric bar can imply false precision, especially for large PDFs, so
+    # keep the live progress as a clean spinner and log durable usage events.
+    with ui.progress("Processing") as reporter:
 
         def progress(event: str, message: str, advance: int = 1) -> None:
             reporter.update(message, advance=advance)
@@ -2373,8 +2831,10 @@ def _show_profile(profile: WorkflowProfile, show_heading: bool = True) -> None:
             ["Figure/image assets", "on" if profile.extract_figures else "off"],
             ["Layout analysis", profile.layout_backend],
             ["Locked", "yes" if profile.locked else "no"],
-            ["Provider", profile.model.provider],
-            ["Model", profile.model.model],
+            ["Vision provider", profile.model.provider],
+            ["Vision model", profile.model.model],
+            ["Chat provider", profile.chat_model.provider],
+            ["Chat model", profile.chat_model.model],
             ["Endpoint", profile.model.endpoint or ""],
             ["Mode", profile.model.execution_mode],
             ["Context", str(profile.model.context_window or "auto")],
@@ -2382,6 +2842,7 @@ def _show_profile(profile: WorkflowProfile, show_heading: bool = True) -> None:
             ["Slow request policy", _request_timeout_display(profile.model.request_timeout_seconds)],
         ]
     )
+    ui.note("Vision and chat models are configured separately under Model and limits.")
 
 
 def _edit_profile_interactive(store: ConfigStore, name: str) -> None:
@@ -2438,10 +2899,17 @@ def _edit_profile_interactive(store: ConfigStore, name: str) -> None:
                 profile.translation_mode = selected_mode
             profile.sync_translation_defaults()
         if section in {"Model and limits", "Everything"}:
+            ui.note("Vision and chat models can be set independently in this section.")
             chosen_model = choose_model(profile.model)
             if chosen_model is None:
                 continue
             profile.model = chosen_model
+            if ui.confirm("Use a separate model for chat?", False):
+                chat_model = choose_model(profile.chat_model)
+                if chat_model is not None:
+                    profile.chat_model = chat_model
+            else:
+                profile.chat_model = copy.deepcopy(profile.model)
             selected_mode = ui.choose(
                 "Execution mode", EXECUTION_MODES + ["Back"], profile.model.execution_mode
             )
@@ -2537,28 +3005,47 @@ def _validate_output_dir(value: str) -> Optional[Path]:
     return path
 
 
-def model_command(action: str = "status") -> None:
+def model_command(action: str = "menu") -> None:
     ui.heading("Akshara Vision", "Models")
-    if action == "setup":
-        settings = choose_model()
-        if settings is None:
+    store = ConfigStore()
+    if action in {"setup", "restore", "chat"} or action == "menu":
+        if action == "restore":
+            target = "Model (vision)"
+        elif action == "chat":
+            target = "Model (chat)"
+        else:
+            target = ui.choose("Model target", ["Model (vision)", "Model (chat)", "List providers", "Back"], "Model (vision)")
+        if target == "Back":
             ui.status("info", "Model setup cancelled.")
             return
-        store = ConfigStore()
-        profile = store.load_default_profile()
-        profile.model = settings
-        ui.table(
-            [
-                ["Provider", settings.provider],
-                ["Model", settings.model],
-                ["Endpoint", settings.endpoint or ""],
-            ]
-        )
-        if ui.confirm("Save this model to the default profile?", True):
-            store.save_profile(profile)
-            ui.write(f"Saved model to profile: {profile.name}")
-        return
-    ui.table(provider_status_rows())
+        if target == "List providers":
+            action = "status"
+        else:
+            settings = choose_model()
+            if settings is None:
+                ui.status("info", "Model setup cancelled.")
+                return
+            profile = store.load_default_profile()
+            if target == "Model (chat)":
+                profile.chat_model = settings
+            else:
+                profile.model = settings
+            ui.table(
+                [
+                    ["Target", target],
+                    ["Provider", settings.provider],
+                    ["Model", settings.model],
+                    ["Endpoint", settings.endpoint or ""],
+                ]
+            )
+            if ui.confirm(f"Save this {target.lower()} to the default profile?", True):
+                store.save_profile(profile)
+                ui.write(f"Saved model to profile: {profile.name}")
+            return
+    with ui.progress("Loading model provider status...") as reporter:
+        rows = provider_status_rows()
+        reporter.finish("Model provider status ready")
+    ui.table(rows)
 
 
 def env_command() -> None:
@@ -2696,9 +3183,16 @@ def resume_command(run_dir: Optional[str] = None) -> None:
     total_inputs = state.get("total_inputs", len(completed))
     input_paths = state.get("input_paths") if isinstance(state.get("input_paths"), list) else []
     input_files = state.get("input_files", [])
+    profile_dict = state.get("profile", {}) if isinstance(state.get("profile"), dict) else {}
+    profile = WorkflowProfile.from_dict(profile_dict)
+    profile.output_dir = str(run_path.parent)
 
     ui.status("info", f"State: {status}")
     ui.status("info", f"Completed inputs: {len(completed)}/{total_inputs}")
+    if ui.interactive() and not _model_usable(profile.model):
+        prompted = _prompt_missing_model(profile, "restore", store=ConfigStore(), persist=True)
+        if prompted is False:
+            return None
 
     if status == "running":
         state["status"] = "interrupted"

@@ -30,10 +30,20 @@ Run:
 akv m
 ```
 
-To choose a provider interactively and save it to your default profile:
+When run without arguments, `akv m` opens a small menu where you can list
+providers, set the vision model, or set the chat model.
+
+To jump straight to model setup and save it to your default profile:
 
 ```bash
 akv m setup
+```
+
+To set only the vision or chat model:
+
+```bash
+akv m restore
+akv m chat
 ```
 
 To check environment setup:
@@ -138,8 +148,8 @@ passages that use unfamiliar terminology.
 
 For successful multilingual transcription and reasoning-based manuscript parsing, use a
 vision model with enough context for image tokens and page text. Akshara passes
-profile context/output limits through to compatible backends and does not
-artificially cap them. Suggested starting points:
+primary extraction and translation context/output limits through to compatible
+backends and does not artificially cap those primary calls. Suggested starting points:
 
 | Mode | Suggested starting point |
 | --- | --- |

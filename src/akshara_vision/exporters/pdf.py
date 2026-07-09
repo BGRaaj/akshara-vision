@@ -119,9 +119,8 @@ def _render_pdf_from_html(path: Path, text: str, metadata: Dict[str, object]) ->
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=180,
             )
-        except (OSError, subprocess.TimeoutExpired):
+        except OSError:
             continue
         if result.returncode == 0 and path.exists() and path.stat().st_size > 0:
             return True
@@ -155,9 +154,8 @@ def _render_pdf_from_docx(path: Path, text: str, metadata: Dict[str, object]) ->
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=180,
             )
-        except (OSError, subprocess.TimeoutExpired):
+        except OSError:
             return False
         generated = tmp_root / f"{docx_path.stem}.pdf"
         if result.returncode == 0 and generated.exists() and generated.stat().st_size > 0:
