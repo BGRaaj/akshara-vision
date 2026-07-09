@@ -29,6 +29,7 @@ class ChatBundle:
     sources: List[ChatSource]
     profile: WorkflowProfile
     origin: str = "run"
+    notes: List[str] = field(default_factory=list)
 
     def source_ids(self) -> List[str]:
         return [source.source_id for source in self.sources]
@@ -57,6 +58,14 @@ def build_chat_bundle(
             if run_title:
                 titles.append(run_title)
             continue
+        if path.is_dir():
+            folder_sources, folder_title = _sources_from_folder_path(
+                path, recursive=recursive, question=question
+            )
+            if folder_sources:
+                collected.extend(folder_sources)
+                titles.append(folder_title)
+                continue
         if _looks_like_compiled_output(path):
             collected.append(
                 ChatSource(
@@ -103,6 +112,9 @@ def build_chat_bundle(
                 raise RuntimeError(
                     _unsupported_chat_input_message(selection.missing, selection.unsupported)
                 )
+            focused_files = _focus_input_files(selection.files, question or "")
+            if focused_files:
+                selection.files = focused_files
             result = run_pipeline(RunRequest(profile=temp_profile, inputs=selection))
             run_dir = Path(result["run_dir"])
             manifest_sources, run_title = _sources_from_run_path(run_dir)
@@ -115,6 +127,7 @@ def build_chat_bundle(
     if not collected:
         raise RuntimeError("No readable chat sources were found.")
 
+    collected = _renumber_sources(collected)
     bundle_title = next((title for title in titles if title.strip()), "Document")
     return ChatBundle(title=bundle_title, sources=collected, profile=profile)
 
@@ -124,12 +137,18 @@ def answer_question(
     question: str,
     system_prompt: Optional[str] = None,
     history: Optional[Sequence[Tuple[str, str]]] = None,
+    notes: Optional[Sequence[str]] = None,
+    citation_source_ids: Optional[Sequence[str]] = None,
 ) -> tuple[str, dict, List[ChatSource]]:
-    prompt_sources = _select_relevant_sources(bundle.sources, question)
+    prompt_sources = _select_relevant_sources(
+        bundle.sources,
+        question,
+        citation_source_ids=citation_source_ids,
+    )
     if not prompt_sources:
         raise RuntimeError("No grounded sources are available for this question.")
     system_prompt = (system_prompt or _default_chat_instruction(bundle)).strip()
-    prompt = _build_chat_prompt(bundle, question, prompt_sources, history)
+    prompt = _build_chat_prompt(bundle, question, prompt_sources, history, notes=notes)
     provider = get_provider(bundle.profile.model.provider)
     media_path, media_temp = _chat_media_path(prompt_sources, question)
     try:
@@ -173,16 +192,35 @@ def load_chat_history(path: Optional[Path]) -> List[Tuple[str, str]]:
     return history[-24:]
 
 
-def save_chat_history(path: Optional[Path], history: Sequence[Tuple[str, str]]) -> None:
+def load_chat_notes(path: Optional[Path]) -> List[str]:
+    if path is None or not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    notes = payload.get("notes") if isinstance(payload, dict) else []
+    if not isinstance(notes, list):
+        return []
+    return [str(note).strip() for note in notes if str(note).strip()][:24]
+
+
+def save_chat_history(
+    path: Optional[Path],
+    history: Sequence[Tuple[str, str]],
+    notes: Optional[Sequence[str]] = None,
+) -> None:
     if path is None:
         return
     payload = {
-        "version": 1,
+        "version": 2,
         "turns": [
             {"question": question, "answer": answer}
             for question, answer in history[-24:]
         ],
     }
+    if notes is not None:
+        payload["notes"] = [str(note).strip() for note in notes if str(note).strip()][:24]
     try:
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     except OSError:
@@ -227,6 +265,7 @@ def _build_chat_prompt(
     question: str,
     sources: Sequence[ChatSource],
     history: Optional[Sequence[Tuple[str, str]]] = None,
+    notes: Optional[Sequence[str]] = None,
 ) -> str:
     visual_sources = [source for source in sources if str(source.metadata.get("kind") or "") == "raw-visual"]
     parts = [
@@ -250,6 +289,13 @@ def _build_chat_prompt(
         for index, (user_text, assistant_text) in enumerate(history[-4:], start=1):
             parts.append(f"Previous question {index}: {user_text.strip()}")
             parts.append(f"Previous answer {index}: {assistant_text.strip()}")
+            parts.append("")
+    if notes:
+        clean_notes = [str(note).strip() for note in notes if str(note).strip()]
+        if clean_notes:
+            parts.extend(["SESSION NOTES"])
+            for index, note in enumerate(clean_notes[-8:], start=1):
+                parts.append(f"Note {index}: {note}")
             parts.append("")
     parts.extend(
         [
@@ -285,7 +331,18 @@ def _format_source_metadata(metadata: Dict[str, object]) -> str:
     return f"Metadata: {', '.join(items)}" if items else "Metadata: none"
 
 
-def _select_relevant_sources(sources: Sequence[ChatSource], question: str, limit: int = 10) -> List[ChatSource]:
+def _select_relevant_sources(
+    sources: Sequence[ChatSource],
+    question: str,
+    limit: int = 10,
+    citation_source_ids: Optional[Sequence[str]] = None,
+) -> List[ChatSource]:
+    if citation_source_ids:
+        pinned = {str(source_id).strip().upper() for source_id in citation_source_ids if str(source_id).strip()}
+        selected = [source for source in sources if source.source_id.upper() in pinned]
+        if not selected:
+            raise RuntimeError("None of the pinned citation sources are available in the current scope.")
+        return selected[:limit]
     question_terms = _question_terms(question)
     page_refs = _question_page_numbers(question)
     scored: List[tuple[int, ChatSource]] = []
@@ -475,7 +532,7 @@ def _looks_like_run_folder(path: Path) -> bool:
 def _looks_like_compiled_output(path: Path) -> bool:
     if not path.is_file():
         return False
-    return path.suffix.lower() in {".txt", ".md", ".html", ".json", ".jsonl", ".yaml", ".yml"}
+    return path.suffix.lower() in _CHAT_TEXT_EXTENSIONS
 
 
 def _looks_like_visual_input(path: Path) -> bool:
@@ -533,6 +590,9 @@ def _supported_chat_inputs() -> List[str]:
     ]
 
 
+_CHAT_TEXT_EXTENSIONS = {".txt", ".md", ".html", ".hocr", ".xml", ".json", ".jsonl", ".yaml", ".yml"}
+
+
 def _sources_from_run_path(path: Path) -> tuple[List[ChatSource], str]:
     manifest_path = path / "run_manifest.json"
     if manifest_path.exists():
@@ -558,6 +618,122 @@ def _sources_from_run_path(path: Path) -> tuple[List[ChatSource], str]:
             path.name,
         )
     return [], path.name
+
+
+def _sources_from_folder_path(
+    path: Path, recursive: bool = False, question: Optional[str] = None
+) -> tuple[List[ChatSource], str]:
+    sources: List[ChatSource] = []
+    seen_files: set[Path] = set()
+    manifest_paths = sorted(path.rglob("run_manifest.json") if recursive else path.glob("*/run_manifest.json"))
+    for manifest_path in manifest_paths[:12]:
+        run_dir = manifest_path.parent
+        run_sources, _run_title = _sources_from_run_path(run_dir)
+        sources.extend(run_sources)
+        try:
+            seen_files.add(manifest_path.resolve())
+        except OSError:
+            seen_files.add(manifest_path)
+
+    for candidate in _folder_chat_text_files(path, recursive=recursive, question=question):
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            resolved = candidate
+        if resolved in seen_files or _is_chat_internal_file(candidate):
+            continue
+        text = _read_text_file(candidate).strip()
+        if not text:
+            continue
+        try:
+            label = str(candidate.relative_to(path)).replace("\\", "/")
+        except ValueError:
+            label = candidate.name
+        sources.append(
+            ChatSource(
+                source_id=f"S{len(sources) + 1}",
+                label=label,
+                text=text,
+                metadata={
+                    "kind": "folder-output",
+                    "path": str(candidate),
+                    "source": label,
+                    "match_score": _path_match_score(candidate, question or ""),
+                },
+            )
+        )
+        if len(sources) >= 240:
+            break
+    return sources, path.name
+
+
+def _folder_chat_text_files(
+    path: Path, recursive: bool = False, question: Optional[str] = None
+) -> List[Path]:
+    iterator = path.rglob("*") if recursive else path.glob("*")
+    files = [
+        candidate
+        for candidate in iterator
+        if candidate.is_file() and candidate.suffix.lower() in _CHAT_TEXT_EXTENSIONS
+    ]
+
+    def score(candidate: Path) -> tuple[int, str]:
+        name = candidate.name.lower()
+        priority = 4
+        if name.startswith(("final__", "translated__", "restored__")):
+            priority = 0
+        elif name.startswith("akshara_output"):
+            priority = 1
+        elif name.endswith(".detailed.json") or name in {"run_manifest.json", "stage_manifest.json"}:
+            priority = 2
+        elif candidate.suffix.lower() in {".txt", ".md", ".html", ".json", ".jsonl", ".yaml", ".yml"}:
+            priority = 3
+        return priority, str(candidate)
+
+    ranked = sorted(files, key=score)
+    terms = _question_terms(question or "")
+    if not terms:
+        return ranked
+    matched = [candidate for candidate in ranked if _path_match_score(candidate, question or "") > 0]
+    return matched[:48] if matched else ranked
+
+
+def _path_match_score(path: Path, question: str) -> int:
+    terms = _question_terms(question)
+    if not terms:
+        return 0
+    normalized = f"{path.name} {path.stem} {path.parent}".lower().replace("_", " ").replace("-", " ")
+    score = 0
+    for term in terms:
+        if term in normalized:
+            score += 3
+        elif all(part in normalized for part in term.split()):
+            score += 2
+    return score
+
+
+def _focus_input_files(files: Sequence[Path], question: str) -> List[Path]:
+    if len(files) <= 1 or not _question_terms(question):
+        return []
+    scored = [(_path_match_score(path, question), path) for path in files]
+    matched = [path for score, path in sorted(scored, key=lambda item: (-item[0], str(item[1]))) if score > 0]
+    return matched[:12]
+
+
+def _is_chat_internal_file(path: Path) -> bool:
+    return path.name.lower() in {"run_state.json", "chat_session.json"}
+
+
+def _renumber_sources(sources: Sequence[ChatSource]) -> List[ChatSource]:
+    return [
+        ChatSource(
+            source_id=f"S{index}",
+            label=source.label,
+            text=source.text,
+            metadata=dict(source.metadata),
+        )
+        for index, source in enumerate(sources, start=1)
+    ]
 
 
 def _sources_from_manifest(path: Path, manifest: Dict[str, object]) -> List[ChatSource]:

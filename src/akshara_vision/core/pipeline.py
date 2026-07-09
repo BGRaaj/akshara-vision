@@ -39,7 +39,6 @@ LayoutBackend = Callable[[Path], Dict[str, object]]
 RESTORATION_CHUNK_CHARS = 5000
 TRANSLATION_CHUNK_CHARS = 5000
 BLANK_PAGE_REASON = "blank page or no readable text"
-DEFAULT_PROVIDER_RETRIES = 3
 MAX_FIGURE_CROPS_PER_PAGE = 4
 _LAYOUT_BACKENDS: Dict[str, LayoutBackend] = {}
 _LAYOUT_MODEL_CACHE: Dict[str, object] = {}
@@ -1555,7 +1554,8 @@ def _restore_with_retry(
     last_response = ""
     last_usage: dict = {}
     last_error: Optional[Exception] = None
-    max_retries = _provider_retry_limit()
+    execution_mode = _execution_mode_from_settings(settings)
+    max_retries = _provider_retry_limit(execution_mode)
     for attempt in range(max_retries + 1):
         retry_prompt = prompt
         if attempt:
@@ -1572,7 +1572,11 @@ def _restore_with_retry(
                 + "\n\nRetry because the previous response was malformed or unusable. "
                 + failure_text
                 + focus_text
-                + "Return only the requested output. Do not include commentary, code fences, "
+                + "If only a word or short span is uncertain, keep the surrounding sentence intact and "
+                "repair only that span. When in doubt, preserve the original wording rather than guessing. "
+                + "Repair only the uncertain spans if possible; do not rework the whole passage. "
+                "Return the complete requested output after repair, not just the corrected fragment. "
+                "Return only the requested output. Do not include commentary, code fences, "
                 "or wrapper JSON unless the prompt explicitly asks for JSON."
             )
         try:
@@ -1602,6 +1606,13 @@ def _restore_with_retry(
         last_response = response
         last_usage = usage or {}
         if not _response_needs_retry(response):
+            if attempt:
+                _notify(
+                    progress,
+                    "retry",
+                    f"Retry succeeded after {attempt} informed attempt{'s' if attempt != 1 else ''}.",
+                    advance=0,
+                )
             return response, last_usage
         if attempt < max_retries:
             delay = _retry_delay(attempt)
@@ -1638,6 +1649,7 @@ def _provider_restore_with_heartbeat(
     thread = threading.Thread(target=worker, name="akshara-provider-call")
     thread.start()
     last_notice = 0.0
+    last_tick = 0.0
     try:
         while thread.is_alive():
             try:
@@ -1647,11 +1659,19 @@ def _provider_restore_with_heartbeat(
                 return payload  # type: ignore[return-value]
             except queue.Empty:
                 elapsed = time.monotonic() - started_at
+                if elapsed - last_tick >= 1:
+                    last_tick = elapsed
+                    _notify(
+                        progress,
+                        "waiting",
+                        f"Model still working on {label} ({_format_elapsed(elapsed)} elapsed)",
+                        advance=0,
+                    )
                 if elapsed - last_notice >= 20:
                     last_notice = elapsed
                     _notify(
                         progress,
-                        "waiting",
+                        "waiting-log",
                         f"Model still working on {label} ({_format_elapsed(elapsed)} elapsed)",
                         advance=0,
                     )
@@ -1697,14 +1717,18 @@ def _retry_delay(attempt: int) -> float:
     return min(0.5 * (2**attempt), 8)
 
 
-def _provider_retry_limit() -> int:
-    raw_value = os.environ.get("AKSHARA_PROVIDER_RETRIES")
-    if not raw_value:
-        return DEFAULT_PROVIDER_RETRIES
-    try:
-        return min(max(int(raw_value), 0), 10)
-    except ValueError:
-        return DEFAULT_PROVIDER_RETRIES
+def _provider_retry_limit(execution_mode: Optional[str] = None) -> int:
+    mode = str(execution_mode or "balanced").strip().lower()
+    if mode == "fast":
+        return 0
+    if mode == "quality":
+        return 3
+    return 1
+
+
+def _execution_mode_from_settings(settings) -> str:
+    mode = getattr(settings, "execution_mode", None)
+    return str(mode or "balanced").strip().lower()
 
 
 def _figure_extraction_enabled(profile: Optional[WorkflowProfile] = None) -> bool:
@@ -4663,6 +4687,13 @@ def _maybe_review_restored_text(
     reviewed = str(parsed.get("restored_text") or "").strip()
     if not reviewed:
         return restored_text, "quality review returned no usable correction", usage or {}, ""
+    if _looks_like_fragment_replacement(restored_text, reviewed):
+        return (
+            restored_text,
+            "quality review returned only a small correction fragment; kept original restored text",
+            usage or {},
+            "",
+        )
     return reviewed, "quality review applied to suspicious restoration", usage or {}, restored_text
 
 
@@ -4675,6 +4706,15 @@ def _bounded_model_settings(settings, context_window: int, generation_limit: int
     current_generation = getattr(bounded, "generation_limit", None)
     bounded.context_window = min(int(current_context or context_window), context_window)
     bounded.generation_limit = min(int(current_generation or generation_limit), generation_limit)
+    current_timeout = getattr(bounded, "request_timeout_seconds", None)
+    try:
+        timeout_value = int(current_timeout) if current_timeout is not None else None
+    except (TypeError, ValueError):
+        timeout_value = None
+    if timeout_value is None or timeout_value <= 0:
+        bounded.request_timeout_seconds = 90
+    else:
+        bounded.request_timeout_seconds = min(timeout_value, 90)
     return bounded
 
 
@@ -4689,7 +4729,7 @@ def _needs_restoration_review(
             review_count = int(consistency_state.get("review_count") or 0)
         except (TypeError, ValueError):
             review_count = 0
-        if review_count >= 6:
+        if review_count >= _review_limit(execution_mode):
             return False
     if _extract_json_object(candidate):
         return True
@@ -4697,28 +4737,39 @@ def _needs_restoration_review(
         return True
     if re.search(r"([A-Za-z])\1{5,}", candidate):
         return True
-    if execution_mode in {"fast", "balanced"}:
-        words = re.findall(r"[A-Za-z]{3,}", candidate)
-        if len(words) >= 18:
-            vowel_words = sum(1 for word in words if re.search(r"[aeiouAEIOU]", word))
-            if vowel_words / len(words) < 0.28:
-                return True
-        if len(candidate) > 180:
-            symbol_count = sum(1 for char in candidate if not char.isalnum() and not char.isspace())
-            if symbol_count / len(candidate) > 0.48:
-                return True
-        return False
-    words = re.findall(r"[A-Za-z]{3,}", candidate)
-    if len(words) >= 12:
-        vowel_words = sum(1 for word in words if re.search(r"[aeiouAEIOU]", word))
-        if vowel_words / len(words) < 0.35:
-            return True
-    short_tokens = re.findall(r"\b[A-Za-z]\b", candidate)
-    all_tokens = re.findall(r"\b[A-Za-z]+\b", candidate)
-    if len(all_tokens) >= 30 and len(short_tokens) / len(all_tokens) > 0.45:
-        return True
     symbol_count = sum(1 for char in candidate if not char.isalnum() and not char.isspace())
-    if len(candidate) > 120 and symbol_count / len(candidate) > 0.35:
+    if len(candidate) > 180 and symbol_count / len(candidate) > 0.52:
+        return True
+    if execution_mode == "quality":
+        words = re.findall(r"[A-Za-z]{3,}", candidate)
+        if len(words) >= 14:
+            vowel_words = sum(1 for word in words if re.search(r"[aeiouAEIOU]", word))
+            if vowel_words / len(words) < 0.33:
+                return True
+        short_tokens = re.findall(r"\b[A-Za-z]\b", candidate)
+        all_tokens = re.findall(r"\b[A-Za-z]+\b", candidate)
+        if len(all_tokens) >= 28 and len(short_tokens) / len(all_tokens) > 0.42:
+            return True
+    return False
+
+
+def _review_limit(execution_mode: str) -> int:
+    mode = str(execution_mode or "balanced").strip().lower()
+    if mode == "fast":
+        return 0
+    if mode == "quality":
+        return 3
+    return 1
+
+
+def _looks_like_fragment_replacement(original: str, reviewed: str) -> bool:
+    original_words = re.findall(r"\S+", original or "")
+    reviewed_words = re.findall(r"\S+", reviewed or "")
+    if len(original_words) < 24:
+        return False
+    if not reviewed_words:
+        return True
+    if len(reviewed_words) <= max(8, int(len(original_words) * 0.25)):
         return True
     return False
 
@@ -4741,6 +4792,7 @@ def _restoration_review_prompt(
     return (
         "Return only a valid JSON object with keys restored_text, uncertain, notes, status, and failure_reason.\n"
         "You are reviewing one already-restored page or chunk for OCR corruption and gibberish only.\n"
+        "Return the full reviewed page or chunk in restored_text, not only the changed word or phrase.\n"
         "Do not summarize, translate, modernize, add missing facts, complete unfinished page-ending "
         "sentences, or change the document structure.\n"
         "Preserve headings, paragraph breaks, line order, tables, names, dates, citations, page markers, "

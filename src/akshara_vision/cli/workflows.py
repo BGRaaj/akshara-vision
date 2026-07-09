@@ -25,6 +25,7 @@ from akshara_vision.core.chat import (
     build_chat_bundle,
     chat_session_path,
     load_chat_history,
+    load_chat_notes,
     save_chat_history,
     search_sources,
 )
@@ -355,6 +356,10 @@ def _session_help() -> None:
             ["/guide", "Choose guidance level"],
             ["/mode", "Choose speed versus quality mode"],
             ["/ui", "Customize theme and guidance"],
+            ["/where TERM", "Jump to the best matching source"],
+            ["/cite S1 S2", "Force the answer to use specific sources"],
+            ["/scope TERM", "Narrow the current document target"],
+            ["/remember NOTE", "Store a tiny run-local note"],
             ["/doctor", "Check local setup"],
             ["/combine [run-folder]", "Rebuild staged outputs into one document"],
             ["/resume [run-folder]", "Recover completed checkpoints from an interrupted run"],
@@ -390,11 +395,23 @@ def _status_panel() -> None:
     )
 
 
+def _current_guide_level() -> str:
+    guide = str(ConfigStore().load_ui_preferences().get("guide") or "balanced").strip().lower()
+    return guide if guide in {"minimal", "balanced", "full"} else "balanced"
+
+
 def guide_command() -> None:
     store = ConfigStore()
     current = store.load_ui_preferences()
     ui.set_theme(current["theme"])
     ui.heading("Akshara Vision", "Guide")
+    ui.table(
+        [
+            ["minimal", "compact prompts for repeat users"],
+            ["balanced", "short hints at important decisions"],
+            ["full", "context and tradeoffs before key choices"],
+        ]
+    )
     guide = ui.choose(
         "How much guidance should the CLI show?",
         [
@@ -409,7 +426,8 @@ def guide_command() -> None:
         return
     guide = guide.split(" ", 1)[0]
     store.save_ui_preferences({"guide": guide})
-    ui.write(f"Guide level set to: {guide}")
+    ui.status("success", f"Guide level set to: {guide}")
+    _render_home()
 
 
 def mode_command() -> None:
@@ -699,6 +717,37 @@ def choose_request_timeout(current: Optional[int] = None) -> Optional[int]:
     return int(match.group(1)) * 60 if match else current
 
 
+def prompt_runtime_mode(profile: WorkflowProfile) -> Optional[WorkflowProfile]:
+    runtime = copy.deepcopy(profile)
+    guide = _current_guide_level()
+    if guide == "full":
+        ui.note(
+            "Choose how much extra model effort this run can spend. Fast avoids retries, "
+            "balanced allows one informed retry, and quality allows deeper recovery."
+        )
+        ui.table(
+            [
+                ["fast", "one pass, no restoration retries"],
+                ["balanced", "one informed retry for malformed output"],
+                ["quality", "up to three retries and deeper review"],
+            ]
+        )
+    elif guide == "balanced":
+        ui.note("Runtime mode controls retry depth: fast 0, balanced 1, quality 3.")
+    selected_mode = ui.choose(
+        "Execution mode for this run",
+        EXECUTION_MODES + ["Back"],
+        runtime.model.execution_mode,
+    )
+    if selected_mode == "Back":
+        return None
+    runtime.model.execution_mode = selected_mode
+    runtime.model.request_timeout_seconds = choose_request_timeout(
+        runtime.model.request_timeout_seconds
+    )
+    return runtime
+
+
 def _request_timeout_label(seconds: Optional[int]) -> str:
     if not seconds:
         return "wait forever"
@@ -841,15 +890,16 @@ def run_guided(
         if chosen_model is None:
             return None
         profile.model = chosen_model
-        profile.model.execution_mode = ui.choose(
-            "Execution mode", EXECUTION_MODES + ["Back"], profile.model.execution_mode
-        )
-        if profile.model.execution_mode == "Back":
+        runtime = prompt_runtime_mode(profile)
+        if runtime is None:
             return None
-        profile.model.request_timeout_seconds = choose_request_timeout(
-            profile.model.request_timeout_seconds
-        )
+        profile = runtime
         profile.output_formats = choose_output_formats(profile.output_formats)
+    else:
+        runtime = prompt_runtime_mode(profile)
+        if runtime is None:
+            return None
+        profile = runtime
     return execute_run(profile, inputs=inputs, recursive=recursive, dry_run=dry_run)
 
 
@@ -891,8 +941,11 @@ def chat_command(
         ui.status("info", "Chat cancelled.")
         return None
     pending_question = question
-    if not pending_question and ui.interactive() and _can_lazy_chat(input_values):
-        ui.note("For a single image or page-specific PDF question, Akshara can answer without pre-indexing the whole file.")
+    if not pending_question and ui.interactive() and (_can_lazy_chat(input_values) or _has_folder_input(input_values)):
+        if _can_lazy_chat(input_values):
+            ui.note("For a single image or page-specific PDF question, Akshara can answer without pre-indexing the whole file.")
+        if _has_folder_input(input_values):
+            ui.note("For folders, describe the file, nested folder, page, or topic so Akshara can focus before indexing.")
         pending_question = ui.text("Ask your first question")
     with ui.progress("Indexing chat sources...") as reporter:
         bundle = build_chat_bundle(
@@ -902,6 +955,9 @@ def chat_command(
             question=pending_question,
         )
         reporter.finish(f"Indexed {len(bundle.sources)} source chunk(s)")
+    if ui.interactive() and _has_folder_input(input_values):
+        _review_chat_sources(bundle)
+    _remember_chat_source_pool(bundle)
     ui.section("Review")
     ui.table(
         [
@@ -913,10 +969,25 @@ def chat_command(
     )
     session_path = chat_session_path(input_values)
     history: List[tuple[str, str]] = load_chat_history(session_path)
+    session_notes: List[str] = load_chat_notes(session_path)
+    citation_source_ids: List[str] = []
     if history:
         ui.status("info", f"Loaded {len(history)} previous chat turn(s).")
     if ui.interactive():
-        ui.note("Chat tools: /sources, /find TERM, /open S1, /clear, /exit")
+        guide = _current_guide_level()
+        if guide == "full":
+            ui.section("Chat Controls")
+            ui.table(
+                [
+                    ["/where TERM", "jump to the best matching source"],
+                    ["/cite S1 S2", "pin the next answer to specific sources"],
+                    ["/scope TERM", "narrow the active source set"],
+                    ["/remember NOTE", "store a small local preference or fact"],
+                ]
+            )
+            ui.note("Use /scope all to return to every indexed source.")
+        elif guide == "balanced":
+            ui.note("Tip: /where narrows, /cite pins, and /remember stores a small note. Use /help for the full list.")
     while True:
         if not pending_question:
             pending_question = ui.text("Ask a question about these sources")
@@ -924,8 +995,25 @@ def chat_command(
         if not pending_question:
             break
         if pending_question.startswith("/"):
-            if _handle_chat_tool(pending_question, bundle, history, session_path) is False:
+            result = _handle_chat_tool(
+                pending_question,
+                bundle,
+                history,
+                session_path,
+                session_notes=session_notes,
+                citation_source_ids=citation_source_ids,
+            )
+            if result is False:
                 break
+            if isinstance(result, dict):
+                if "bundle" in result and result["bundle"] is not None:
+                    bundle = result["bundle"]
+                if "citation_source_ids" in result:
+                    citation_source_ids = list(result["citation_source_ids"] or [])
+                if "session_notes" in result:
+                    session_notes = list(result["session_notes"] or [])
+                if "history" in result:
+                    history = list(result["history"] or history)
             pending_question = ""
             continue
         with ui.progress("Answering...") as reporter:
@@ -934,6 +1022,8 @@ def chat_command(
                 pending_question,
                 system_prompt=system_prompt,
                 history=history,
+                notes=session_notes,
+                citation_source_ids=citation_source_ids,
             )
             reporter.finish("Complete")
         ui.section("Answer")
@@ -949,7 +1039,7 @@ def chat_command(
         if usage_row:
             ui.write(f"Token usage: {usage_row}")
         history.append((pending_question, answer))
-        save_chat_history(session_path, history)
+        save_chat_history(session_path, history, notes=session_notes)
         if question is not None or not ui.interactive():
             break
         if not ui.confirm("Ask another question?", True):
@@ -969,12 +1059,84 @@ def _can_lazy_chat(input_values: Iterable[str]) -> bool:
     return suffix in {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
 
 
+def _has_folder_input(input_values: Iterable[str]) -> bool:
+    return any(Path(str(value)).expanduser().is_dir() for value in input_values if str(value).strip())
+
+
+def _review_chat_sources(bundle) -> None:
+    ui.section("Indexed Sources")
+    rows = [["ID", "Source"]]
+    rows.extend([[source.source_id, source.label] for source in bundle.sources[:12]])
+    if len(bundle.sources) > 12:
+        rows.append(["...", f"and {len(bundle.sources) - 12} more"])
+    ui.table(rows)
+    if ui.confirm("Use these sources for chat?", True):
+        return
+    term = ui.text("File name, nested folder, source id, or topic to focus").strip()
+    if not term:
+        return
+    matches = _filter_chat_sources(bundle.sources, term)
+    if not matches:
+        ui.status("warning", "No matching indexed sources found. Keeping the current source set.")
+        return
+    bundle.sources = _renumber_cli_sources(matches)
+    ui.status("success", f"Focused chat to {len(bundle.sources)} source(s).")
+
+
+def _filter_chat_sources(sources, term: str):
+    lowered_terms = [item.lower() for item in re.findall(r"[A-Za-z0-9][A-Za-z0-9._-]{1,}", term)]
+    requested_ids = {item.upper() for item in re.findall(r"\bS\d+\b", term, flags=re.I)}
+    if not lowered_terms and not requested_ids:
+        return []
+    matches = []
+    for source in sources:
+        label = str(source.label).lower()
+        path = str(source.metadata.get("path") or source.metadata.get("source") or "").lower()
+        source_id = str(source.source_id).upper()
+        if source_id in requested_ids or any(item in label or item in path for item in lowered_terms):
+            matches.append(source)
+    return matches
+
+
+def _where_chat_sources(sources, term: str):
+    requested_ids = [item.upper() for item in re.findall(r"\bS\d+\b", term, flags=re.I)]
+    if requested_ids:
+        ordered = [source for source in sources if source.source_id.upper() in requested_ids]
+        return ordered[:6]
+    ranked = search_sources(sources, term, limit=6)
+    if ranked:
+        return ranked[:6]
+    return _filter_chat_sources(sources, term)[:6]
+
+
+def _renumber_cli_sources(sources):
+    cloned = [copy.deepcopy(source) for source in sources]
+    for index, source in enumerate(cloned, start=1):
+        source.source_id = f"S{index}"
+    return cloned
+
+
+def _remember_chat_source_pool(bundle) -> None:
+    if not hasattr(bundle, "_source_pool"):
+        setattr(bundle, "_source_pool", [copy.deepcopy(source) for source in bundle.sources])
+
+
+def _chat_source_pool(bundle):
+    pool = getattr(bundle, "_source_pool", None)
+    if pool:
+        return pool
+    _remember_chat_source_pool(bundle)
+    return getattr(bundle, "_source_pool", bundle.sources)
+
+
 def _handle_chat_tool(
     command: str,
     bundle,
     history: List[tuple[str, str]],
     session_path: Optional[Path],
-) -> bool:
+    session_notes: Optional[List[str]] = None,
+    citation_source_ids: Optional[List[str]] = None,
+) -> object:
     parts = command.split(maxsplit=1)
     name = parts[0].lower()
     arg = parts[1].strip() if len(parts) > 1 else ""
@@ -1005,6 +1167,76 @@ def _handle_chat_tool(
             return True
         ui.table([["ID", "Label", "Excerpt"]] + [[s.source_id, s.label, _excerpt_for_query(s.text, arg)] for s in matches])
         return True
+    if name == "/where":
+        if not arg:
+            ui.status("warning", "Use /where followed by a file name, page, source id, or topic.")
+            return True
+        matches = _where_chat_sources(_chat_source_pool(bundle), arg)
+        if not matches:
+            ui.status("warning", "No matching source found.")
+            return True
+        bundle.sources = _renumber_cli_sources(matches)
+        ui.status("success", f"Scoped to best match: {bundle.sources[0].label}")
+        ui.section("Focused Match")
+        ui.table([["ID", "Label", "Excerpt"]] + [[s.source_id, s.label, _excerpt_for_query(s.text, arg)] for s in matches[:3]])
+        return {"bundle": bundle, "citation_source_ids": []}
+    if name == "/scope":
+        if not arg:
+            ui.status("warning", "Use /scope followed by a file name, folder term, page, topic, or all.")
+            return True
+        if arg.strip().lower() in {"all", "*", "reset"}:
+            bundle.sources = _renumber_cli_sources(_chat_source_pool(bundle))
+            ui.status("success", f"Scope reset to all {len(bundle.sources)} source(s).")
+            return {"bundle": bundle, "citation_source_ids": []}
+        matches = _filter_chat_sources(_chat_source_pool(bundle), arg)
+        if not matches:
+            ui.status("warning", "No matching indexed sources found.")
+            return True
+        bundle.sources = _renumber_cli_sources(matches)
+        ui.status("success", f"Scoped chat to {len(bundle.sources)} source(s).")
+        return {"bundle": bundle, "citation_source_ids": []}
+    if name == "/focus":
+        if not arg:
+            ui.status("warning", "Use /focus followed by a file name, folder term, topic, or source id.")
+            return True
+        if arg.strip().lower() in {"all", "*", "reset"}:
+            bundle.sources = _renumber_cli_sources(_chat_source_pool(bundle))
+            ui.status("success", f"Focus reset to all {len(bundle.sources)} source(s).")
+            return {"bundle": bundle, "citation_source_ids": []}
+        matches = _filter_chat_sources(_chat_source_pool(bundle), arg)
+        if not matches:
+            ui.status("warning", "No matching indexed sources found.")
+            return True
+        bundle.sources = _renumber_cli_sources(matches)
+        ui.status("success", f"Focused chat to {len(bundle.sources)} source(s). History is still preserved.")
+        return {"bundle": bundle, "citation_source_ids": []}
+    if name == "/cite":
+        if not arg:
+            ui.status("warning", "Use /cite followed by one or more source ids, such as S1 S3.")
+            return True
+        requested = [item.upper() for item in re.findall(r"\bS\d+\b", arg, flags=re.I)]
+        if not requested:
+            ui.status("warning", "Use /cite with source ids like S1 or S2.")
+            return True
+        selected = [source.source_id.upper() for source in bundle.sources if source.source_id.upper() in requested]
+        if not selected:
+            ui.status("warning", "None of those source ids are available in the current scope.")
+            return True
+        if citation_source_ids is not None:
+            citation_source_ids[:] = selected
+        ui.status("success", "Pinned citations to: " + ", ".join(selected))
+        return {"citation_source_ids": selected}
+    if name == "/remember":
+        if not arg:
+            ui.status("warning", "Use /remember followed by a short note.")
+            return True
+        note = arg.strip()
+        if session_notes is not None:
+            session_notes.append(note)
+            del session_notes[:-24]
+            save_chat_history(session_path, history, notes=session_notes)
+        ui.status("success", "Stored a run-local note for this chat.")
+        return {"session_notes": session_notes or []}
     if name == "/open":
         source = next((item for item in bundle.sources if item.source_id.lower() == arg.lower()), None)
         if source is None:
@@ -1022,6 +1254,11 @@ def _handle_chat_tool(
         ui.section("Chat Tools")
         ui.table(
             [
+                ["/where TERM", "Jump to the best matching source"],
+                ["/cite S1 S2", "Anchor answers to specific sources"],
+                ["/scope TERM", "Narrow the active document target; /scope all resets"],
+                ["/focus TERM", "Keep only matching sources; /focus all resets"],
+                ["/remember NOTE", "Store a tiny run-local note"],
                 ["/sources", "List indexed source chunks"],
                 ["/find TERM", "Search source chunks locally"],
                 ["/open S1", "Open a cited source excerpt"],
@@ -1849,7 +2086,7 @@ def _run_with_progress(request: RunRequest):
 
         def progress(event: str, message: str, advance: int = 1) -> None:
             reporter.update(message, advance=advance)
-            if event in {"usage", "interrupt"}:
+            if event in {"usage", "interrupt", "retry", "waiting-log"}:
                 reporter.log(message)
 
         return run_pipeline(request, progress=progress)
@@ -1857,9 +2094,9 @@ def _run_with_progress(request: RunRequest):
 
 def _mode_behavior(mode: str) -> str:
     return {
-        "fast": "300 DPI, shorter prompt, heuristic figure crops",
-        "balanced": "400 DPI, default prompt, verifies first figure crop",
-        "quality": "500 DPI, more careful prompt, verifies figure crops",
+        "fast": "300 DPI, shorter prompt, no restoration retries",
+        "balanced": "400 DPI, default prompt, one informed retry",
+        "quality": "500 DPI, careful prompt, up to three retries",
     }.get(mode, "standard settings")
 
 
@@ -2479,6 +2716,11 @@ def resume_command(run_dir: Optional[str] = None) -> None:
             profile_dict = state.get("profile", {})
             profile = WorkflowProfile.from_dict(profile_dict)
             profile.output_dir = str(run_path.parent)
+            if ui.interactive():
+                runtime = prompt_runtime_mode(profile)
+                if runtime is None:
+                    return
+                profile = runtime
             selection = discover_inputs(
                 [str(path) for path in (input_paths or input_files)], recursive=True
             )

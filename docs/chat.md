@@ -10,9 +10,14 @@ akv ask path/to/akshara_output.txt --question "What is the book about?"
 Inside interactive chat, Akshara also supports local chat tools:
 
 ```text
+/where TERM
+/cite S1 S2
+/scope TERM
+/remember NOTE
 /sources
 /find keyword or phrase
 /open S1
+/focus TERM
 /clear
 /exit
 ```
@@ -42,6 +47,14 @@ Inside interactive chat, Akshara also supports local chat tools:
   questions can use previous turns.
 - `/sources`, `/find`, and `/open` work locally against indexed chunks before
   any model call, which keeps review fast and grounded.
+- `/where` jumps to the strongest matching source before you ask the next
+  question.
+- `/cite` pins the answer to specific sources, which is useful when you want
+  a strict, source-anchored reply.
+- `/scope` and `/focus` narrow the active source set without rebuilding the
+  full bundle. Use `/scope all` or `/focus all` to return to every indexed
+  source.
+- `/remember` stores a short run-local note and feeds it back into later turns.
 
 ## Good Uses
 
@@ -54,6 +67,7 @@ Inside interactive chat, Akshara also supports local chat tools:
   illustration, signboard, chart, or poster, when the model supports vision.
 - Ask a page-specific question against a raw PDF before deciding whether to run
   a full restoration.
+- Narrow a long folder chat to one file, page range, or topic before answering.
 
 ## Notes
 

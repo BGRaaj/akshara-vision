@@ -839,14 +839,124 @@ class CoreTests(unittest.TestCase):
             self.assertIn("page 66", provider.prompt)
             self.assertEqual(Path(provider.media_path).name, "page-0066.png")
 
+    def test_chat_folder_reuses_existing_outputs_without_processing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            nested = root / "batch" / "chapter"
+            nested.mkdir(parents=True)
+            (nested / "final__english.txt").write_text("Already restored chapter text.", encoding="utf-8")
+            with patch("akshara_vision.core.chat.run_pipeline", side_effect=AssertionError("should not process")):
+                bundle = build_chat_bundle([str(root / "batch")], profile=WorkflowProfile(), recursive=True)
+            self.assertEqual(bundle.sources[0].source_id, "S1")
+            self.assertEqual(bundle.sources[0].metadata.get("kind"), "folder-output")
+            self.assertIn("Already restored chapter text", bundle.sources[0].text)
+
+    def test_chat_folder_question_prefers_matching_existing_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            batch = root / "batch"
+            (batch / "newton").mkdir(parents=True)
+            (batch / "cotes").mkdir(parents=True)
+            (batch / "newton" / "final__english.txt").write_text("Newton letters.", encoding="utf-8")
+            (batch / "cotes" / "final__english.txt").write_text("Cotes letters.", encoding="utf-8")
+            with patch("akshara_vision.core.chat.run_pipeline", side_effect=AssertionError("should not process")):
+                bundle = build_chat_bundle(
+                    [str(batch)],
+                    profile=WorkflowProfile(),
+                    recursive=True,
+                    question="Ask about the Newton file",
+                )
+            self.assertEqual(len(bundle.sources), 1)
+            self.assertIn("newton", bundle.sources[0].label.lower())
+
+    def test_chat_raw_folder_fallback_focuses_matching_file_before_processing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / "raw"
+            folder.mkdir()
+            newton = folder / "newton-page.pdf"
+            other = folder / "other-page.pdf"
+            newton.write_bytes(b"%PDF-1.4")
+            other.write_bytes(b"%PDF-1.4")
+
+            def fake_run(request):
+                self.assertEqual([path.name for path in request.inputs.files], ["newton-page.pdf"])
+                run_dir = root / "chat-run"
+                run_dir.mkdir()
+                (run_dir / "akshara_output.txt").write_text("Processed Newton.", encoding="utf-8")
+                return {"run_dir": run_dir}
+
+            with patch("akshara_vision.core.chat.run_pipeline", side_effect=fake_run):
+                bundle = build_chat_bundle(
+                    [str(folder)],
+                    profile=WorkflowProfile(),
+                    recursive=True,
+                    question="What is in newton?",
+                )
+            self.assertIn("Processed Newton", bundle.sources[0].text)
+
     def test_chat_history_helpers_round_trip(self):
-        from akshara_vision.core.chat import load_chat_history, save_chat_history
+        from akshara_vision.core.chat import load_chat_history, load_chat_notes, save_chat_history
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "chat_session.json"
-            save_chat_history(path, [("What is here?", "A passage. [S1]")])
+            save_chat_history(
+                path,
+                [("What is here?", "A passage. [S1]")],
+                notes=["Prefer page 12", "Use source S3"],
+            )
             history = load_chat_history(path)
             self.assertEqual(history, [("What is here?", "A passage. [S1]")])
+            self.assertEqual(load_chat_notes(path), ["Prefer page 12", "Use source S3"])
+
+    def test_chat_tools_where_cite_scope_and_remember(self):
+        from akshara_vision.cli.workflows import _handle_chat_tool
+        from akshara_vision.core.chat import ChatBundle, ChatSource
+
+        bundle = ChatBundle(
+            title="Sample",
+            sources=[
+                ChatSource(source_id="S1", label="chapter-one.txt", text="Alpha beta gamma"),
+                ChatSource(source_id="S2", label="appendix.txt", text="Delta epsilon"),
+            ],
+            profile=WorkflowProfile(),
+        )
+        history = []
+        notes = []
+        result = _handle_chat_tool("/remember keep answers short", bundle, history, None, session_notes=notes)
+        self.assertIsInstance(result, dict)
+        self.assertEqual(notes, ["keep answers short"])
+        result = _handle_chat_tool("/cite S2", bundle, history, None, citation_source_ids=[])
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result["citation_source_ids"], ["S2"])
+        scope_bundle = ChatBundle(
+            title="Sample",
+            sources=[
+                ChatSource(source_id="S1", label="chapter-one.txt", text="Alpha beta gamma"),
+                ChatSource(source_id="S2", label="appendix.txt", text="Delta epsilon"),
+            ],
+            profile=WorkflowProfile(),
+        )
+        result = _handle_chat_tool("/scope chapter-one", scope_bundle, history, None)
+        self.assertIsInstance(result, dict)
+        self.assertEqual(scope_bundle.sources[0].label, "chapter-one.txt")
+        where_bundle = ChatBundle(
+            title="Sample",
+            sources=[
+                ChatSource(source_id="S1", label="chapter-one.txt", text="Alpha beta gamma"),
+                ChatSource(source_id="S2", label="appendix.txt", text="Delta epsilon"),
+            ],
+            profile=WorkflowProfile(),
+        )
+        result = _handle_chat_tool("/where appendix", where_bundle, history, None)
+        self.assertIsInstance(result, dict)
+        self.assertEqual(where_bundle.sources[0].label, "appendix.txt")
+        result = _handle_chat_tool("/scope chapter-one", where_bundle, history, None)
+        self.assertIsInstance(result, dict)
+        self.assertEqual(where_bundle.sources[0].label, "chapter-one.txt")
+        result = _handle_chat_tool("/scope all", where_bundle, history, None)
+        self.assertIsInstance(result, dict)
+        self.assertEqual([source.label for source in where_bundle.sources], ["chapter-one.txt", "appendix.txt"])
 
     def test_review_command_writes_layout_report(self):
         from akshara_vision.cli.workflows import review_command
@@ -1869,7 +1979,16 @@ class CoreTests(unittest.TestCase):
                 "akshara_vision.providers.local.subprocess.run", return_value=fake_result
             ) as run_mock:
                 provider.restore_text("hello", "instruction", fast_profile.model)
-        self.assertNotIn("timeout", run_mock.call_args.kwargs)
+
+    def test_execution_mode_controls_retry_budget(self):
+        from akshara_vision.core.pipeline import _provider_retry_limit, _review_limit
+
+        self.assertEqual(_provider_retry_limit("fast"), 0)
+        self.assertEqual(_provider_retry_limit("balanced"), 1)
+        self.assertEqual(_provider_retry_limit("quality"), 3)
+        self.assertEqual(_review_limit("fast"), 0)
+        self.assertEqual(_review_limit("balanced"), 1)
+        self.assertEqual(_review_limit("quality"), 3)
 
     def test_ollama_provider_handles_missing_stdout_and_uses_utf8(self):
         from unittest.mock import Mock, patch

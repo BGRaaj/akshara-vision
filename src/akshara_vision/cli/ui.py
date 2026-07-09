@@ -323,6 +323,12 @@ class MonoUI:
     def progress(self, title: str, total: int = 0):
         return ProgressReporter(self, title, total)
 
+    def controls_hint(self) -> str:
+        width = self.width()
+        if width < 76:
+            return "Ctrl+C safe stop | /help after task"
+        return "Ctrl+C safe stop | active request finishes cleanly | /help after task"
+
     def _print_colored(self, message: str, style: str) -> None:
         if self.console:
             if self.theme == "light":
@@ -352,6 +358,7 @@ class ProgressReporter:
             if self.total > 0:
                 columns.append(BarColumn())
             columns.append(TimeElapsedColumn())
+            columns.append(TextColumn("  " + self.ui.controls_hint()))
             self._progress = Progress(
                 *columns,
                 console=self.ui.console,
@@ -361,6 +368,7 @@ class ProgressReporter:
             self._task = self._progress.add_task(self.title, total=self.total or None)
         else:
             self.ui.section(self.title)
+            self.ui.note(self.ui.controls_hint())
         return self
 
     def update(self, message: str, advance: int = 0) -> None:

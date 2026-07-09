@@ -30,9 +30,9 @@ Execution modes:
 
 | Mode | Tradeoff |
 | --- | --- |
-| `fast` | 300 DPI, shorter prompt, heuristic figure crops |
-| `balanced` | 400 DPI, default prompt, verifies first figure crop |
-| `quality` | 500 DPI, more careful prompt, verifies figure crops |
+| `fast` | 300 DPI, shorter prompt, no restoration retries |
+| `balanced` | 400 DPI, default prompt, one informed retry |
+| `quality` | 500 DPI, careful prompt, up to three retries |
 
 The run uses chunked restoration for long raw text inputs, so it is processed in
 smaller model batches instead of one large prompt. Progress is timer-based and indeterminate;
@@ -57,8 +57,9 @@ backoff and records failures in the run state instead of corrupting the final
 output. In batch runs, a failed input is written as a failed item and later
 inputs continue.
 
-Set `AKSHARA_PROVIDER_RETRIES` if a slow cloud provider needs more retries. The
-default is `3`; the accepted range is `0` to `10`.
+Retry depth follows the selected execution mode. `fast` makes one attempt and
+moves on, `balanced` allows one informed retry, and `quality` allows up to
+three retries for malformed or transiently failed responses.
 
 For image and PDF vision runs, each image or rendered page is sent as its own
 model request. PDFs are rendered one page at a time, so large books start

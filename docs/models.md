@@ -143,9 +143,9 @@ artificially cap them. Suggested starting points:
 
 | Mode | Suggested starting point |
 | --- | --- |
-| `fast` | 8k context, 4k output |
-| `balanced` | 16k context, 8k output |
-| `quality` | 32k context, 12k output |
+| `fast` | Smaller context/output values for throughput; no restoration retries |
+| `balanced` | Moderate context/output values; one informed retry |
+| `quality` | Larger context/output values for hard pages; up to three retries |
 
 Very large `num_ctx` or `num_predict` values can push local models out of VRAM
 and slow a run dramatically, so tune these based on your hardware. If a page

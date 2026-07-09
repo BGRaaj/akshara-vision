@@ -280,6 +280,37 @@ class CliFallbackTests(unittest.TestCase):
             self.assertTrue(called["run"])
             self.assertFalse(called["combine"])
 
+    def test_resume_command_prompts_for_timeout_when_interactive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / "run"
+            run_dir.mkdir()
+            source = root / "source.txt"
+            source.write_text("Hello", encoding="utf-8")
+            (run_dir / "run_state.json").write_text(
+                json.dumps(
+                    {
+                        "status": "running",
+                        "total_inputs": 1,
+                        "profile": {"output_formats": ["txt"], "output_dir": str(root)},
+                        "completed_inputs": [],
+                        "input_paths": [str(source)],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch("akshara_vision.cli.workflows.ui.interactive", return_value=True):
+                with patch("akshara_vision.cli.workflows.ui.confirm", return_value=True):
+                    with patch("akshara_vision.cli.workflows.ui.choose", return_value="skip after 10 minutes"):
+                        with patch(
+                            "akshara_vision.cli.workflows._run_with_progress",
+                            return_value={"run_dir": run_dir, "exports": [], "manifest": {}},
+                        ) as run_mock:
+                            with redirect_stdout(io.StringIO()):
+                                resume_command(str(run_dir))
+            request = run_mock.call_args.args[0]
+            self.assertEqual(request.profile.model.request_timeout_seconds, 600)
+
     def test_resume_command_uses_sources_fallback_when_original_inputs_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp) / "run"

@@ -367,9 +367,9 @@ A profile stores:
 
 | Mode | Behavior |
 | --- | --- |
-| `fast` | 300 DPI PDF rendering, shorter prompt, heuristic figure crops |
-| `balanced` | 400 DPI PDF rendering, default prompt, verifies first figure crop |
-| `quality` | 500 DPI PDF rendering, more careful prompt, verifies figure crops |
+| `fast` | 300 DPI PDF rendering, shorter prompt, no restoration retries |
+| `balanced` | 400 DPI PDF rendering, default prompt, one informed retry |
+| `quality` | 500 DPI PDF rendering, careful prompt, up to three retries |
 
 Profile context and generation limits are passed through to compatible backends.
 The CLI offers suggested values, but does not artificially cap them. If a model
