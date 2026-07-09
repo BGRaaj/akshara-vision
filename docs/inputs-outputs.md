@@ -166,9 +166,12 @@ are tagged with visible labels, legend text, axis text, and candidate series
 when the source makes them clear; Akshara does not invent hidden numeric data.
 
 Use `akv compare path/to/run-folder` when you want a browser-friendly
-side-by-side report of source material and generated output. It is useful for
-checking whether image crops, PDF composition, and export layout still match
-the original page flow.
+side-by-side report of source material and generated output. PDF and multi-image
+runs are expanded into page/image cards, so the left panel shows one source page
+and the right panel shows only that page's restored output and assets. Each
+panel scrolls independently so long pages stay bounded to a fixed review frame.
+It is useful for checking whether image crops, PDF composition, and export
+layout still match the original page flow.
 
 For long runs, progress updates show token usage after each completed page,
 image, text chunk, or translation chunk when the provider reports usage. The

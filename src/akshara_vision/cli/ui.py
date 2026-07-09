@@ -161,14 +161,23 @@ class MonoUI:
         self.write(f"  {message}")
 
     def stream(self, message: str, pause: float = 0.0) -> None:
-        parts = [part for part in re.split(r"(\n\n+|\n)", str(message)) if part]
+        parts = [part for part in re.split(r"(\n\n+|\n|(?<=[.!?])\s+)", str(message)) if part]
         if not parts:
             self.write("")
             return
         for part in parts:
-            self.write(part)
-            if pause > 0:
+            if self.console:
+                self.console.print(part, style=self.style(), markup=False, highlight=False, end="")
+            else:
+                sys.stdout.write(part)
+                sys.stdout.flush()
+            if pause > 0 and part.strip():
                 time.sleep(pause)
+        if self.console:
+            self.console.print()
+        else:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
 
     def table(self, rows: Iterable[Iterable[str]]) -> None:
         materialized = [list(row) for row in rows]

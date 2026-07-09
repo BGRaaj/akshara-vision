@@ -976,6 +976,25 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(load_chat_notes(path), ["Prefer page 12", "Use source S3"])
             self.assertEqual(load_chat_metadata(path), {"title": "Saved chat", "mode": "general"})
 
+    def test_ui_stream_reveals_text_in_chunks(self):
+        from akshara_vision.cli.ui import MonoUI
+
+        class DummyConsole:
+            def __init__(self):
+                self.calls = []
+
+            def print(self, *args, **kwargs):
+                self.calls.append((args, kwargs))
+
+        ui = MonoUI()
+        dummy = DummyConsole()
+        ui.console = dummy
+        ui.stream("One sentence. Two sentence.", pause=0.0)
+        emitted = [str(args[0]) for args, _kwargs in dummy.calls if args]
+        self.assertGreaterEqual(len(emitted), 2)
+        self.assertIn("One sentence.", emitted[0])
+        self.assertIn("Two sentence.", "".join(emitted))
+
     def test_chat_tools_where_cite_scope_and_remember(self):
         from akshara_vision.cli.workflows import _handle_chat_tool
         from akshara_vision.core.chat import ChatBundle, ChatSource
@@ -1131,6 +1150,226 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(report_text.count('<section class="compare-card">'), 1)
             self.assertIn("<img", report_text)
             self.assertIn("Restored text", report_text)
+
+    def test_compare_command_expands_pdf_pages_from_manifest(self):
+        from akshara_vision.cli.workflows import compare_command
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            source_dir = run_dir / "sources"
+            item_dir = run_dir / "items" / "0001-book-pdf"
+            source_dir.mkdir(parents=True)
+            item_dir.mkdir(parents=True)
+            source_pdf = source_dir / "book.pdf"
+            source_pdf.write_bytes(b"%PDF fake")
+            (item_dir / "final__english.txt").write_text(
+                "Page one text\n\nPage two text\n",
+                encoding="utf-8",
+            )
+            (run_dir / "run_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "metadata": {
+                            "title": "Page Compare",
+                            "restoration": [
+                                {
+                                    "source": str(source_pdf),
+                                    "label": "book.pdf",
+                                    "chunks": [
+                                        {
+                                            "index": 1,
+                                            "restored_text": "Page one text",
+                                            "status": "restored",
+                                            "native_layout": {
+                                                "blocks": [
+                                                    {
+                                                        "role": "title-region",
+                                                        "relative_bbox": [0.1, 0.1, 0.9, 0.2],
+                                                        "confidence": 0.9,
+                                                    }
+                                                ]
+                                            },
+                                        },
+                                        {
+                                            "index": 2,
+                                            "restored_text": "Page two text",
+                                            "status": "restored",
+                                            "native_layout": {
+                                                "blocks": [
+                                                    {
+                                                        "role": "text-region",
+                                                        "relative_bbox": [0.1, 0.25, 0.9, 0.8],
+                                                        "confidence": 0.8,
+                                                    }
+                                                ]
+                                            },
+                                        },
+                                    ],
+                                }
+                            ],
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            with patch("akshara_vision.cli.workflows._pdf_page_preview_html") as preview:
+                preview.side_effect = lambda _path, page: (
+                    f'<figure class="preview-image"><img src="page-{page}.png" alt="" /></figure>'
+                )
+                with patch("akshara_vision.cli.workflows.ui.heading"):
+                    with patch("akshara_vision.cli.workflows.ui.section"):
+                        with patch("akshara_vision.cli.workflows.ui.status"):
+                            with patch("akshara_vision.cli.workflows._next_recommendations"):
+                                report = compare_command(str(run_dir))
+            self.assertTrue(report.exists())
+            report_text = report.read_text(encoding="utf-8")
+            self.assertEqual(report_text.count('<section class="compare-card">'), 2)
+            self.assertIn("book.pdf · page 1 / 2", report_text)
+            self.assertIn("book.pdf · page 2 / 2", report_text)
+            self.assertIn("page-1.png", report_text)
+            self.assertIn("page-2.png", report_text)
+            self.assertIn("Page one text", report_text)
+            self.assertIn("Page two text", report_text)
+
+    def test_compare_command_prefers_cached_pdf_page_images(self):
+        from akshara_vision.cli.workflows import compare_command
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            source_dir = run_dir / "sources"
+            item_dir = run_dir / "items" / "0001-book-pdf"
+            page_cache = run_dir / "stages" / "rendered_pages" / "0001-book-pdf"
+            source_dir.mkdir(parents=True)
+            item_dir.mkdir(parents=True)
+            page_cache.mkdir(parents=True)
+            source_pdf = source_dir / "book.pdf"
+            source_pdf.write_bytes(b"%PDF fake")
+            cached_page = page_cache / "page-0001.png"
+            cached_page.write_bytes(b"fake-image")
+            (item_dir / "final__english.txt").write_text("Page one text\n", encoding="utf-8")
+            (run_dir / "run_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "metadata": {
+                            "title": "Page Compare",
+                            "restoration": [
+                                {
+                                    "source": str(source_pdf),
+                                    "label": "book.pdf",
+                                    "media_path": str(cached_page),
+                                    "chunks": [
+                                        {
+                                            "index": 1,
+                                            "restored_text": "Page one text",
+                                            "status": "restored",
+                                            "media_path": str(cached_page),
+                                            "native_layout": {
+                                                "blocks": [
+                                                    {
+                                                        "role": "text-region",
+                                                        "relative_bbox": [0.1, 0.25, 0.9, 0.8],
+                                                        "confidence": 0.8,
+                                                    }
+                                                ]
+                                            },
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            with patch("akshara_vision.cli.workflows._pdf_page_preview_html") as preview:
+                with patch("akshara_vision.cli.workflows.ui.heading"):
+                    with patch("akshara_vision.cli.workflows.ui.section"):
+                        with patch("akshara_vision.cli.workflows.ui.status"):
+                            with patch("akshara_vision.cli.workflows._next_recommendations"):
+                                report = compare_command(str(run_dir))
+            self.assertTrue(report.exists())
+            self.assertFalse(preview.called)
+            report_text = report.read_text(encoding="utf-8")
+            self.assertIn("page-0001.png", report_text)
+
+    def test_compare_command_copies_external_image_sources_into_run_cache(self):
+        from akshara_vision.cli.workflows import compare_command
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / "run"
+            source_dir = root / "external"
+            item_dir = run_dir / "items" / "0001-picture"
+            source_dir.mkdir(parents=True)
+            item_dir.mkdir(parents=True)
+            source_img = source_dir / "scan.png"
+            source_img.write_bytes(b"fake-image")
+            (item_dir / "final__english.txt").write_text("Caption text\n", encoding="utf-8")
+            (run_dir / "run_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "metadata": {
+                            "title": "Compare Image",
+                            "restoration": [
+                                {
+                                    "source": str(source_img),
+                                    "label": "scan.png",
+                                    "media_path": str(source_img),
+                                    "chunks": [
+                                        {
+                                            "index": 1,
+                                            "restored_text": "Caption text",
+                                            "status": "restored",
+                                            "media_path": str(source_img),
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            with patch("akshara_vision.cli.workflows.ui.heading"):
+                with patch("akshara_vision.cli.workflows.ui.section"):
+                    with patch("akshara_vision.cli.workflows.ui.status"):
+                        with patch("akshara_vision.cli.workflows._next_recommendations"):
+                            report = compare_command(str(run_dir))
+            self.assertTrue(report.exists())
+            cached = run_dir / "stages" / "compare_previews"
+            self.assertTrue(any(cached.rglob("scan.png")))
+            report_text = report.read_text(encoding="utf-8")
+            self.assertIn("compare_previews", report_text)
+
+    def test_pdf_page_cache_normalizes_batch_rendered_pages(self):
+        from akshara_vision.core.pipeline import _render_pdf_pages_cache
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdf_path = root / "book.pdf"
+            pdf_path.write_bytes(b"%PDF fake")
+            cache_dir = root / "cache"
+            cache_dir.mkdir()
+
+            def fake_run(command, **kwargs):
+                (cache_dir / "page-1.png").write_bytes(b"one")
+                (cache_dir / "page-2.png").write_bytes(b"two")
+
+                class Result:
+                    returncode = 0
+
+                return Result()
+
+            with patch("akshara_vision.core.pipeline.subprocess.run", side_effect=fake_run):
+                rendered = _render_pdf_pages_cache("pdftoppm", pdf_path, cache_dir, 2, 300)
+
+            self.assertIn(1, rendered)
+            self.assertIn(2, rendered)
+            self.assertTrue((cache_dir / "page-0001.png").exists())
+            self.assertTrue((cache_dir / "page-0002.png").exists())
 
     def test_compare_command_accepts_compiled_output_path(self):
         from akshara_vision.cli.workflows import compare_command

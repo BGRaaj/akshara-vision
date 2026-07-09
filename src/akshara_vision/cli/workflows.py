@@ -1215,7 +1215,8 @@ def chat_command(
                 )
                 reporter.finish("Complete")
         ui.section("Answer")
-        ui.stream(answer or "[no answer]", pause=0.0)
+        stream_pause = 0.012 if len(answer or "") <= 1200 else 0.006
+        ui.stream(answer or "[no answer]", pause=stream_pause)
         if selected_sources:
             ui.section("Sources")
             ui.bullet_list(
@@ -1739,7 +1740,7 @@ def compare_command(run_dir: Optional[str] = None):
         return None
     metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
     with ui.progress("Preparing comparison previews...") as reporter:
-        comparisons = _compare_views(path, metadata)
+        comparisons = _build_compare_index(path, metadata)
         reporter.finish(f"Prepared {len(comparisons)} comparison preview(s)")
     if not comparisons:
         ui.status("warning", "No comparable source/output pairs were found.")
@@ -1752,6 +1753,10 @@ def compare_command(run_dir: Optional[str] = None):
     ui.status("success", f"Saved compare report: {report_path}")
     _next_recommendations(_next_steps_for_context("compare", run_dir=path))
     return report_path
+
+
+def _build_compare_index(run_dir: Path, metadata: Dict[str, object]) -> List[Dict[str, object]]:
+    return _compare_views(run_dir, metadata)
 
 
 def _resolve_compare_run_dir(path: Path) -> Optional[Path]:
@@ -1962,20 +1967,38 @@ def _layout_review_markdown(
 def _compare_views(run_dir: Path, metadata: Dict[str, object]) -> List[Dict[str, object]]:
     items_root = run_dir / "items"
     sources_root = run_dir / "sources"
+    restoration = metadata.get("restoration") if isinstance(metadata.get("restoration"), list) else []
+    manifest_comparisons = _compare_views_from_manifest(run_dir, items_root, sources_root, restoration)
+    if manifest_comparisons:
+        return manifest_comparisons
     if not items_root.exists():
         return []
-    restoration = metadata.get("restoration") if isinstance(metadata.get("restoration"), list) else []
     output_files = _preferred_compare_outputs(items_root)
     comparisons: List[Dict[str, object]] = []
     for index, output_path in enumerate(output_files, start=1):
         item_dir = output_path.parent
         source_path = _match_source_path(items_root, sources_root, item_dir)
+        cache_key = item_dir.name
         record = restoration[index - 1] if index - 1 < len(restoration) else {}
         assets = _compare_assets(record)
         layout_tree = _compare_layout_nodes(record, index, metadata)
         page_number = _compare_page_number(item_dir, record, index)
-        source_html = _source_preview_html(source_path, run_dir, page_number=page_number)
-        layout_html = _compare_layout_overlay_html(source_path, layout_tree, run_dir, page_number=page_number)
+        media_path = _record_media_path(record)
+        source_html = _source_preview_html(
+            source_path,
+            run_dir,
+            page_number=page_number,
+            media_path=media_path,
+            cache_key=cache_key,
+        )
+        layout_html = _compare_layout_overlay_html(
+            source_path,
+            layout_tree,
+            run_dir,
+            page_number=page_number,
+            media_path=media_path,
+            cache_key=cache_key,
+        )
         if layout_html:
             source_html = layout_html
         comparisons.append(
@@ -1984,12 +2007,171 @@ def _compare_views(run_dir: Path, metadata: Dict[str, object]) -> List[Dict[str,
                 "source_path": source_path,
                 "source_html": source_html,
                 "output_path": output_path,
-                "output_html": _output_preview_html(output_path, run_dir, page_number=page_number),
+                "output_html": _output_preview_html(
+                    output_path, run_dir, page_number=page_number, cache_key=cache_key
+                ),
                 "layout_html": layout_html,
                 "assets_html": _compare_assets_html(assets, run_dir),
             }
         )
     return comparisons
+
+
+def _compare_views_from_manifest(
+    run_dir: Path,
+    items_root: Path,
+    sources_root: Path,
+    restoration: List[object],
+) -> List[Dict[str, object]]:
+    comparisons: List[Dict[str, object]] = []
+    for source_index, record in enumerate(restoration, start=1):
+        if not isinstance(record, dict):
+            continue
+        chunks = record.get("chunks") if isinstance(record.get("chunks"), list) else []
+        if not chunks:
+            continue
+        label = str(record.get("label") or record.get("source") or f"source-{source_index}")
+        item_dir = _record_item_dir(items_root, source_index, label)
+        source_path = _source_path_for_record(record, run_dir, sources_root, item_dir)
+        cache_key = item_dir.name if item_dir is not None else label
+        multi_page = len(chunks) > 1 or (source_path is not None and source_path.suffix.lower() == ".pdf")
+        for fallback_page, chunk in enumerate(chunks, start=1):
+            if not isinstance(chunk, dict):
+                continue
+            page_number = _chunk_page_number(chunk, fallback_page)
+            if not multi_page and not _chunk_has_compare_material(chunk):
+                continue
+            chunk_label = f"{label} · page {page_number}"
+            if multi_page:
+                chunk_label += f" / {len(chunks)}"
+            layout_tree = [_compare_layout_node_from_chunk(chunk, page_number)]
+            media_path = _record_media_path(record) or str(chunk.get("media_path") or "").strip()
+            source_html = _source_preview_html(
+                source_path,
+                run_dir,
+                page_number=page_number,
+                media_path=media_path,
+                cache_key=cache_key,
+            )
+            layout_html = _compare_layout_overlay_html(
+                source_path,
+                layout_tree,
+                run_dir,
+                page_number=page_number,
+                media_path=media_path,
+                cache_key=cache_key,
+            )
+            if layout_html:
+                source_html = layout_html
+            comparisons.append(
+                {
+                    "label": chunk_label,
+                    "source_path": source_path,
+                    "source_html": source_html,
+                    "output_path": None,
+                    "output_html": _chunk_output_preview_html(chunk),
+                    "layout_html": layout_html,
+                    "assets_html": _compare_assets_html(_chunk_assets(chunk), run_dir),
+                }
+            )
+    return comparisons
+
+
+def _record_item_dir(items_root: Path, source_index: int, label: str) -> Optional[Path]:
+    if not items_root.exists():
+        return None
+    prefix = f"{source_index:04d}-"
+    direct = sorted(path for path in items_root.rglob(f"{prefix}*") if path.is_dir())
+    if direct:
+        return direct[0]
+    label_stem = Path(str(label).replace("\\", "/")).stem.lower()
+    if label_stem:
+        matching = sorted(
+            path for path in items_root.rglob("*") if path.is_dir() and label_stem in path.name.lower()
+        )
+        if matching:
+            return matching[0]
+    return None
+
+
+def _source_path_for_record(
+    record: Dict[str, object],
+    run_dir: Path,
+    sources_root: Path,
+    item_dir: Optional[Path],
+) -> Optional[Path]:
+    source = str(record.get("source") or "").strip()
+    if source:
+        candidate = Path(source).expanduser()
+        if candidate.exists():
+            return candidate
+    if item_dir is not None:
+        matched = _match_source_path(run_dir / "items", sources_root, item_dir)
+        if matched is not None:
+            return matched
+    label = str(record.get("label") or source or "").strip()
+    label_stem = Path(label.replace("\\", "/")).stem.lower()
+    candidates = sorted(path for path in sources_root.rglob("*") if path.is_file()) if sources_root.exists() else []
+    if label_stem:
+        for candidate in candidates:
+            if label_stem in candidate.stem.lower():
+                return candidate
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _chunk_page_number(chunk: Dict[str, object], fallback: int) -> int:
+    for key in ("page_number", "page", "index"):
+        value = chunk.get(key)
+        if value not in (None, "", []):
+            try:
+                return int(str(value).strip())
+            except (TypeError, ValueError):
+                continue
+    return fallback
+
+
+def _chunk_has_compare_material(chunk: Dict[str, object]) -> bool:
+    return bool(
+        str(chunk.get("restored_text") or "").strip()
+        or chunk.get("assets")
+        or chunk.get("native_layout")
+    )
+
+
+def _compare_layout_node_from_chunk(chunk: Dict[str, object], page_number: int) -> Dict[str, object]:
+    native = chunk.get("native_layout") if isinstance(chunk.get("native_layout"), dict) else {}
+    return {
+        "reading_order": page_number,
+        "page_number": page_number,
+        "role": str(chunk.get("role") or chunk.get("status") or "body"),
+        "native_layout": native,
+    }
+
+
+def _chunk_assets(chunk: Dict[str, object]) -> List[Dict[str, object]]:
+    assets = chunk.get("assets") if isinstance(chunk.get("assets"), list) else []
+    return [asset for asset in assets if isinstance(asset, dict)]
+
+
+def _chunk_output_preview_html(chunk: Dict[str, object]) -> str:
+    text = str(
+        chunk.get("translated_text")
+        or chunk.get("final_text")
+        or chunk.get("restored_text")
+        or ""
+    ).strip()
+    if not text:
+        reason = str(chunk.get("failure_reason") or chunk.get("status") or "blank page").strip()
+        return f'<p class="missing">{html.escape(reason or "blank page")}</p>'
+    role = str(chunk.get("role") or chunk.get("status") or "body").replace("-", " ").title()
+    status = str(chunk.get("status") or "").strip()
+    meta = " · ".join(part for part in [role, status] if part)
+    return (
+        '<article class="page-output">'
+        f'<div class="page-output-meta">{html.escape(meta)}</div>'
+        f'<pre>{html.escape(text)}</pre>'
+        "</article>"
+    )
 
 
 def _preferred_compare_outputs(items_root: Path) -> List[Path]:
@@ -2084,6 +2266,22 @@ def _compare_assets(record: object) -> List[Dict[str, object]]:
     return assets
 
 
+def _record_media_path(record: object) -> str:
+    if not isinstance(record, dict):
+        return ""
+    media_path = str(record.get("media_path") or record.get("image_path") or "").strip()
+    if media_path:
+        return media_path
+    chunks = record.get("chunks") if isinstance(record.get("chunks"), list) else []
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        chunk_media = str(chunk.get("media_path") or chunk.get("image_path") or "").strip()
+        if chunk_media:
+            return chunk_media
+    return ""
+
+
 def _compare_layout_nodes(
     record: object, index: int, metadata: Dict[str, object]
 ) -> List[Dict[str, object]]:
@@ -2125,21 +2323,44 @@ def _compare_layout_nodes(
     return nodes
 
 
-def _source_preview_html(source_path: Optional[Path], run_dir: Path, page_number: Optional[int] = None) -> str:
+def _source_preview_html(
+    source_path: Optional[Path],
+    run_dir: Path,
+    page_number: Optional[int] = None,
+    media_path: Optional[str] = None,
+    cache_key: Optional[str] = None,
+) -> str:
     if source_path is None:
         return '<p class="missing">Source file not found.</p>'
+    suffix = source_path.suffix.lower()
+    preview_path = _compare_visual_preview_path(
+        source_path,
+        run_dir,
+        media_path=media_path,
+        page_number=page_number,
+        cache_key=cache_key,
+    )
+    if preview_path is not None:
+        try:
+            rel = preview_path.resolve().relative_to(run_dir.resolve())
+        except Exception:
+            rel = preview_path.name
+        return f'<figure class="preview-image"><img src="{html.escape(str(rel), quote=True)}" alt="" /></figure>'
     try:
         rel = source_path.resolve().relative_to(run_dir.resolve())
     except Exception:
         rel = source_path.name
-    suffix = source_path.suffix.lower()
     if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
         return (
             f'<figure class="preview-image"><img src="{html.escape(str(rel), quote=True)}" '
             f'alt="" /></figure>'
         )
     if suffix == ".pdf":
-        if page_number and (preview := _pdf_page_preview_html(source_path, page_number)):
+        if page_number and (
+            preview := _cached_pdf_page_preview_html(
+                source_path, run_dir, page_number, media_path, cache_key=cache_key
+            )
+        ):
             return preview
         return (
             f'<object data="{html.escape(str(rel), quote=True)}" type="application/pdf" '
@@ -2161,7 +2382,12 @@ def _source_preview_html(source_path: Optional[Path], run_dir: Path, page_number
     return f'<p class="missing">{html.escape(source_path.name)}</p>'
 
 
-def _output_preview_html(output_path: Path, run_dir: Path, page_number: Optional[int] = None) -> str:
+def _output_preview_html(
+    output_path: Path,
+    run_dir: Path,
+    page_number: Optional[int] = None,
+    cache_key: Optional[str] = None,
+) -> str:
     try:
         rel = output_path.resolve().relative_to(run_dir.resolve())
     except Exception:
@@ -2173,7 +2399,11 @@ def _output_preview_html(output_path: Path, run_dir: Path, page_number: Optional
             f'alt="" /></figure>'
         )
     if suffix == ".pdf":
-        if page_number and (preview := _pdf_page_preview_html(output_path, page_number)):
+        if page_number and (
+            preview := _cached_pdf_page_preview_html(
+                output_path, run_dir, page_number, cache_key=cache_key
+            )
+        ):
             return preview
         return (
             f'<object data="{html.escape(str(rel), quote=True)}" type="application/pdf" '
@@ -2214,13 +2444,34 @@ def _compare_layout_overlay_html(
     layout_tree: List[object],
     run_dir: Path,
     page_number: Optional[int] = None,
+    media_path: Optional[str] = None,
+    cache_key: Optional[str] = None,
 ) -> str:
     if source_path is None:
         return ""
     blocks = _compare_layout_blocks(layout_tree)
     if not blocks:
         return ""
-    image_src = _compare_image_src(source_path, run_dir, page_number=page_number)
+    preview_path = _compare_visual_preview_path(
+        source_path,
+        run_dir,
+        media_path=media_path,
+        page_number=page_number,
+        cache_key=cache_key,
+    )
+    if preview_path is None:
+        image_src = _compare_image_src(
+            source_path,
+            run_dir,
+            page_number=page_number,
+            media_path=media_path,
+            cache_key=cache_key,
+        )
+    else:
+        try:
+            image_src = html.escape(str(preview_path.resolve().relative_to(run_dir.resolve())), quote=True)
+        except Exception:
+            image_src = html.escape(preview_path.name, quote=True)
     if not image_src:
         return ""
     overlay = []
@@ -2241,7 +2492,27 @@ def _compare_layout_overlay_html(
     )
 
 
-def _compare_image_src(source_path: Path, run_dir: Path, page_number: Optional[int] = None) -> str:
+def _compare_image_src(
+    source_path: Path,
+    run_dir: Path,
+    page_number: Optional[int] = None,
+    media_path: Optional[str] = None,
+    cache_key: Optional[str] = None,
+) -> str:
+    if media_path:
+        preview = _compare_visual_preview_path(
+            source_path,
+            run_dir,
+            media_path=media_path,
+            page_number=page_number,
+            cache_key=cache_key,
+        )
+        if preview is not None:
+            try:
+                rel = preview.resolve().relative_to(run_dir.resolve())
+            except Exception:
+                rel = preview.name
+            return html.escape(str(rel), quote=True)
     suffix = source_path.suffix.lower()
     if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
         try:
@@ -2250,12 +2521,126 @@ def _compare_image_src(source_path: Path, run_dir: Path, page_number: Optional[i
             rel = source_path.name
         return html.escape(str(rel), quote=True)
     if suffix == ".pdf" and page_number:
-        preview = _pdf_page_preview_html(source_path, page_number)
+        preview = _cached_pdf_page_preview_html(
+            source_path, run_dir, page_number, media_path, cache_key=cache_key
+        )
         if preview:
             match = re.search(r'src="([^"]+)"', preview)
             if match:
                 return match.group(1)
     return ""
+
+
+def _cached_pdf_page_preview_html(
+    path: Path,
+    run_dir: Path,
+    page_number: int,
+    media_path: Optional[str] = None,
+    cache_key: Optional[str] = None,
+) -> str:
+    if media_path:
+        media = Path(media_path).expanduser()
+        if media.exists():
+            try:
+                rel = media.resolve().relative_to(run_dir.resolve())
+            except Exception:
+                rel = media.name
+            return f'<figure class="preview-image"><img src="{html.escape(str(rel), quote=True)}" alt="" /></figure>'
+    cache_root = run_dir / "stages" / "rendered_pages"
+    if cache_root.exists():
+        candidates = []
+        if cache_key:
+            direct = cache_root / cache_key / f"page-{page_number:04d}.png"
+            if direct.exists():
+                candidates.append(direct)
+        if not candidates:
+            page_slug = f"page-{page_number:04d}.png"
+            stem = _slugify(path.stem)
+            label = _slugify(path.name)
+            candidates = sorted(
+                candidate
+                for candidate in cache_root.rglob(page_slug)
+                if candidate.is_file()
+                and (
+                    stem in candidate.parent.name.lower()
+                    or label in candidate.parent.name.lower()
+                    or candidate.parent.name.lower().startswith("page")
+                )
+            )
+        if candidates:
+            candidate = candidates[0]
+            try:
+                rel = candidate.resolve().relative_to(run_dir.resolve())
+            except Exception:
+                rel = candidate.name
+            return f'<figure class="preview-image"><img src="{html.escape(str(rel), quote=True)}" alt="" /></figure>'
+    preview = _pdf_page_preview_html(path, page_number)
+    return preview
+
+
+def _compare_visual_preview_path(
+    source_path: Optional[Path],
+    run_dir: Path,
+    media_path: Optional[str] = None,
+    page_number: Optional[int] = None,
+    cache_key: Optional[str] = None,
+) -> Optional[Path]:
+    image_suffixes = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
+    compare_root = run_dir / "stages" / "compare_previews"
+    def safe_key(value: object) -> str:
+        text = re.sub(r"[^a-zA-Z0-9]+", "-", str(value or "").strip().lower())
+        text = re.sub(r"-+", "-", text).strip("-")
+        return text or "item"
+
+    if media_path:
+        media = Path(media_path).expanduser()
+        if media.exists() and media.suffix.lower() in image_suffixes:
+            try:
+                media.resolve().relative_to(run_dir.resolve())
+                return media.resolve()
+            except Exception:
+                target_dir = compare_root / safe_key(cache_key or (source_path.stem if source_path else media.stem))
+                target_dir.mkdir(parents=True, exist_ok=True)
+                target = target_dir / media.name
+                if not target.exists():
+                    try:
+                        shutil.copy2(media, target)
+                    except OSError:
+                        return None
+                return target
+    if source_path is None:
+        return None
+    if source_path.suffix.lower() in image_suffixes and source_path.exists():
+        try:
+            if source_path.is_relative_to(run_dir):
+                return source_path.resolve()
+        except AttributeError:
+            try:
+                source_path.resolve().relative_to(run_dir.resolve())
+                return source_path.resolve()
+            except Exception:
+                pass
+        safe_key_value = safe_key(cache_key or source_path.stem)
+        target_dir = compare_root / safe_key_value
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / source_path.name
+        if not target.exists():
+            try:
+                shutil.copy2(source_path, target)
+            except OSError:
+                return None
+        return target
+    if source_path.suffix.lower() == ".pdf" and page_number is not None:
+        cache_root = run_dir / "stages" / "rendered_pages"
+        if cache_root.exists():
+            if cache_key:
+                direct = cache_root / cache_key / f"page-{page_number:04d}.png"
+                if direct.exists():
+                    return direct
+            matches = sorted(cache_root.rglob(f"page-{page_number:04d}.png"))
+            if matches:
+                return matches[0]
+    return None
 
 
 def _pdf_page_preview_html(path: Path, page_number: int) -> str:
@@ -2390,10 +2775,12 @@ def _compare_review_html(run_dir: Path, metadata: Dict[str, object], comparisons
         ".summary{text-align:center;margin:0 0 2rem;}"
         ".compare-card{background:#fffdf9;border:1px solid #d9ccb7;margin:0 0 1.5rem;padding:1rem 1rem 1.25rem;break-inside:avoid;}"
         ".compare-card header h2{margin:0 0 1rem;font-size:1.2rem;}"
-        ".compare-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem;}"
-        ".panel{border:1px solid #e0d4c1;padding:0.85rem;background:#fff;min-width:0;}"
+        ".compare-grid{display:grid;grid-template-columns:minmax(280px,1fr) minmax(280px,1fr);gap:1rem;align-items:stretch;}"
+        ".panel{border:1px solid #e0d4c1;padding:0.85rem;background:#fff;min-width:0;height:clamp(420px,72vh,880px);overflow:auto;}"
         ".panel h3{margin:0 0 .75rem;font-size:1rem;text-transform:uppercase;letter-spacing:.04em;}"
         ".panel pre{white-space:pre-wrap;word-break:break-word;margin:0;font-size:.98rem;}"
+        ".page-output{border-left:4px solid #c77a24;padding-left:1rem;}"
+        ".page-output-meta{font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:#795431;margin:0 0 .65rem;}"
         ".preview-image img{max-width:100%;height:auto;display:block;margin:0 auto;}"
         ".preview-image{margin:0;}"
         ".overlay-figure{position:relative;margin:0;}"
@@ -2404,7 +2791,8 @@ def _compare_review_html(run_dir: Path, metadata: Dict[str, object], comparisons
         ".preview-frame,.preview-pdf{width:100%;min-height:520px;border:1px solid #d8cdbc;background:#fff;}"
         ".asset-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:.75rem;margin-top:.75rem;}"
         ".missing{opacity:.7;font-style:italic;}"
-        "@media print{body{background:#fff} .compare-card{break-inside:avoid; page-break-inside:avoid;} }"
+        "@media (max-width:850px){.compare-grid{grid-template-columns:1fr}.panel{height:auto;max-height:none}}"
+        "@media print{body{background:#fff} .compare-card{break-inside:avoid; page-break-inside:avoid;} .panel{height:auto;max-height:none;overflow:visible;} }"
         "</style>"
         "</head><body><main>"
         f"<h1>{title}</h1>"

@@ -33,7 +33,7 @@ model, provider, scan quality, script complexity, and document damage.
 | Chat | Grounded `akv chat` / `akv ask` mode over runs, outputs, raw files, or a single direct image with source citations, saved history, source search, source opening, and page-aware visual rechecks when indexed text is incomplete |
 | Assembly enrichment | Optional figure markers plus candidate figure crops with bounding boxes, page zones, relative positions, size, DPI, and placement metadata |
 | Review | `akv review` visual block-map preview, low-confidence block audit, and asset inspection for run folders |
-| Compare | `akv compare` side-by-side source/output browser report for run folders |
+| Compare | `akv compare` page-by-page source/output browser report with PDF/image previews and layout overlays |
 | Language handling | Per-run choice to preserve all readable detected languages/scripts or strictly extract only the declared source language |
 | Translation | Automatic final-pass translation when output language differs from source language; manual modes for translate, bilingual, transliterate, and metadata-only workflows |
 | Batch processing | Files, folders, recursive folders, globs, ZIP archives, CSV manifests, and JSON manifests |

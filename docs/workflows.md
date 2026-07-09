@@ -133,7 +133,9 @@ signals before final assembly.
 Use `akv compare path/to/run-folder` to open a browser-friendly before/after
 report. The compare view renders source pages and PDF pages as images whenever
 possible, then places the detected overlays on top so you can check whether
-placement, reading order, and figures still match the source material.
+placement, reading order, and figures still match the source material. Multi-page
+PDFs and multi-image runs are shown as page/image-specific cards, keeping each
+page's restored output beside its matching source preview.
 
 Dense pages and non-English scripts still depend heavily on the chosen vision
 model. Quality mode gives the model stronger page-order, region-by-region, and

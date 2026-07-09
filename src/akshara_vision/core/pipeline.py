@@ -228,12 +228,14 @@ class StageWriter:
         self.translated_dir = self.stages_dir / "translated"
         self.records_dir = self.stages_dir / "records"
         self.combined_dir = self.stages_dir / "combined"
+        self.rendered_pages_dir = self.stages_dir / "rendered_pages"
         self.items_dir = self.run_dir / "items"
         self.assets_dir = self.run_dir / "assets"
         self.restored_dir.mkdir(parents=True, exist_ok=True)
         self.translated_dir.mkdir(parents=True, exist_ok=True)
         self.records_dir.mkdir(parents=True, exist_ok=True)
         self.combined_dir.mkdir(parents=True, exist_ok=True)
+        self.rendered_pages_dir.mkdir(parents=True, exist_ok=True)
         self.items_dir.mkdir(parents=True, exist_ok=True)
 
     def write_raw_checkpoint(self, text: str) -> Path:
@@ -477,6 +479,11 @@ class StageWriter:
             "placement": _asset_placement(width, height),
             "layout": _asset_layout_metadata(bbox, page_size, width, height),
         }
+
+    def rendered_pdf_page_path(self, source_index: int, source_name: str, page_number: int) -> Path:
+        page_dir = self.rendered_pages_dir / f"{source_index:04d}-{_slugify(source_name)}"
+        page_dir.mkdir(parents=True, exist_ok=True)
+        return page_dir / f"page-{page_number:04d}.png"
 
     def _item_dir(self, source_index: int, source_name: str) -> Path:
         parts = _archive_label_parts(source_name)
@@ -4965,44 +4972,55 @@ def _restore_multimodal_pdf(
     dpi = EXECUTION_MODE_PDF_DPI.get(execution_mode, 300)
     page_count = _pdf_page_count(path)
     label = source_label or path.name
+    rendered_pages = _render_pdf_pages_cache(
+        pdftoppm_exe,
+        path,
+        artifacts.rendered_pdf_page_path(source_index, label, 1).parent,
+        page_count,
+        dpi,
+    )
 
-    temp_dir = tempfile.TemporaryDirectory(prefix="akshara-multimodal-pdf-")
-    try:
-        restored_pages = []
-        chunks_record = []
-        failed_pages = []
-        total_usage = {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "truncated": False,
-        }
+    restored_pages = []
+    chunks_record = []
+    failed_pages = []
+    total_usage = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "truncated": False,
+    }
 
-        page_numbers = range(1, page_count + 1) if page_count else _unknown_pdf_pages()
-        for idx in page_numbers:
-            total_label = str(page_count) if page_count else "?"
-            existing_piece = artifacts.restored_piece_path(source_index, label, idx)
-            if existing_piece.exists():
-                restored_text = existing_piece.read_text(encoding="utf-8", errors="replace").strip()
-                restored_pages.append(restored_text)
-                chunks_record.append(
-                    {
-                        "index": idx,
-                        "input": f"[PDF Page {idx}: {label}]",
-                        "restored_text": restored_text,
-                        "uncertain": [],
-                        "notes": "resumed from existing staged output",
-                        "status": "restored",
-                        "failure_reason": "",
-                    }
-                )
-                _notify(
-                    progress,
-                    "resume",
-                    f"Skipping completed {label} page {idx}/{total_label}",
-                    advance=1,
-                )
-                continue
+    page_numbers = range(1, page_count + 1) if page_count else _unknown_pdf_pages()
+    for idx in page_numbers:
+        total_label = str(page_count) if page_count else "?"
+        existing_piece = artifacts.restored_piece_path(source_index, label, idx)
+        if existing_piece.exists():
+            restored_text = existing_piece.read_text(encoding="utf-8", errors="replace").strip()
+            restored_pages.append(restored_text)
+            chunks_record.append(
+                {
+                    "index": idx,
+                    "input": f"[PDF Page {idx}: {label}]",
+                    "restored_text": restored_text,
+                    "uncertain": [],
+                    "notes": "resumed from existing staged output",
+                    "status": "restored",
+                    "failure_reason": "",
+                }
+            )
+            _notify(
+                progress,
+                "resume",
+                f"Skipping completed {label} page {idx}/{total_label}",
+                advance=1,
+            )
+            continue
+
+        page_img = artifacts.rendered_pdf_page_path(source_index, label, idx)
+        cached_render = rendered_pages.get(idx)
+        if cached_render and cached_render.exists():
+            page_img = cached_render
+        elif not page_img.exists():
             _notify(
                 progress,
                 "render",
@@ -5010,7 +5028,7 @@ def _restore_multimodal_pdf(
                 advance=1,
             )
             try:
-                page_img = _render_pdf_page(pdftoppm_exe, path, Path(temp_dir.name), idx, dpi)
+                page_img = _render_pdf_page(pdftoppm_exe, path, page_img.parent, idx, dpi)
             except RuntimeError:
                 if page_count or idx == 1:
                     raise
@@ -5020,28 +5038,128 @@ def _restore_multimodal_pdf(
                     raise RuntimeError(f"No image rendered for {label} page {idx}.")
                 break
 
-            page_assets = []
-            native_layout = _page_layout(page_img, profile)
-            if _figure_extraction_enabled(profile):
-                page_assets = _extract_figure_assets(
-                    artifacts,
-                    source_index,
-                    label,
-                    page_img,
-                    idx,
-                    dpi=dpi,
-                    provider=provider,
-                    profile=profile,
-                    progress=progress,
-                )
+        page_assets = []
+        native_layout = _page_layout(page_img, profile)
+        if _figure_extraction_enabled(profile):
+            page_assets = _extract_figure_assets(
+                artifacts,
+                source_index,
+                label,
+                page_img,
+                idx,
+                dpi=dpi,
+                provider=provider,
+                profile=profile,
+                progress=progress,
+            )
 
+        _notify(
+            progress,
+            "clean",
+            f"Restoring text from {label} page {idx}/{total_label}",
+            advance=1,
+        )
+        prompt = _task_text("", profile, consistency_state)
+        try:
+            result, usage = _restore_with_retry(
+                provider,
+                prompt,
+                instruction,
+                profile.model,
+                media_path=page_img,
+                progress=progress,
+            )
+            if usage:
+                total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
+                total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
+                total_usage["total_tokens"] += usage.get("total_tokens", 0)
+                if usage.get("truncated"):
+                    total_usage["truncated"] = True
+                _notify_usage(
+                    progress,
+                    f"Restored {label} page {idx}/{total_label}",
+                    usage,
+                    total_usage,
+                )
+            restored_text = _extract_multimodal_text(result)
+            failure_reason = ""
+            if not restored_text:
+                restored_text = ""
+                failure_reason = BLANK_PAGE_REASON
+            elif usage and usage.get("truncated"):
+                failure_reason = "model context or output limit reached"
+            review_note = ""
+            pre_review_text = ""
+            if restored_text:
+                restored_text, review_note, review_usage, pre_review_text = _maybe_review_restored_text(
+                    restored_text,
+                    profile,
+                    provider,
+                    instruction,
+                    progress,
+                    f"{label} page {idx}",
+                    consistency_state,
+                )
+                if review_usage:
+                    total_usage["prompt_tokens"] += review_usage.get("prompt_tokens", 0)
+                    total_usage["completion_tokens"] += review_usage.get("completion_tokens", 0)
+                    total_usage["total_tokens"] += review_usage.get("total_tokens", 0)
+                    if review_usage.get("truncated"):
+                        total_usage["truncated"] = True
+                    _notify_usage(
+                        progress,
+                        f"Reviewed {label} page {idx}/{total_label}",
+                        review_usage,
+                        total_usage,
+                    )
+            del result
+        except Exception as exc:
+            failed_pages.append((idx, page_img, prompt))
+            restored_text = ""
+            failure_reason = f"model generation failed: {exc}"
+            review_note = ""
+            pre_review_text = ""
+
+        _update_consistency_state(consistency_state, restored_text)
+        _write_consistency_checkpoint(
+            artifacts.run_dir, profile, consistency_state, f"{label} page {idx}"
+        )
+        restored_pages.append(restored_text)
+        artifacts.write_restored_piece(source_index, label, idx, restored_text + "\n")
+        chunk_record = {
+            "index": idx,
+            "input": f"[PDF Page {idx}: {label}]",
+            "restored_text": restored_text,
+            "uncertain": [],
+            "notes": review_note,
+            "status": _restoration_status(failure_reason),
+            "failure_reason": failure_reason,
+            "assets": page_assets,
+            "native_layout": native_layout,
+            "media_path": str(page_img),
+        }
+        if pre_review_text:
+            chunk_record["pre_review_text"] = pre_review_text
+        chunks_record.append(chunk_record)
+        artifacts.write_record_piece(source_index, label, idx, chunk_record, profile.document_type)
+        del restored_text
+        gc.collect()
+
+    # Retry failed pages at the end before combining
+    if failed_pages:
+        _notify(
+            progress,
+            "clean",
+            f"Retrying {len(failed_pages)} failed/stuck pages for {label}...",
+            advance=0,
+        )
+        for idx, page_img, prompt in failed_pages:
             _notify(
                 progress,
                 "clean",
-                f"Restoring text from {label} page {idx}/{total_label}",
-                advance=1,
+                f"Retrying restoration for {label} page {idx}...",
+                advance=0,
             )
-            prompt = _task_text("", profile, consistency_state)
             try:
                 result, usage = _restore_with_retry(
                     provider,
@@ -5059,7 +5177,7 @@ def _restore_multimodal_pdf(
                         total_usage["truncated"] = True
                     _notify_usage(
                         progress,
-                        f"Restored {label} page {idx}/{total_label}",
+                        f"Retried {label} page {idx}",
                         usage,
                         total_usage,
                     )
@@ -5090,152 +5208,103 @@ def _restore_multimodal_pdf(
                             total_usage["truncated"] = True
                         _notify_usage(
                             progress,
-                            f"Reviewed {label} page {idx}/{total_label}",
+                            f"Reviewed retry {label} page {idx}",
                             review_usage,
                             total_usage,
                         )
-                del result
-            except Exception as exc:
-                failed_pages.append((idx, page_img, prompt))
-                restored_text = ""
-                failure_reason = f"model generation failed: {exc}"
-                review_note = ""
-                pre_review_text = ""
 
-            _update_consistency_state(consistency_state, restored_text)
-            _write_consistency_checkpoint(
-                artifacts.run_dir, profile, consistency_state, f"{label} page {idx}"
-            )
-            restored_pages.append(restored_text)
-            artifacts.write_restored_piece(source_index, label, idx, restored_text + "\n")
-            chunk_record = {
-                "index": idx,
-                "input": f"[PDF Page {idx}: {label}]",
-                "restored_text": restored_text,
-                "uncertain": [],
-                "notes": review_note,
-                "status": _restoration_status(failure_reason),
-                "failure_reason": failure_reason,
-                "assets": page_assets,
-                "native_layout": native_layout,
-                "media_path": str(page_img),
-            }
-            if pre_review_text:
-                chunk_record["pre_review_text"] = pre_review_text
-            chunks_record.append(chunk_record)
-            artifacts.write_record_piece(source_index, label, idx, chunk_record, profile.document_type)
-            if idx not in [f[0] for f in failed_pages]:
-                try:
-                    page_img.unlink()
-                except OSError:
-                    pass
-            del restored_text
-            gc.collect()
+                restored_pages[idx - 1] = restored_text
+                for chunk in chunks_record:
+                    if chunk["index"] == idx:
+                        chunk["restored_text"] = restored_text
+                        chunk["status"] = _restoration_status(failure_reason)
+                        chunk["failure_reason"] = failure_reason
+                        chunk["notes"] = _join_notes(chunk.get("notes", ""), review_note)
+                        if pre_review_text:
+                            chunk["pre_review_text"] = pre_review_text
+                        artifacts.write_record_piece(source_index, label, idx, chunk, profile.document_type)
+                        break
+                artifacts.write_restored_piece(source_index, label, idx, restored_text + "\n")
+                del result, restored_text
+            except Exception:
+                pass
 
-        # Retry failed pages at the end before combining
-        if failed_pages:
-            _notify(
-                progress,
-                "clean",
-                f"Retrying {len(failed_pages)} failed/stuck pages for {label}...",
-                advance=0,
-            )
-            for idx, page_img, prompt in failed_pages:
-                _notify(
-                    progress,
-                    "clean",
-                    f"Retrying restoration for {label} page {idx}...",
-                    advance=0,
-                )
-                try:
-                    result, usage = _restore_with_retry(
-                        provider,
-                        prompt,
-                        instruction,
-                        profile.model,
-                        media_path=page_img,
-                        progress=progress,
-                    )
-                    if usage:
-                        total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
-                        total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
-                        total_usage["total_tokens"] += usage.get("total_tokens", 0)
-                        if usage.get("truncated"):
-                            total_usage["truncated"] = True
-                        _notify_usage(
-                            progress,
-                            f"Retried {label} page {idx}",
-                            usage,
-                            total_usage,
-                        )
-                    restored_text = _extract_multimodal_text(result)
-                    failure_reason = ""
-                    if not restored_text:
-                        restored_text = ""
-                        failure_reason = BLANK_PAGE_REASON
-                    elif usage and usage.get("truncated"):
-                        failure_reason = "model context or output limit reached"
-                    review_note = ""
-                    pre_review_text = ""
-                    if restored_text:
-                        restored_text, review_note, review_usage, pre_review_text = _maybe_review_restored_text(
-                            restored_text,
-                            profile,
-                            provider,
-                            instruction,
-                            progress,
-                            f"{label} page {idx}",
-                            consistency_state,
-                        )
-                        if review_usage:
-                            total_usage["prompt_tokens"] += review_usage.get("prompt_tokens", 0)
-                            total_usage["completion_tokens"] += review_usage.get("completion_tokens", 0)
-                            total_usage["total_tokens"] += review_usage.get("total_tokens", 0)
-                            if review_usage.get("truncated"):
-                                total_usage["truncated"] = True
-                            _notify_usage(
-                                progress,
-                                f"Reviewed retry {label} page {idx}",
-                                review_usage,
-                                total_usage,
-                            )
+    combined = "\n\n\f\n\n".join(restored_pages) + "\n"
+    file_failure_reason = next(
+        (chunk["failure_reason"] for chunk in chunks_record if chunk.get("failure_reason")),
+        "",
+    )
+    file_status = "restored" if not file_failure_reason else "partial"
+    return (
+        combined,
+        {"status": file_status, "chunks": chunks_record, "failure_reason": file_failure_reason},
+        total_usage,
+    )
 
-                    restored_pages[idx - 1] = restored_text
-                    for chunk in chunks_record:
-                        if chunk["index"] == idx:
-                            chunk["restored_text"] = restored_text
-                            chunk["status"] = _restoration_status(failure_reason)
-                            chunk["failure_reason"] = failure_reason
-                            chunk["notes"] = _join_notes(chunk.get("notes", ""), review_note)
-                            if pre_review_text:
-                                chunk["pre_review_text"] = pre_review_text
-                            artifacts.write_record_piece(source_index, label, idx, chunk, profile.document_type)
-                            break
-                    artifacts.write_restored_piece(source_index, label, idx, restored_text + "\n")
-                    del result, restored_text
-                except Exception:
-                    pass
 
-            # Clean up remaining temp images
-            for idx, page_img, prompt in failed_pages:
-                try:
-                    page_img.unlink()
-                except OSError:
-                    pass
-
-        combined = "\n\n\f\n\n".join(restored_pages) + "\n"
-        file_failure_reason = next(
-            (chunk["failure_reason"] for chunk in chunks_record if chunk.get("failure_reason")),
-            "",
-        )
-        file_status = "restored" if not file_failure_reason else "partial"
-        return (
-            combined,
-            {"status": file_status, "chunks": chunks_record, "failure_reason": file_failure_reason},
-            total_usage,
-        )
-    finally:
-        temp_dir.cleanup()
+def _render_pdf_pages_cache(
+    pdftoppm_exe: str,
+    path: Path,
+    temp_root: Path,
+    page_count: Optional[int],
+    dpi: int,
+) -> Dict[int, Path]:
+    if page_count is None or page_count < 2:
+        return {}
+    temp_root.mkdir(parents=True, exist_ok=True)
+    existing = {
+        page_number: temp_root / f"page-{page_number:04d}.png"
+        for page_number in range(1, page_count + 1)
+    }
+    if all(path.exists() for path in existing.values()):
+        return existing
+    prefix = temp_root / "page"
+    command = [
+        pdftoppm_exe,
+        "-r",
+        str(dpi),
+        "-f",
+        "1",
+        "-l",
+        str(page_count),
+        "-png",
+        str(path),
+        str(prefix),
+    ]
+    result = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        return {}
+    rendered: Dict[int, Path] = {}
+    for image_path in sorted(temp_root.glob("page-*.png")):
+        match = re.search(r"page-(\d+)\.png$", image_path.name)
+        if not match:
+            continue
+        try:
+            page_number = int(match.group(1))
+        except ValueError:
+            continue
+        target = temp_root / f"page-{page_number:04d}.png"
+        try:
+            if image_path != target:
+                if target.exists():
+                    target.unlink()
+                image_path.replace(target)
+                image_path = target
+        except OSError:
+            image_path = target if target.exists() else image_path
+        rendered[page_number] = image_path
+    return {
+        page_number: existing_path
+        for page_number, existing_path in rendered.items()
+        if existing_path.exists()
+    }
 
 
 def _pdf_page_count(path: Path) -> Optional[int]:

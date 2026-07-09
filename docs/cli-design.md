@@ -112,4 +112,6 @@ available.
 
 The compare command is the browser-facing review path. It is meant for checking
 page-level or image-level source material against the generated publication
-output without leaving the terminal workflow.
+output without leaving the terminal workflow. For PDFs and multi-image runs, it
+expands the manifest into one review card per page/image, with the source
+preview on the left and only that page's restored output on the right.
