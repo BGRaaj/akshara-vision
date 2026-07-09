@@ -263,13 +263,14 @@ class CoreTests(unittest.TestCase):
             destination = Path(tmp) / "akshara_output"
             metadata = {"title": "Export Test", "output_language": "en"}
             with patch("akshara_vision.exporters.pdf._render_pdf_from_html", side_effect=lambda path, text, metadata: (_write_dummy_pdf(path) or True)):
-                for name, exporter in exporter_registry().items():
-                    result = exporter.export("First paragraph\n\nSecond paragraph\n", destination, metadata)
-                    self.assertEqual(result.format, name)
-                    self.assertTrue(result.path.exists(), name)
-                    self.assertGreaterEqual(result.path.stat().st_size, 0, name)
-                    if name == "searchable-pdf":
-                        self.assertTrue(result.path.read_bytes().startswith(b"%PDF-"))
+                with patch("akshara_vision.exporters.pdf._render_pdf_from_docx", side_effect=lambda path, text, metadata: (_write_dummy_pdf(path) or True)):
+                    for name, exporter in exporter_registry().items():
+                        result = exporter.export("First paragraph\n\nSecond paragraph\n", destination, metadata)
+                        self.assertEqual(result.format, name)
+                        self.assertTrue(result.path.exists(), name)
+                        self.assertGreaterEqual(result.path.stat().st_size, 0, name)
+                        if name in {"searchable-pdf", "docx-pdf"}:
+                            self.assertTrue(result.path.read_bytes().startswith(b"%PDF-"))
 
     def test_publication_exporters_style_figure_markers(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -429,8 +430,32 @@ class CoreTests(unittest.TestCase):
                 "akshara_vision.exporters.pdf._render_pdf_from_html",
                 side_effect=lambda path, text, metadata: (_write_dummy_pdf(path) or True),
             ):
-                pdf_result = exporter_registry()["searchable-pdf"].export("Body text", destination, metadata)
-                self.assertTrue(pdf_result.path.read_bytes().startswith(b"%PDF-"))
+                with patch(
+                    "akshara_vision.exporters.pdf._render_pdf_from_docx",
+                    side_effect=lambda path, text, metadata: (_write_dummy_pdf(path) or True),
+                ):
+                    pdf_result = exporter_registry()["searchable-pdf"].export("Body text", destination, metadata)
+                    self.assertTrue(pdf_result.path.read_bytes().startswith(b"%PDF-"))
+
+    def test_publication_exporters_render_table_blocks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "akshara_output"
+            text = "Item    Value\nA       10\nB       20"
+            html_result = exporter_registry()["html"].export(text, destination, {"title": "Tables"})
+            html_text = html_result.path.read_text(encoding="utf-8")
+            self.assertIn('class="data-table"', html_text)
+            self.assertIn("<th>Item</th>", html_text)
+            md_result = exporter_registry()["md"].export(text, destination, {"title": "Tables"})
+            md_text = md_result.path.read_text(encoding="utf-8")
+            self.assertIn("| Item | Value |", md_text)
+            detailed_result = exporter_registry()["json-detailed"].export(text, destination, {"title": "Tables"})
+            payload = json.loads(detailed_result.path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["pages"][0]["blocks"][0]["kind"], "table")
+            self.assertEqual(payload["pages"][0]["blocks"][0]["rows"][1], ["A", "10"])
+            docx_result = exporter_registry()["docx"].export(text, destination, {"title": "Tables"})
+            with zipfile.ZipFile(docx_result.path) as archive:
+                document_xml = archive.read("word/document.xml").decode("utf-8")
+            self.assertIn("<w:tbl>", document_xml)
 
     def test_pdf_renderer_finds_macos_browser_bundle(self):
         from akshara_vision.exporters.pdf import _find_renderer_executable
@@ -1232,7 +1257,11 @@ class CoreTests(unittest.TestCase):
                 "akshara_vision.exporters.pdf._render_pdf_from_html",
                 side_effect=lambda path, text, metadata: (_write_dummy_pdf(path) or True),
             ):
-                result = combine_stage_outputs(run_dir)
+                with patch(
+                    "akshara_vision.exporters.pdf._render_pdf_from_docx",
+                    side_effect=lambda path, text, metadata: (_write_dummy_pdf(path) or True),
+                ):
+                    result = combine_stage_outputs(run_dir)
             self.assertTrue(result["output_path"].exists())
             combined = result["output_path"].read_text(encoding="utf-8")
             self.assertIn("First part", combined)
@@ -1453,7 +1482,11 @@ class CoreTests(unittest.TestCase):
                 "akshara_vision.exporters.pdf._render_pdf_from_html",
                 side_effect=lambda path, text, metadata: (_write_dummy_pdf(path) or True),
             ):
-                self.assertTrue((run_dir / "akshara_output.searchable.pdf").read_bytes().startswith(b"%PDF-"))
+                with patch(
+                    "akshara_vision.exporters.pdf._render_pdf_from_docx",
+                    side_effect=lambda path, text, metadata: (_write_dummy_pdf(path) or True),
+                ):
+                    self.assertTrue((run_dir / "akshara_output.searchable.pdf").read_bytes().startswith(b"%PDF-"))
             json_payload = json.loads((run_dir / "akshara_output.json").read_text(encoding="utf-8"))
             self.assertEqual(json_payload["metadata"]["assets"][0]["label"], "plate")
 

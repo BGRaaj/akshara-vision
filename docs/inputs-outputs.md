@@ -36,12 +36,14 @@ Selectable:
 - `docx`: Word document
 - `epub`: EPUB
 - `json`: structured JSON
+- `json-detailed`: structured JSON with page breakdown, layout tree, and asset metadata
 - `jsonl`: paragraph/chunk JSONL
 - `yaml`: YAML
 - `hocr`: hOCR sidecar
 - `alto`: ALTO XML sidecar
 - `pagexml`: PAGE XML sidecar
 - `searchable-pdf`: text-first PDF assembled as a clean publication
+- `docx-pdf`: PDF rendered from DOCX when LibreOffice/soffice is available
 - `review`: run review notes and text preview
 
 Typical use:
@@ -54,13 +56,21 @@ Typical use:
 | `docx` | Word-based editing, editorial handoff, and print-style revisions |
 | `epub` | E-readers and calm book-style reading |
 | `json` | Complete structured handoff and reassembly |
+| `json-detailed` | Full page-by-page handoff with layout, assets, and semantic structure |
 | `jsonl` | Chunk-by-chunk auditing and pipeline handoff |
 | `yaml` | Human-readable metadata handoff |
 | `hocr` | OCR sidecar for layout-aware tooling |
 | `alto` | Archive-side layout sidecar for OCR ecosystems |
 | `pagexml` | Page-structure sidecar for downstream OCR/layout tools |
 | `searchable-pdf` | Reading and sharing as a calm text-first PDF |
+| `docx-pdf` | Office-style PDF rendering from the DOCX export path |
 | `review` | QA, diffing, and restoration inspection |
+
+`json` is a single structured object for the whole run. `jsonl` is one JSON
+object per line, which is easier for streaming, auditing, and incremental
+processing. Use `json-detailed` when you want the most complete single-file
+handoff with page-level metadata, block roles, table rows, chart candidates,
+assets, and layout hints.
 
 The OCR/archive sidecars are portable text and metadata handoffs. Runs also keep
 native page block geometry when media pages are processed, but these sidecars are
@@ -149,6 +159,11 @@ and composed PDF outputs.
 If a reviewer deletes an unwanted file from `assets/`, later HTML, EPUB, and
 Markdown exports skip that missing image instead of rendering a broken image.
 Plain text may still show the original image marker as an audit reference.
+
+Clear table-like text is rendered as real tables in Markdown, HTML, EPUB, and
+DOCX outputs, and is stored as table rows in `json-detailed`. Chart-like pages
+are tagged with visible labels, legend text, axis text, and candidate series
+when the source makes them clear; Akshara does not invent hidden numeric data.
 
 Use `akv compare path/to/run-folder` when you want a browser-friendly
 side-by-side report of source material and generated output. It is useful for

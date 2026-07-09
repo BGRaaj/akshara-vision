@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -172,6 +173,35 @@ def parse_openai_compatible_models(payload: str) -> List[str]:
     return [str(item.get("id")) for item in values if isinstance(item, dict) and item.get("id")]
 
 
+def _retry_delay(attempt: int) -> float:
+    return min(0.5 * (2**attempt), 4.0)
+
+
+def _retryable_http_error(code: Optional[int]) -> bool:
+    return code in {429, 500, 502, 503, 504}
+
+
+def _urlopen_json(request: urllib.request.Request, timeout: Optional[float], attempts: int = 3) -> dict:
+    last_exc: Optional[Exception] = None
+    for attempt in range(max(1, attempts)):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            last_exc = exc
+            if not _retryable_http_error(getattr(exc, "code", None)) or attempt >= attempts - 1:
+                raise
+            time.sleep(_retry_delay(attempt))
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            last_exc = exc
+            if attempt >= attempts - 1:
+                raise
+            time.sleep(_retry_delay(attempt))
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Request failed unexpectedly.")
+
+
 def _fetch_openai_compatible_models(endpoint: str, api_key: Optional[str] = None) -> List[str]:
     url = endpoint.rstrip("/") + "/models"
     headers = {"Accept": "application/json"}
@@ -179,8 +209,9 @@ def _fetch_openai_compatible_models(endpoint: str, api_key: Optional[str] = None
         headers["Authorization"] = f"Bearer {api_key}"
     request = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=1.5) as response:
-            return parse_openai_compatible_models(response.read().decode("utf-8"))
+        data = _urlopen_json(request, timeout=1.5)
+        values = data.get("data", [])
+        return [str(item.get("id")) for item in values if isinstance(item, dict) and item.get("id")]
     except (OSError, urllib.error.URLError, json.JSONDecodeError):
         return []
 
@@ -238,8 +269,7 @@ def _ollama_chat_http(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
+        data = _urlopen_json(request, timeout=timeout)
 
         done_reason = data.get("done_reason")
         usage = {
@@ -354,8 +384,7 @@ def openai_compatible_chat(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
+        data = _urlopen_json(request, timeout=timeout)
     except urllib.error.HTTPError as exc:
         try:
             err_body = exc.read().decode("utf-8")

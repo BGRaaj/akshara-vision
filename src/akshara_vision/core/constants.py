@@ -33,12 +33,14 @@ OUTPUT_FORMATS = {
     "docx": "Editorial handoff with document-style structure",
     "epub": "E-reader friendly book-style reading",
     "json": "Structured JSON for assembly and automation",
+    "json-detailed": "Detailed JSON with pages, layout, and asset metadata",
     "jsonl": "Chunked JSONL for pipelines and auditing",
     "yaml": "Human-readable metadata sidecar",
     "hocr": "Layout sidecar for OCR tooling",
     "alto": "ALTO XML sidecar for archive tooling",
     "pagexml": "PAGE XML sidecar for layout-aware workflows",
     "searchable-pdf": "Preferred HTML-backed PDF with calm reading layout",
+    "docx-pdf": "DOCX-backed PDF export for office-style rendering",
     "review": "Review notes and before/after diff",
 }
 

@@ -1359,6 +1359,7 @@ def _compare_views(run_dir: Path, metadata: Dict[str, object]) -> List[Dict[str,
         source_path = _match_source_path(items_root, sources_root, item_dir)
         record = restoration[index - 1] if index - 1 < len(restoration) else {}
         assets = _compare_assets(record)
+        layout_tree = _compare_layout_nodes(record, index, metadata)
         comparisons.append(
             {
                 "label": str(item_dir.relative_to(items_root)).replace("\\", "/"),
@@ -1366,6 +1367,7 @@ def _compare_views(run_dir: Path, metadata: Dict[str, object]) -> List[Dict[str,
                 "source_html": _source_preview_html(source_path, run_dir),
                 "output_path": output_path,
                 "output_html": _output_preview_html(output_path, run_dir),
+                "layout_html": _compare_layout_overlay_html(source_path, layout_tree, run_dir),
                 "assets_html": _compare_assets_html(assets, run_dir),
             }
         )
@@ -1461,6 +1463,47 @@ def _compare_assets(record: object) -> List[Dict[str, object]]:
     return assets
 
 
+def _compare_layout_nodes(
+    record: object, index: int, metadata: Dict[str, object]
+) -> List[Dict[str, object]]:
+    if isinstance(record, dict):
+        existing = record.get("layout_tree")
+        if isinstance(existing, list):
+            return [node for node in existing if isinstance(node, dict)]
+        chunks = record.get("chunks")
+        if isinstance(chunks, list):
+            nodes = []
+            for order, chunk in enumerate(chunks, start=1):
+                if not isinstance(chunk, dict):
+                    continue
+                native = chunk.get("native_layout") if isinstance(chunk.get("native_layout"), dict) else {}
+                if not native:
+                    continue
+                nodes.append(
+                    {
+                        "reading_order": order,
+                        "page_number": int(chunk.get("index") or chunk.get("page_number") or order),
+                        "role": str(chunk.get("role") or chunk.get("status") or "body"),
+                        "native_layout": native,
+                    }
+                )
+            if nodes:
+                return nodes
+    structure = metadata.get("document_structure") if isinstance(metadata.get("document_structure"), dict) else {}
+    tree = structure.get("layout_tree") if isinstance(structure.get("layout_tree"), list) else []
+    nodes = []
+    for node in tree:
+        if not isinstance(node, dict):
+            continue
+        try:
+            reading_order = int(node.get("reading_order") or 0)
+        except (TypeError, ValueError):
+            reading_order = 0
+        if reading_order == index:
+            nodes.append(node)
+    return nodes
+
+
 def _source_preview_html(source_path: Optional[Path], run_dir: Path) -> str:
     if source_path is None:
         return '<p class="missing">Source file not found.</p>'
@@ -1541,6 +1584,76 @@ def _compare_assets_html(assets: List[Dict[str, object]], run_dir: Path) -> str:
     return "\n".join(parts)
 
 
+def _compare_layout_overlay_html(
+    source_path: Optional[Path], layout_tree: List[object], run_dir: Path
+) -> str:
+    if source_path is None or source_path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
+        return ""
+    blocks = _compare_layout_blocks(layout_tree)
+    if not blocks:
+        return ""
+    try:
+        rel = source_path.resolve().relative_to(run_dir.resolve())
+    except Exception:
+        rel = source_path.name
+    overlay = []
+    for block in blocks[:18]:
+        left, top, width, height = block["box"]
+        color = block["color"]
+        overlay.append(
+            f'<div class="overlay-block" style="left:{left}%;top:{top}%;width:{width}%;height:{height}%;'
+            f'border-color:{color};background:{color}22;">'
+            f'<span style="background:{color};">{html.escape(block["label"])}</span></div>'
+        )
+    return (
+        '<figure class="overlay-figure">'
+        f'<img src="{html.escape(str(rel), quote=True)}" alt="" />'
+        '<div class="overlay-layer">'
+        + "".join(overlay)
+        + "</div></figure>"
+    )
+
+
+def _compare_layout_blocks(layout_tree: List[object]) -> List[Dict[str, object]]:
+    blocks: List[Dict[str, object]] = []
+    for node in layout_tree:
+        if not isinstance(node, dict):
+            continue
+        native = node.get("native_layout") if isinstance(node.get("native_layout"), dict) else {}
+        source = native.get("blocks") if isinstance(native.get("blocks"), list) else []
+        page = node.get("page_number") or node.get("reading_order") or node.get("index") or 0
+        for block in source:
+            if not isinstance(block, dict):
+                continue
+            bbox = block.get("relative_bbox")
+            if not (isinstance(bbox, list) and len(bbox) == 4):
+                continue
+            label = f"{str(block.get('role') or 'block').replace('-', ' ').title()} · p{page}"
+            role = str(block.get("role") or "text-region")
+            color = {
+                "title-region": "#3559d1",
+                "text-region": "#2a8f5b",
+                "table-region": "#d98312",
+                "chart-region": "#9a54d6",
+                "figure-region": "#c03b3b",
+                "running-header-or-footer": "#5f6c7b",
+                "small-mark-or-page-number": "#8f6d18",
+            }.get(role, "#314e86")
+            blocks.append(
+                {
+                    "box": [
+                        max(0.0, min(float(bbox[0]) * 100.0, 100.0)),
+                        max(0.0, min(float(bbox[1]) * 100.0, 100.0)),
+                        max(0.0, min((float(bbox[2]) - float(bbox[0])) * 100.0, 100.0)),
+                        max(0.0, min((float(bbox[3]) - float(bbox[1])) * 100.0, 100.0)),
+                    ],
+                    "label": label,
+                    "color": color,
+                }
+            )
+    return blocks[:24]
+
+
 def _asset_source_from_metadata(asset: Dict[str, object], run_dir: Path) -> Optional[Path]:
     path = str(asset.get("path") or "").strip()
     if not path:
@@ -1565,6 +1678,7 @@ def _compare_review_html(run_dir: Path, metadata: Dict[str, object], comparisons
                 <div class="panel">
                   <h3>Source</h3>
                   {item["source_html"]}
+                  {item["layout_html"]}
                 </div>
                 <div class="panel">
                   <h3>Output</h3>
@@ -1595,6 +1709,11 @@ def _compare_review_html(run_dir: Path, metadata: Dict[str, object], comparisons
         ".panel pre{white-space:pre-wrap;word-break:break-word;margin:0;font-size:.98rem;}"
         ".preview-image img{max-width:100%;height:auto;display:block;margin:0 auto;}"
         ".preview-image{margin:0;}"
+        ".overlay-figure{position:relative;margin:0;}"
+        ".overlay-figure img{max-width:100%;height:auto;display:block;margin:0 auto;}"
+        ".overlay-layer{position:absolute;inset:0;pointer-events:none;}"
+        ".overlay-block{position:absolute;border:2px solid;border-radius:6px;box-sizing:border-box;}"
+        ".overlay-block span{position:absolute;left:0;top:0;display:inline-block;padding:.08rem .35rem;font-size:.7rem;font-weight:700;color:#fff;border-bottom-right-radius:6px;}"
         ".preview-frame,.preview-pdf{width:100%;min-height:520px;border:1px solid #d8cdbc;background:#fff;}"
         ".asset-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:.75rem;margin-top:.75rem;}"
         ".missing{opacity:.7;font-style:italic;}"

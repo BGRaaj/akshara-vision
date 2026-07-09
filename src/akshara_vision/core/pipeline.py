@@ -1559,10 +1559,20 @@ def _restore_with_retry(
     for attempt in range(max_retries + 1):
         retry_prompt = prompt
         if attempt:
+            focus = _retry_focus_hints(prompt)
+            failure_hint = _retry_failure_hint(last_response)
+            focus_text = (
+                "Focus on these likely problem areas: " + ", ".join(focus) + ". "
+                if focus
+                else ""
+            )
+            failure_text = f"Previous issue: {failure_hint}. " if failure_hint else ""
             retry_prompt = (
                 prompt
                 + "\n\nRetry because the previous response was malformed or unusable. "
-                "Return only the requested output. Do not include commentary, code fences, "
+                + failure_text
+                + focus_text
+                + "Return only the requested output. Do not include commentary, code fences, "
                 "or wrapper JSON unless the prompt explicitly asks for JSON."
             )
         try:
@@ -1761,6 +1771,44 @@ def _response_needs_retry(response: str) -> bool:
             for key in ("restored_text", "translated_text", "text", "output")
         )
         return not has_recoverable_text
+
+
+def _retry_focus_hints(prompt: str) -> List[str]:
+    lowered = prompt.lower()
+    hints: List[str] = []
+    if any(term in lowered for term in ("column", "multi-column", "two-column")):
+        hints.append("column order and reading flow")
+    if any(term in lowered for term in ("table", "rows", "cells")):
+        hints.append("table rows and cell boundaries")
+    if any(term in lowered for term in ("figure", "image", "plate", "illustration")):
+        hints.append("figure captions and image references")
+    if any(term in lowered for term in ("contents", "index", "toc")):
+        hints.append("contents entries and page numbers")
+    if any(term in lowered for term in ("footnote", "note", "citation")):
+        hints.append("footnotes and citations")
+    if any(term in lowered for term in ("heading", "chapter", "section", "title")):
+        hints.append("headings and section boundaries")
+    if any(term in lowered for term in ("page marker", "folio", "page number")):
+        hints.append("page markers and folios")
+    return hints[:4]
+
+
+def _retry_failure_hint(response: str) -> str:
+    candidate = (response or "").strip()
+    if not candidate:
+        return "empty response"
+    if _looks_like_meta_response(candidate):
+        return "commentary or meta text was returned instead of the requested output"
+    json_candidate = _extract_json_object(candidate)
+    if json_candidate:
+        try:
+            json.loads(json_candidate)
+        except json.JSONDecodeError:
+            return "JSON-like output was malformed; repair the structure or return plain text as requested"
+    if candidate.startswith("{"):
+        return "wrapper JSON leaked into a non-JSON response"
+    excerpt = re.sub(r"\s+", " ", candidate)[:180]
+    return f"unusable response excerpt: {excerpt}"
 
 
 def _split_text_chunks(text: str, max_chars: int = RESTORATION_CHUNK_CHARS) -> List[str]:

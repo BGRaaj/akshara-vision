@@ -16,6 +16,8 @@ document observations and uses them during later assembly and export.
 - `layout_profile`: page-flow summary for single-flow, multi-column, list-like,
   dense-prose, or front-matter heavy documents
 - `contents_entries`: parsed table-of-contents items when the source is clear
+- `table_rows` and chart candidates: clear row/cell structures, visible labels,
+  legends, axis text, and candidate numeric series when the source supports it
 - `footnotes`, `contributors`, `publishers`, `running_headers`, and `page_markers`
 - `assets`: conservative figure crops with page zone, bbox, size, DPI, and
   placement metadata when figure enrichment is enabled
@@ -41,6 +43,9 @@ document observations and uses them during later assembly and export.
 - `akv chat` grounds answers in the same run metadata and extracted chunks.
 - Exporters can use native blocks and figure metadata to choose better document
   classes, asset placement, and publication-style layout.
+- Markdown, HTML, EPUB, and DOCX exporters render clear table rows as tables;
+  `json-detailed` keeps the richer page/block representation for downstream
+  review, analysis, or custom assembly.
 - `akv review` inspects layout profile, low-confidence blocks, block-map
   previews, and assets, then writes `layout_review.md` into the run folder.
 

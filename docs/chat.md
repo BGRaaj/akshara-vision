@@ -20,7 +20,7 @@ Inside interactive chat, Akshara also supports local chat tools:
 ## What It Uses
 
 - run folders with `run_manifest.json`
-- compiled outputs such as `.txt`, `.md`, `.html`, `.json`, `.jsonl`, and `.yaml`
+- compiled outputs such as `.txt`, `.md`, `.html`, `.json`, `.json-detailed`, `.jsonl`, `.yaml`, and `.pdf`
 - raw input files or folders, which are first processed through the existing
   pipeline when needed
 - a single raw image file can be discussed directly in vision mode when the

@@ -141,15 +141,30 @@ class CliFallbackTests(unittest.TestCase):
                     or True
                 ),
             ):
-                with redirect_stdout(io.StringIO()):
-                    export_command(str(run_dir), formats=list(OUTPUT_FORMATS))
+                with patch(
+                    "akshara_vision.exporters.pdf._render_pdf_from_docx",
+                    side_effect=lambda path, text, metadata: (
+                        path.write_bytes(
+                            b"%PDF-1.4\n1 0 obj<<>>endobj\n2 0 obj<< /Type /Catalog /Pages 3 0 R >>endobj\n"
+                            b"3 0 obj<< /Type /Pages /Kids [4 0 R] /Count 1 >>endobj\n"
+                            b"4 0 obj<< /Type /Page /Parent 3 0 R /MediaBox [0 0 612 792] >>endobj\n"
+                            b"xref\n0 5\n0000000000 65535 f \n0000000000 00000 n \n0000000000 00000 n \n"
+                            b"0000000000 00000 n \n0000000000 00000 n \ntrailer<< /Size 5 /Root 2 0 R >>\nstartxref\n0\n%%EOF\n"
+                        )
+                        or True
+                    ),
+                ):
+                    with redirect_stdout(io.StringIO()):
+                        export_command(str(run_dir), formats=list(OUTPUT_FORMATS))
             expected_suffixes = [
                 ".txt",
                 ".md",
                 ".html",
                 ".docx",
+                ".docx.pdf",
                 ".epub",
                 ".json",
+                ".detailed.json",
                 ".jsonl",
                 ".yaml",
                 ".hocr",

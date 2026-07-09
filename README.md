@@ -40,7 +40,7 @@ model, provider, scan quality, script complexity, and document damage.
 | Profiles | Portable TOML profiles with defaults for workflow, languages, translation mode, model, output formats, destination, and locked quick runs |
 | Models | Ollama, LM Studio, Jan, llama.cpp/OpenAI-compatible local servers, Sarvam, native cloud providers, OpenRouter, and other OpenAI-compatible cloud APIs |
 | Reliability | Long model calls wait for completion, transient provider failures retry with backoff, and failed batch items are tracked without corrupting later outputs |
-| Exports | Text, Markdown, HTML, DOCX, EPUB, JSON, JSONL, YAML, OCR sidecars, review files, and publication-style PDF outputs |
+| Exports | Text, Markdown, HTML, DOCX, EPUB, JSON, JSONL, detailed JSON, YAML, OCR sidecars, review files, and publication-style PDF outputs |
 | Auditability | Live token metrics during long runs, raw OCR file, restored checkpoint, JSON sidecars, staged per-page/per-chunk outputs, copied source inputs, structured run manifest, model usage metadata, truncation warnings, and failure reasons |
 
 ## Install
@@ -152,10 +152,10 @@ processed.
 | --- | --- |
 | Default | Clean copy-paste `.txt` |
 | Publishing | `.md`, `.html`, `.docx`, `.epub` |
-| Structured | `.json`, `.jsonl`, `.yaml` |
+| Structured | `.json`, `.detailed.json`, `.jsonl`, `.yaml` |
 | OCR sidecars | `.hocr`, `.alto.xml`, `.page.xml` portable sidecars with restored text and available metadata |
 | Review | `.review.md`, `raw_ocr.txt`, copied source files, `run_manifest.json` |
-| PDF exports | `.searchable.pdf` publication-style PDF output |
+| PDF exports | `.searchable.pdf` HTML-backed publication PDF, `.docx.pdf` DOCX-backed PDF output |
 
 The `.txt` export is the primary default. Structured exports include metadata
 for inputs, provider, model, workflow, translation state, usage, restoration
@@ -163,7 +163,10 @@ chunks, uncertainty notes, and failure reasons.
 
 Markdown, HTML, DOCX, and EPUB exports use the detected title and simple
 publication-oriented structure. HTML and EPUB preserve paragraph breaks, center
-page-marker-like lines, and style figure markers separately when present.
+page-marker-like lines, render clear table rows as tables, and style figure
+markers separately when present. `json-detailed` keeps page-level blocks,
+table rows, chart candidates, assets, layout hints, and semantic roles for
+downstream review or custom assembly.
 
 The export layer also uses semantic document roles. A title page, contents
 page, chapter opening, journal abstract, letter signature, or archive record is
@@ -212,8 +215,8 @@ build more useful document structure without changing the restored text.
 The manifest now also stores per-page `native_layout` blocks plus a
 `layout_tree`, `layout_profile`, and `assembly_profile`. Those fields capture
 reading order, page flow, role, layout class, native block geometry, page
-markers, headings, confidence, and figure metadata so chat, combine, resume, and
-export all see the same structure.
+markers, headings, confidence, table/chart signals, and figure metadata so chat,
+combine, resume, and export all see the same structure.
 
 Blank pages are preserved as empty outputs and marked as `blank` in the manifest.
 If a model accidentally returns JSON-like text for a page, Akshara Vision extracts

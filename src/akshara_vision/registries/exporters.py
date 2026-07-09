@@ -1,12 +1,13 @@
 from typing import Dict
 
 from akshara_vision.exporters.archive import ReviewExporter, SidecarExporter
-from akshara_vision.exporters.pdf import PdfExporter
+from akshara_vision.exporters.pdf import DocxPdfExporter, PdfExporter
 from akshara_vision.exporters.text import (
     DocxExporter,
     EpubExporter,
     HtmlExporter,
     JsonExporter,
+    JsonDetailedExporter,
     JsonlExporter,
     MarkdownExporter,
     TextExporter,
@@ -22,6 +23,7 @@ def exporter_registry() -> Dict[str, object]:
         "docx": DocxExporter(),
         "epub": EpubExporter(),
         "json": JsonExporter(),
+        "json-detailed": JsonDetailedExporter(),
         "jsonl": JsonlExporter(),
         "yaml": YamlExporter(),
         "hocr": SidecarExporter("hocr", ".hocr", "hOCR"),
@@ -32,5 +34,6 @@ def exporter_registry() -> Dict[str, object]:
             ".searchable.pdf",
             "Searchable PDF Export",
         ),
+        "docx-pdf": DocxPdfExporter("docx-pdf", ".docx.pdf"),
         "review": ReviewExporter(),
     }

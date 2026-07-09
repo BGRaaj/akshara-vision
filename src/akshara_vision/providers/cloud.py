@@ -15,6 +15,7 @@ from akshara_vision.providers.local import (
     _fetch_openai_compatible_models,
     _generation_limit,
     _media_mime_type,
+    _urlopen_json,
     openai_compatible_chat,
 )
 
@@ -210,8 +211,7 @@ def _fetch_sarvam_models(endpoint: str, api_key: str) -> list:
     }
     request = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=4) as response:
-            data = json.loads(response.read().decode("utf-8"))
+        data = _urlopen_json(request, timeout=4)
     except (OSError, urllib.error.URLError, json.JSONDecodeError):
         return []
     if isinstance(data, dict):
@@ -244,8 +244,7 @@ def _fetch_gemini_models(api_key: str) -> list:
     )
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=4) as response:
-            data = json.loads(response.read().decode("utf-8"))
+        data = _urlopen_json(request, timeout=4)
     except (OSError, urllib.error.URLError, json.JSONDecodeError):
         return []
     models = []
@@ -266,8 +265,7 @@ def _fetch_anthropic_models(api_key: str) -> list:
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=4) as response:
-            data = json.loads(response.read().decode("utf-8"))
+        data = _urlopen_json(request, timeout=4)
     except (OSError, urllib.error.URLError, json.JSONDecodeError):
         return []
     return [
@@ -334,8 +332,7 @@ def _anthropic_message(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
+        data = _urlopen_json(request, timeout=timeout)
     except urllib.error.HTTPError as exc:
         try:
             err_body = exc.read().decode("utf-8")
@@ -438,8 +435,7 @@ def _gemini_generate(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
+        data = _urlopen_json(request, timeout=timeout)
     except urllib.error.HTTPError as exc:
         try:
             err_body = exc.read().decode("utf-8")

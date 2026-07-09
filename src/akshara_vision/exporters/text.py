@@ -46,9 +46,9 @@ class HtmlExporter:
             "<style>\n"
             "body{margin:0;background:#f4efe4;color:#24170f;font-family:Georgia,'Iowan Old Style','Palatino Linotype','Times New Roman',serif;line-height:1.7;text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased;}\n"
             "main{max-width:8.27in;margin:0 auto;padding:0;}\n"
-            ".document-page{min-height:11.69in;box-sizing:border-box;padding:0.88in 0.88in 0.92in;position:relative;break-after:page;page-break-after:always;background:#fffdf8;}\n"
+            ".document-page{min-height:11.69in;box-sizing:border-box;padding:0.88in 0.88in 0.92in;position:relative;display:flex;flex-direction:column;break-after:page;page-break-after:always;break-inside:avoid;page-break-inside:avoid;overflow:hidden;background:#fffdf8;}\n"
             ".document-page:last-child{break-after:auto;page-break-after:auto;}\n"
-            ".page-content{min-height:9.62in;}\n"
+            ".page-content{min-height:9.62in;flex:1 1 auto;}\n"
             ".page-footer{position:absolute;right:0.88in;bottom:0.47in;font-size:.82rem;letter-spacing:.045em;color:#726356;text-transform:uppercase;}\n"
             ".blank-page .page-content{min-height:10.02in;}\n"
             ".document-magazine,.document-newspaper{max-width:920px;}\n"
@@ -67,9 +67,12 @@ class HtmlExporter:
             "li{margin:0 0 .45rem;}\n"
             "blockquote{margin:1.1rem 0;padding:0 0 0 .95rem;border-left:2px solid #d8cdbc;color:#3f3026;font-style:italic;}\n"
             "table{font-size:1rem;line-height:1.5;}\n"
+            ".data-table{width:100%;border-collapse:collapse;margin:1rem 0 1.45rem;font-size:.94rem;break-inside:avoid;}\n"
+            ".data-table th,.data-table td{border:1px solid #d8cdbc;padding:.38rem .48rem;text-align:left;vertical-align:top;}\n"
+            ".data-table th{background:#f1e8da;font-weight:700;}\n"
             ".page-marker{text-align:center;font-variant-numeric:oldstyle-nums;margin:1.65rem 0 .95rem;color:#705c4d;}\n"
             ".page-break{break-after:page;page-break-after:always;height:0;margin:0;padding:0;border:0;}\n"
-            ".figure-marker{break-inside:avoid;padding:0;text-align:center;font-style:normal;margin:1.45rem auto;}\n"
+            ".figure-marker{break-inside:avoid;padding:0;text-align:center;font-style:normal;margin:1.15rem auto 1.25rem;}\n"
             ".figure-marker img{max-width:100%;height:auto;display:block;margin:0 auto;}\n"
             ".figure-full-width{width:100%;}.figure-large{width:80%;}.figure-medium{width:62%;}.figure-small{width:44%;}.figure-wide{width:100%;}.figure-tall{width:54%;}\n"
             ".zone-top-left,.zone-middle-left,.zone-bottom-left{margin-left:0;}.zone-top-right,.zone-middle-right,.zone-bottom-right{margin-right:0;}\n"
@@ -97,6 +100,16 @@ class JsonExporter:
     def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
         path = destination.with_suffix(".json")
         payload = {"text": text, "metadata": _public_metadata(metadata)}
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return ExportResult(self.name, path)
+
+
+class JsonDetailedExporter:
+    name = "json-detailed"
+
+    def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
+        path = destination.with_name(f"{destination.name}.detailed.json")
+        payload = _detailed_json_payload(text, metadata)
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return ExportResult(self.name, path)
 
@@ -181,6 +194,31 @@ def _public_metadata(metadata: Dict[str, object]) -> Dict[str, object]:
     }
 
 
+def _detailed_json_payload(text: str, metadata: Dict[str, object]) -> Dict[str, object]:
+    pages = [part for part in str(text).split("\f")]
+    structure = metadata.get("document_structure") if isinstance(metadata.get("document_structure"), dict) else {}
+    return {
+        "text": text,
+        "pages": [
+            {
+                "index": index,
+                "text": page,
+                "paragraphs": _paragraphs(page),
+                "blocks": _structured_blocks_for_text(page),
+                "assets": _page_assets(metadata, index),
+                "semantic_unit": _semantic_unit_for_page(metadata, index, len(pages)),
+            }
+            for index, page in enumerate(pages, start=1)
+        ],
+        "metadata": _public_metadata(metadata),
+        "document_structure": structure,
+        "assembly_profile": metadata.get("assembly_profile") or {},
+        "layout_profile": structure.get("layout_profile") if isinstance(structure, dict) else {},
+        "layout_tree": structure.get("layout_tree") if isinstance(structure, dict) else [],
+        "restoration": metadata.get("restoration") or [],
+    }
+
+
 def _paragraphs(text: str) -> list[str]:
     return [part.strip() for part in text.split("\n\n") if part.strip()]
 
@@ -250,6 +288,8 @@ def _markdown_plain_body(text: str, base_dir: Optional[Path] = None) -> str:
                 parts.append(f"![]({path})")
         elif paragraph.lower().startswith("[image:"):
             parts.append(f"> {paragraph}")
+        elif _looks_like_table_text(paragraph):
+            parts.append(_markdown_table_from_text(paragraph))
         else:
             parts.append(paragraph)
     return "\n\n".join(parts).strip() + "\n"
@@ -305,6 +345,8 @@ def _html_plain_body(text: str, metadata_or_base_dir: Optional[object] = None) -
             body.append(f'<figure class="figure-marker">{escaped}</figure>')
         elif _looks_like_page_marker(stripped):
             body.append(f'<p class="page-marker">{escaped}</p>')
+        elif _looks_like_table_text(stripped):
+            body.append(_html_table_from_text(stripped))
         else:
             body.append(f"<p>{escaped}</p>")
     return "\n".join(body)
@@ -333,6 +375,122 @@ def _semantic_unit_for_page(
     if page_count == 1:
         return _semantic_unit_summary(units)
     return None
+
+
+def _structured_blocks_for_text(text: str) -> list[Dict[str, object]]:
+    blocks: list[Dict[str, object]] = []
+    for index, paragraph in enumerate(_paragraphs(text), start=1):
+        stripped = paragraph.strip()
+        block: Dict[str, object] = {"index": index, "text": stripped, "kind": "paragraph"}
+        if _parse_image_marker(stripped):
+            block["kind"] = "figure-marker"
+        elif _looks_like_page_marker(stripped):
+            block["kind"] = "page-marker"
+        elif _looks_like_table_text(stripped):
+            block["kind"] = "table"
+            block["rows"] = _table_rows_from_text(stripped)
+        elif _looks_like_chart_text(stripped):
+            block["kind"] = "chart"
+            block["series"] = _chart_points_from_text(stripped)
+        elif _looks_like_heading_line(stripped):
+            block["kind"] = "heading"
+        blocks.append(block)
+    return blocks
+
+
+def _looks_like_heading_line(text: str) -> bool:
+    compact = " ".join(text.split())
+    if not compact or "\n" in text:
+        return False
+    words = compact.split()
+    if len(words) > 12:
+        return False
+    letters = [char for char in compact if char.isalpha()]
+    return bool(letters) and sum(1 for char in letters if char.isupper()) / max(len(letters), 1) >= 0.72
+
+
+def _looks_like_table_text(text: str) -> bool:
+    rows = _table_rows_from_text(text)
+    if len(rows) < 2:
+        return False
+    column_counts = [len(row) for row in rows]
+    return max(column_counts) >= 2 and sum(1 for count in column_counts if count >= 2) >= 2
+
+
+def _table_rows_from_text(text: str) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if "|" in stripped:
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        elif "\t" in stripped:
+            cells = [cell.strip() for cell in stripped.split("\t")]
+        else:
+            cells = [cell.strip() for cell in re.split(r"\s{2,}", stripped)]
+        cells = [cell for cell in cells if cell]
+        if len(cells) >= 2:
+            rows.append(cells)
+    return rows
+
+
+def _looks_like_chart_text(text: str) -> bool:
+    lowered = text.lower()
+    if any(term in lowered for term in ("chart", "graph", "axis", "legend", "plot")):
+        return True
+    return len(_chart_points_from_text(text)) >= 3
+
+
+def _chart_points_from_text(text: str) -> list[Dict[str, object]]:
+    points: list[Dict[str, object]] = []
+    for line in text.splitlines():
+        match = re.match(r"^\s*([^:,\t]+?)\s*[:\t ]\s*(-?\d+(?:[.,]\d+)?)\s*$", line)
+        if not match:
+            continue
+        label = match.group(1).strip()
+        value = match.group(2).replace(",", ".")
+        if not label:
+            continue
+        try:
+            numeric: object = float(value)
+        except ValueError:
+            numeric = match.group(2)
+        points.append({"label": label, "value": numeric})
+    return points
+
+
+def _html_table_from_text(text: str) -> str:
+    rows = _table_rows_from_text(text)
+    if not rows:
+        return f"<p>{html.escape(text).replace(chr(10), '<br />')}</p>"
+    max_columns = max(len(row) for row in rows)
+    rendered_rows = []
+    for row_index, row in enumerate(rows):
+        cells = row + [""] * (max_columns - len(row))
+        tag = "th" if row_index == 0 else "td"
+        rendered_rows.append(
+            "<tr>"
+            + "".join(f"<{tag}>{html.escape(cell)}</{tag}>" for cell in cells)
+            + "</tr>"
+        )
+    return '<table class="data-table">' + "".join(rendered_rows) + "</table>"
+
+
+def _markdown_table_from_text(text: str) -> str:
+    rows = _table_rows_from_text(text)
+    if not rows:
+        return text
+    max_columns = max(len(row) for row in rows)
+    normalized = [row + [""] * (max_columns - len(row)) for row in rows]
+    header = normalized[0]
+    divider = ["---"] * max_columns
+    body = normalized[1:]
+
+    def render_row(row: list[str]) -> str:
+        return "| " + " | ".join(cell.replace("|", "\\|") for cell in row) + " |"
+
+    return "\n".join([render_row(header), render_row(divider), *[render_row(row) for row in body]])
 
 
 def _markdown_page_body(
@@ -614,8 +772,11 @@ def _docx_document_xml(
                     f"<w:r><w:t>{escaped}</w:t></w:r></w:p>"
                 )
                 continue
+            if _looks_like_table_text(paragraph.strip()):
+                paragraphs.append(_docx_table_from_text(paragraph.strip()))
+                continue
             escaped = html.escape(paragraph).replace("\n", "<w:br/>")
-            paragraphs.append(f"<w:p><w:r><w:t>{escaped}</w:t></w:r></w:p>")
+            paragraphs.append(_docx_body_paragraph(escaped))
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
@@ -666,6 +827,46 @@ def _docx_centered_heading(text: str) -> str:
         "<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr>"
         "<w:r><w:rPr><w:b/><w:sz w:val=\"26\"/></w:rPr>"
         f"<w:t>{html.escape(text)}</w:t></w:r></w:p>"
+    )
+
+
+def _docx_body_paragraph(text: str) -> str:
+    return (
+        "<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"120\"/><w:jc w:val=\"both\"/></w:pPr>"
+        "<w:r><w:rPr><w:sz w:val=\"22\"/></w:rPr>"
+        f"<w:t>{text}</w:t></w:r></w:p>"
+    )
+
+
+def _docx_table_from_text(text: str) -> str:
+    rows = _table_rows_from_text(text)
+    if not rows:
+        return _docx_body_paragraph(html.escape(text).replace("\n", "<w:br/>"))
+    max_columns = max(len(row) for row in rows)
+    rendered_rows = []
+    for row in rows:
+        cells = row + [""] * (max_columns - len(row))
+        rendered_rows.append(
+            "<w:tr>"
+            + "".join(
+                "<w:tc><w:tcPr><w:tcW w:w=\"0\" w:type=\"auto\"/></w:tcPr>"
+                f"<w:p><w:r><w:t>{html.escape(cell)}</w:t></w:r></w:p></w:tc>"
+                for cell in cells
+            )
+            + "</w:tr>"
+        )
+    return (
+        "<w:tbl><w:tblPr><w:tblStyle w:val=\"TableGrid\"/>"
+        "<w:tblW w:w=\"0\" w:type=\"auto\"/>"
+        "<w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"D8CDBC\"/>"
+        "<w:left w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"D8CDBC\"/>"
+        "<w:bottom w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"D8CDBC\"/>"
+        "<w:right w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"D8CDBC\"/>"
+        "<w:insideH w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"D8CDBC\"/>"
+        "<w:insideV w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"D8CDBC\"/>"
+        "</w:tblBorders></w:tblPr>"
+        + "".join(rendered_rows)
+        + "</w:tbl>"
     )
 
 
@@ -907,6 +1108,9 @@ def _epub_content(title: str, body: str, metadata: Optional[Dict[str, object]] =
         ".contents table{width:100%;border-collapse:collapse;}"
         ".contents td{border-bottom:1px solid #d8cdbc;padding:.3em 0;}"
         ".contents td:last-child{text-align:right;white-space:nowrap;padding-left:1em;}"
+        ".data-table{width:100%;border-collapse:collapse;margin:1em 0 1.35em;font-size:.94em;break-inside:avoid;}"
+        ".data-table th,.data-table td{border:1px solid #d8cdbc;padding:.35em .45em;text-align:left;vertical-align:top;}"
+        ".data-table th{background:#f1e8da;font-weight:700;}"
         "</style>"
         f'</head><body class="{document_class}" data-document-type="{html.escape(_document_type_slug(metadata), quote=True)}">{body}</body></html>'
     )
@@ -1068,6 +1272,49 @@ def _metadata_assets(metadata: Optional[Dict[str, object]]) -> list[Dict[str, ob
         return []
     assets = metadata.get("assets")
     return [asset for asset in assets if isinstance(asset, dict)] if isinstance(assets, list) else []
+
+
+def _page_assets(metadata: Optional[Dict[str, object]], page_index: int) -> list[Dict[str, object]]:
+    if not metadata:
+        return []
+    assets = []
+    structure = metadata.get("document_structure")
+    if isinstance(structure, dict):
+        tree = structure.get("layout_tree")
+        if isinstance(tree, list):
+            for node in tree:
+                if not isinstance(node, dict):
+                    continue
+                try:
+                    if int(node.get("page_number") or node.get("index") or 0) == page_index:
+                        assets.extend(node.get("assets") or [])
+                except (TypeError, ValueError):
+                    continue
+    records = metadata.get("restoration")
+    if isinstance(records, list):
+        for record in records:
+            chunks = record.get("chunks") if isinstance(record, dict) else None
+            if not isinstance(chunks, list):
+                continue
+            for chunk in chunks:
+                if not isinstance(chunk, dict):
+                    continue
+                try:
+                    chunk_index = int(chunk.get("index") or chunk.get("page_number") or 0)
+                except (TypeError, ValueError):
+                    chunk_index = 0
+                if chunk_index == page_index:
+                    assets.extend(chunk.get("assets") or [])
+    collected = []
+    seen = set()
+    for asset in assets:
+        if isinstance(asset, dict):
+            key = str(asset.get("path") or asset.get("label") or id(asset))
+            if key in seen:
+                continue
+            seen.add(key)
+            collected.append(asset)
+    return collected
 
 
 def _asset_marker_placement(asset: Dict[str, object]) -> str:

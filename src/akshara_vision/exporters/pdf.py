@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import platform
+import tempfile
 from pathlib import Path
 import re
 from typing import TYPE_CHECKING, Dict, Iterable, List, Optional
@@ -25,7 +26,7 @@ else:
     PILImageFont = object
 
 from akshara_vision.exporters.base import ExportResult
-from akshara_vision.exporters.text import HtmlExporter
+from akshara_vision.exporters.text import DocxExporter, HtmlExporter
 
 
 class PdfExporter:
@@ -37,11 +38,32 @@ class PdfExporter:
 
     def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
         path = destination.with_suffix(self.suffix)
-        if _render_pdf_from_html(path, text, metadata):
+        if self.kind == "docx":
+            if _render_pdf_from_docx(path, text, metadata):
+                return ExportResult(self.name, path)
+        elif _render_pdf_from_html(path, text, metadata):
             return ExportResult(self.name, path)
+        if self.kind == "docx":
+            raise RuntimeError(
+                "DOCX-backed PDF export requires LibreOffice or soffice installed on PATH."
+            )
         raise RuntimeError(
             "PDF export requires an HTML-to-PDF renderer such as Chromium or Google Chrome "
             "installed on PATH. Legacy raster/PDF fallbacks are disabled."
+        )
+
+
+class DocxPdfExporter:
+    def __init__(self, name: str, suffix: str) -> None:
+        self.name = name
+        self.suffix = suffix
+
+    def export(self, text: str, destination: Path, metadata: Dict[str, object]) -> ExportResult:
+        path = destination.with_suffix(self.suffix)
+        if _render_pdf_from_docx(path, text, metadata):
+            return ExportResult(self.name, path)
+        raise RuntimeError(
+            "DOCX-backed PDF export requires LibreOffice or soffice installed on PATH."
         )
 
 
@@ -106,11 +128,60 @@ def _render_pdf_from_html(path: Path, text: str, metadata: Dict[str, object]) ->
     return False
 
 
+def _render_pdf_from_docx(path: Path, text: str, metadata: Dict[str, object]) -> bool:
+    soffice = _find_office_executable()
+    if not soffice:
+        return False
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_root = Path(tmpdir)
+        docx_base = path.name[:-len(".docx.pdf")] if path.name.endswith(".docx.pdf") else path.stem
+        docx_destination = tmp_root / docx_base
+        docx_path = DocxExporter().export(text, docx_destination, metadata).path
+        command = [
+            soffice,
+            "--headless",
+            "--convert-to",
+            "pdf",
+            "--outdir",
+            str(tmp_root),
+            str(docx_path),
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=180,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        generated = tmp_root / f"{docx_path.stem}.pdf"
+        if result.returncode == 0 and generated.exists() and generated.stat().st_size > 0:
+            path.write_bytes(generated.read_bytes())
+            return True
+    return False
+
+
 def _find_renderer_executable(name: str) -> Optional[str]:
     found = shutil.which(name)
     if found:
         return found
     for candidate in _common_renderer_candidates(platform.system().lower(), name):
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+def _find_office_executable() -> Optional[str]:
+    for name in ("soffice", "libreoffice"):
+        found = shutil.which(name)
+        if found:
+            return found
+    for candidate in _common_office_candidates(platform.system().lower()):
         if candidate.exists():
             return str(candidate)
     return None
@@ -203,6 +274,26 @@ def _common_renderer_candidates(system: str, name: str) -> List[Path]:
             ],
         }
         return browser_candidates.get(name, [])
+    return []
+
+
+def _common_office_candidates(system: str) -> List[Path]:
+    if system == "darwin":
+        return [
+            Path("/Applications/LibreOffice.app/Contents/MacOS/soffice"),
+            Path("/Applications/LibreOffice.app/Contents/MacOS/libreoffice"),
+        ]
+    if system == "windows":
+        return [
+            Path("C:/Program Files/LibreOffice/program/soffice.exe"),
+            Path("C:/Program Files (x86)/LibreOffice/program/soffice.exe"),
+        ]
+    if system == "linux":
+        return [
+            Path("/usr/bin/soffice"),
+            Path("/usr/bin/libreoffice"),
+            Path("/snap/bin/libreoffice"),
+        ]
     return []
 
 
