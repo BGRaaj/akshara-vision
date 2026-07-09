@@ -2086,7 +2086,7 @@ def _run_with_progress(request: RunRequest):
 
         def progress(event: str, message: str, advance: int = 1) -> None:
             reporter.update(message, advance=advance)
-            if event in {"usage", "interrupt", "retry", "waiting-log"}:
+            if event in {"usage", "interrupt", "retry"}:
                 reporter.log(message)
 
         return run_pipeline(request, progress=progress)

@@ -358,7 +358,6 @@ class ProgressReporter:
             if self.total > 0:
                 columns.append(BarColumn())
             columns.append(TimeElapsedColumn())
-            columns.append(TextColumn("  " + self.ui.controls_hint()))
             self._progress = Progress(
                 *columns,
                 console=self.ui.console,
@@ -366,6 +365,7 @@ class ProgressReporter:
             )
             self._progress.__enter__()
             self._task = self._progress.add_task(self.title, total=self.total or None)
+            self.ui.note(self.ui.controls_hint())
         else:
             self.ui.section(self.title)
             self.ui.note(self.ui.controls_hint())
