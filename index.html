@@ -1,0 +1,1271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Akshara Vision — Restore. Read. Preserve.</title>
+  
+  <!-- Fonts: Cormorant Garamond (Serif), Inter (Sans-serif), Space Mono (Monospace) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=Inter:wght@200;300;400;500&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+
+  <style>
+    /* Styling System & Variables */
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    
+    :root {
+      --bg: #F7F4EF;            /* Warm cream paper background */
+      --text: #2B211C;          /* Warm dark brown-charcoal for text */
+      --text-muted: #6B625E;    /* Warm mid-gray-brown for secondary text */
+      --accent: #C45A00;        /* Earthy rich terracotta-orange */
+      --accent-light: #F2ECE2;  /* Soft cream-orange tint for highlights */
+      --border: #E8E1D7;        /* Soft paper separator border */
+      
+      --font-serif: "Cormorant Garamond", serif;
+      --font-sans: "Inter", sans-serif;
+      --font-mono: "Space Mono", monospace;
+    }
+
+    html, body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-weight: 300;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      scroll-behavior: smooth;
+    }
+
+    /* Presentation Scroll Snap */
+    @media (min-width: 1025px) {
+      body {
+        overflow-y: scroll;
+        scroll-snap-type: y mandatory;
+      }
+      .slide {
+        scroll-snap-align: start;
+        height: 100vh;
+        min-height: 720px;
+      }
+    }
+
+    .slide {
+      width: 100%;
+      padding: 4rem 6rem;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      position: relative;
+      border-bottom: 1px solid var(--border);
+      overflow-y: auto;
+    }
+
+    /* Print Layout for PDF Exports (Letter Landscape, Multi-page flow, Zero margins) */
+    @media print {
+      @page {
+        size: 11in 8.5in;
+        margin: 0;
+      }
+      html, body {
+        width: 11in;
+        height: auto !important;
+        background-color: #ffffff;
+        color: #000000;
+        scroll-snap-type: none;
+        overflow: visible !important;
+      }
+      .slide {
+        width: 11in !important;
+        height: 8.5in !important;
+        page-break-after: always !important;
+        page-break-inside: avoid !important;
+        border: none !important;
+        padding: 3.5rem 4.5rem !important;
+        margin: 0 !important;
+        display: flex !important;
+        flex-direction: column !important;
+        justify-content: space-between !important;
+        box-sizing: border-box !important;
+        overflow: hidden !important;
+      }
+      .nav-controls, .scrollbar-indicator {
+        display: none !important;
+      }
+    }
+
+    /* Responsive adjustments */
+    @media (max-width: 1024px) {
+      .slide {
+        padding: 3rem 3rem;
+        height: auto;
+      }
+      #slide-1 {
+        height: 100vh !important;
+        min-height: 100vh !important;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+      }
+      .grid-2 {
+        grid-template-columns: 1fr !important;
+        gap: 2rem !important;
+      }
+      .grid-3 {
+        grid-template-columns: 1fr !important;
+        gap: 1.5rem !important;
+      }
+      .grid-4 {
+        grid-template-columns: repeat(2, 1fr) !important;
+        gap: 1.5rem !important;
+      }
+    }
+
+    @media (max-width: 600px) {
+      .slide {
+        padding: 2rem 1.5rem;
+      }
+      .grid-4 {
+        grid-template-columns: 1fr !important;
+        gap: 1.25rem !important;
+      }
+      .slide-header, .slide-footer {
+        font-size: 0.65rem !important;
+      }
+      h1 {
+        font-size: 2.2rem !important;
+      }
+      h2 {
+        font-size: 1.6rem !important;
+      }
+    }
+
+    /* Header & Footer */
+    .slide-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.75rem;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      letter-spacing: 0.05em;
+    }
+
+    .slide-header .brand {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .slide-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-top: 1px solid var(--border);
+      padding-top: 0.75rem;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      letter-spacing: 0.02em;
+    }
+
+    /* Typography */
+    h1, h2, h3 {
+      font-family: var(--font-serif);
+      font-weight: 300;
+      color: var(--text);
+    }
+
+    h1 {
+      font-size: calc(2rem + 2vw);
+      line-height: 1.15;
+    }
+
+    h2 {
+      font-size: calc(1.6rem + 1vw);
+      line-height: 1.25;
+    }
+
+    .subtitle {
+      font-family: var(--font-serif);
+      font-size: calc(1.05rem + 0.4vw);
+      font-style: italic;
+      color: var(--text-muted);
+      margin-top: 0.5rem;
+    }
+
+    .slide-content {
+      flex-grow: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 2rem 0;
+    }
+
+    /* Layout Grids */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1.25fr;
+      gap: 5rem;
+      align-items: start;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 2.5rem;
+    }
+
+    .grid-4 {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1.5rem;
+    }
+
+    /* Minimal Elements */
+    .divider {
+      width: 40px;
+      height: 1px;
+      background-color: var(--accent);
+      margin: 1.5rem 0;
+    }
+
+    .tag-container {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      margin-top: 0.75rem;
+    }
+
+    .tag {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      background-color: var(--accent-light);
+      border: 1px solid var(--border);
+      padding: 0.15rem 0.4rem;
+      border-radius: 2px;
+    }
+
+    /* Cards */
+    .card {
+      background-color: rgba(250, 248, 245, 0.5);
+      border: 1px solid var(--border);
+      padding: 1.5rem;
+      border-radius: 4px;
+      transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.2s ease, background-color 0.2s ease;
+    }
+
+    .card:hover {
+      border-color: var(--accent);
+      background-color: #ffffff;
+      transform: translateY(-2px);
+    }
+
+    .card-title {
+      font-family: var(--font-serif);
+      font-size: 1.35rem;
+      font-weight: 400;
+      margin-bottom: 0.4rem;
+      color: var(--text);
+    }
+
+    .card-meta {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.75rem;
+      display: block;
+    }
+
+    .card-desc {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      line-height: 1.5;
+    }
+
+    /* Comparison Table Style */
+    .comparison-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1rem 0;
+      font-size: 0.95rem;
+    }
+
+    .comparison-table th {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      text-align: left;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border);
+      font-weight: normal;
+    }
+
+    .comparison-table td {
+      padding: 1rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    .comparison-table tr:hover td {
+      background-color: rgba(242, 236, 226, 0.3);
+    }
+
+    .comparison-table td strong {
+      font-family: var(--font-serif);
+      font-size: 1.15rem;
+      font-weight: 400;
+      color: var(--text);
+      display: block;
+      margin-bottom: 0.15rem;
+    }
+
+    .comparison-table td span {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+
+    /* Editorial bullet items */
+    .editorial-list {
+      list-style: none;
+    }
+
+    .editorial-list li {
+      position: relative;
+      padding-left: 2rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .editorial-list li::before {
+      content: "—";
+      position: absolute;
+      left: 0;
+      color: var(--accent);
+      font-family: var(--font-mono);
+    }
+
+    .editorial-list li strong {
+      font-family: var(--font-serif);
+      font-size: 1.25rem;
+      font-weight: 400;
+      display: block;
+      color: var(--text);
+      margin-bottom: 0.15rem;
+    }
+
+    .editorial-list li span {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      display: block;
+    }
+
+    /* Centered ASCII Art & Terminal Window wrapper */
+    .ascii-container {
+      text-align: center;
+      width: 100%;
+      margin: 1.5rem 0;
+    }
+
+    .terminal-window {
+      background-color: #1a1512;
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      box-shadow: 0 10px 30px rgba(196, 90, 0, 0.08);
+      overflow: hidden;
+      margin: 1.5rem auto;
+      max-width: 900px;
+      text-align: left;
+    }
+
+    .terminal-header {
+      background-color: #2b1f1a;
+      padding: 0.5rem 1rem;
+      display: flex;
+      align-items: center;
+      border-bottom: 1px solid #3c2a22;
+      position: relative;
+    }
+
+    .terminal-dots {
+      display: flex;
+      gap: 0.4rem;
+    }
+
+    .terminal-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+    
+    .terminal-dot.close { background-color: #ff5f56; }
+    .terminal-dot.minimize { background-color: #ffbd2e; }
+    .terminal-dot.zoom { background-color: #27c93f; }
+
+    .terminal-title {
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: #8c807b;
+      letter-spacing: 0.05em;
+    }
+
+    .terminal-body {
+      padding: 2.2rem;
+      overflow-x: auto;
+      background-color: #1a1512;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    pre.ascii-art {
+      display: inline-block;
+      text-align: left;
+      font-family: var(--font-mono);
+      font-size: calc(0.48rem + 0.2vw);
+      line-height: 1.15;
+      color: #ff8822; /* Vibrant orange branding */
+      background: none;
+      border: none;
+      white-space: pre;
+      letter-spacing: 0;
+      margin: 0;
+    }
+
+    @media (max-width: 900px) {
+      pre.ascii-art {
+        font-size: 0.55rem;
+      }
+    }
+
+    @media (max-width: 768px) {
+      pre.ascii-art {
+        font-size: 0.42rem;
+      }
+    }
+
+    @media (max-width: 600px) {
+      pre.ascii-art {
+        font-size: 0.32rem;
+      }
+      .terminal-body {
+        padding: 1rem;
+      }
+    }
+
+    @media (max-width: 480px) {
+      pre.ascii-art {
+        font-size: 0.24rem;
+      }
+    }
+
+    .code-window {
+      background-color: #261F1C;
+      color: #ECE7E2;
+      font-family: var(--font-mono);
+      font-size: 0.74rem;
+      line-height: 1.45;
+      padding: 1.5rem;
+      border-radius: 4px;
+      border: 1px solid #1E1815;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.05);
+      overflow-x: auto;
+      white-space: pre; /* Essential to render output newlines properly */
+    }
+
+    .code-window .prompt {
+      color: var(--accent);
+      user-select: none;
+    }
+
+    .code-window .comment {
+      color: #8C807B;
+    }
+
+    .code-window .output {
+      color: #D3C9C4;
+    }
+
+    /* Metric elements */
+    .metric-group {
+      display: flex;
+      gap: 3rem;
+      margin-top: 1.5rem;
+    }
+
+    .metric-box {
+      border-left: 2px solid var(--accent);
+      padding-left: 1rem;
+    }
+
+    .metric {
+      font-family: var(--font-serif);
+      font-size: 2.8rem;
+      color: var(--accent);
+      line-height: 1;
+      font-weight: 300;
+    }
+
+    .metric-sub {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-top: 0.25rem;
+    }
+
+    /* Pipeline flow blocks */
+    .pipeline-step {
+      border: 1px solid var(--border);
+      padding: 1.15rem;
+      background-color: rgba(250, 248, 245, 0.4);
+      border-radius: 4px;
+      margin-bottom: 0.6rem;
+      position: relative;
+    }
+
+    .pipeline-step .step-number {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--accent);
+      display: block;
+      margin-bottom: 0.15rem;
+    }
+
+    .pipeline-step h4 {
+      font-family: var(--font-serif);
+      font-size: 1.15rem;
+      font-weight: 400;
+      color: var(--text);
+    }
+
+    .pipeline-step p {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-top: 0.15rem;
+    }
+
+    /* Navigation Widget */
+    .nav-controls {
+      position: fixed;
+      bottom: 2rem;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 100;
+      display: flex;
+      gap: 0.6rem;
+      background-color: rgba(247, 244, 239, 0.55); /* Glassy translucent */
+      border: 1px solid rgba(232, 225, 215, 0.5); /* Soft glass border */
+      padding: 0.5rem 0.8rem; /* Large size on desktop */
+      border-radius: 6px;
+      backdrop-filter: blur(12px); /* High blur for glassy glassmorphism */
+      -webkit-backdrop-filter: blur(12px);
+      box-shadow: 0 8px 32px rgba(43, 33, 28, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .nav-btn {
+      background: none;
+      border: none;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 0.3rem 0.6rem;
+      border-radius: 2px;
+      transition: all 0.15s ease;
+    }
+
+    @media (max-width: 1024px) {
+      .nav-controls {
+        padding: 0.4rem 0.6rem;
+        gap: 0.5rem;
+      }
+      .nav-btn {
+        font-size: 0.72rem;
+        padding: 0.25rem 0.5rem;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .nav-controls {
+        bottom: 1.5rem;
+        padding: 0.28rem 0.45rem;
+        gap: 0.3rem;
+        background-color: rgba(247, 244, 239, 0.65); /* Translucent even on mobile */
+        width: calc(100% - 3rem); /* Responsive width adjustments on mobile */
+        max-width: 280px;
+        justify-content: space-between;
+      }
+      .nav-btn {
+        padding: 0.18rem 0.35rem;
+        font-size: 0.64rem;
+      }
+      .slide-number {
+        font-size: 0.64rem !important;
+        padding: 0 0.3rem;
+      }
+    }
+
+    @media (max-width: 360px) {
+      .nav-controls {
+        bottom: 1rem;
+        padding: 0.2rem 0.3rem;
+        gap: 0.2rem;
+        max-width: 240px;
+      }
+      .nav-btn {
+        padding: 0.12rem 0.25rem;
+        font-size: 0.58rem;
+      }
+      .slide-number {
+        font-size: 0.58rem !important;
+        padding: 0 0.2rem;
+      }
+    }
+
+    .nav-btn:hover {
+      color: var(--accent);
+      background-color: var(--accent-light);
+    }
+
+    .scrollbar-indicator {
+      position: fixed;
+      left: 0;
+      top: 0;
+      height: 3px;
+      background-color: var(--accent);
+      z-index: 101;
+      width: 0%;
+      transition: width 0.1s ease;
+    }
+
+    .slide-number {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      align-self: center;
+      padding: 0 0.5rem;
+      border-left: 1px solid var(--border);
+      border-right: 1px solid var(--border);
+    }
+
+    /* GitHub Button styling */
+    .github-link-container {
+      text-align: center;
+      margin-top: 1.5rem;
+    }
+
+    .github-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background-color: var(--bg);
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      padding: 0.5rem 1rem;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      text-decoration: none;
+      border-radius: 4px;
+      font-weight: 500;
+      transition: all 0.2s ease;
+      box-shadow: 0 2px 6px rgba(196, 90, 0, 0.05);
+    }
+
+    .github-btn:hover {
+      background-color: var(--accent);
+      color: #ffffff;
+      box-shadow: 0 4px 12px rgba(196, 90, 0, 0.15);
+      transform: translateY(-1px);
+    }
+
+    .github-icon {
+      flex-shrink: 0;
+    }
+
+    /* Workflow Flowchart styling */
+    .workflow-flowchart {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.4rem;
+      width: 100%;
+    }
+
+    .flow-node {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      width: 100%;
+    }
+
+    .node-tag {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--accent);
+      background-color: var(--accent-light);
+      border: 1px solid var(--border);
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      width: 70px;
+      text-align: center;
+      flex-shrink: 0;
+    }
+
+    .node-box {
+      flex-grow: 1;
+      background-color: rgba(250, 248, 245, 0.6);
+      border: 1px solid var(--border);
+      padding: 0.85rem 1.1rem;
+      border-radius: 6px;
+      transition: all 0.2s ease;
+    }
+
+    .flow-node:hover .node-box {
+      border-color: var(--accent);
+      background-color: #ffffff;
+      box-shadow: 0 4px 12px rgba(196, 90, 0, 0.05);
+    }
+
+    .node-box strong {
+      font-family: var(--font-serif);
+      font-size: 1.1rem;
+      font-weight: 500;
+      color: var(--text);
+      display: block;
+      margin-bottom: 0.15rem;
+    }
+
+    .node-box span {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      display: block;
+      line-height: 1.4;
+    }
+
+    .flow-arrow {
+      font-size: 0.8rem;
+      color: var(--accent);
+      opacity: 0.5;
+      margin-left: 70px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Progress Indicator -->
+  <div class="scrollbar-indicator" id="progressBar"></div>
+
+  <!-- Keyboard & Control Widget -->
+  <div class="nav-controls">
+    <button class="nav-btn" onclick="navigate(-1)">← Prev</button>
+    <div class="slide-number" id="slideNum">1 / 7</div>
+    <button class="nav-btn" onclick="navigate(1)">Next →</button>
+  </div>
+
+  <div class="deck-container">
+
+    <!-- SLIDE 1: COVER -->
+    <section class="slide" id="slide-1">
+      <div class="slide-header">
+        <span>akshara-vision</span>
+        <span>terminal document orchestration</span>
+      </div>
+      
+      <div class="slide-content">
+        <div style="max-width: 900px; margin: 0 auto;">
+          
+          <div class="terminal-window">
+            <div class="terminal-header">
+              <div class="terminal-dots">
+                <span class="terminal-dot close"></span>
+                <span class="terminal-dot minimize"></span>
+                <span class="terminal-dot zoom"></span>
+              </div>
+              <span class="terminal-title">akv --version 1.0.0</span>
+            </div>
+            <div class="terminal-body">
+              <pre class="ascii-art">
+=================================================================================
+                     _    _  __ ____  _   _    _    ____      _
+                    / \  | |/ // ___|| | | |  / \  |  _ \    / \
+                   / _ \ | ' / \___ \| |_| | / _ \ | |_) |  / _ \
+                  / ___ \| . \  ___) |  _  |/ ___ \|  _ <  / ___ \
+                 /_/   \_\_|\_\|____/|_| |_/_/   \_\_| \_\/_/   \_\
+                                              V I S I O N
+                              Restore. Read. Preserve.
+=================================================================================</pre>
+            </div>
+          </div>
+          
+          <p class="subtitle" style="text-align: center; margin-top: 1.5rem;">A local-first, vendor-agnostic document intelligence CLI & grounded chat workbench</p>
+          
+          <div class="github-link-container">
+            <a href="https://github.com/BGRaaj/akshara-vision" class="github-btn" target="_blank">
+              <svg class="github-icon" viewBox="0 0 24 24" width="14" height="14">
+                <path fill="currentColor" d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+              </svg>
+              View Repository on GitHub
+            </a>
+          </div>
+          
+          <div class="divider" style="margin: 2rem auto;"></div>
+        </div>
+      </div>
+
+      <div class="slide-footer">
+        <span>akshara-vision</span>
+        <span>Slide 1</span>
+      </div>
+    </section>
+
+    <!-- SLIDE 2: THE PROBLEM -->
+    <section class="slide" id="slide-2">
+      <div class="slide-header">
+        <span>01 / The Context</span>
+        <span>The Problem Space</span>
+      </div>
+
+      <div class="slide-content">
+        <div class="grid-2">
+          <div>
+            <span class="card-meta">The Disconnection</span>
+            <h2>Why raw model outputs fall short in document digitization.</h2>
+            <div class="divider"></div>
+            <p style="margin-bottom: 1.5rem; font-size: 1.05rem; color: var(--text-muted); line-height: 1.5;">
+              Vision language models and LLMs are excellent at OCR correction and translation, but integrating them directly into bulk archival pipelines fails on practical execution.
+            </p>
+            <p style="font-size: 0.95rem; color: var(--text-muted);">
+              Workflows are fragile. A network drop can ruin a multi-hour book extraction, dense scans trigger context truncation, and models ignore layout structural metadata entirely.
+            </p>
+          </div>
+          
+          <div>
+            <table class="comparison-table">
+              <thead>
+                <tr>
+                  <th>Ad-Hoc Model Calls</th>
+                  <th>Akshara Vision Engine</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    <strong>Fragile Pipelines</strong>
+                    <span>API failures or terminal exits abort progress; no state preservation.</span>
+                  </td>
+                  <td>
+                    <strong>Resumable Stages</strong>
+                    <span>Continuous page checkpoints guarantee no data loss on interruption.</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td>
+                    <strong>Raw Text Clutter</strong>
+                    <span>Extracts plain strings without layout tags, figures, or roles.</span>
+                  </td>
+                  <td>
+                    <strong>Structure Normalization</strong>
+                    <span>Builds normalized layout trees mapping columns, headers, and figures.</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td>
+                    <strong>Vendor Lock-in</strong>
+                    <span>Hardcoded connections restrict migration between platforms.</span>
+                  </td>
+                  <td>
+                    <strong>Model-Agnostic Routing</strong>
+                    <span>Uniform routing across local GGUF offline engines or cloud APIs.</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="slide-footer">
+        <span>akshara-vision</span>
+        <span>Slide 2</span>
+      </div>
+    </section>
+
+    <!-- SLIDE 3: LAYOUT UNDERSTANDING -->
+    <section class="slide" id="slide-3">
+      <div class="slide-header">
+        <span>02 / Document Intelligence</span>
+        <span>Layout Normalization</span>
+      </div>
+
+      <div class="slide-content">
+        <div class="grid-2">
+          <div>
+            <span class="card-meta">Semantic Structure Trees</span>
+            <h2>Akshara Vision does not treat scans as plain text blocks.</h2>
+            <div class="divider"></div>
+            <p style="margin-bottom: 1.25rem; font-size: 1.02rem; color: var(--text-muted);">
+              Every page is parsed hierarchically, extracting reading orders, column estimates, local geometry, and semantic document roles.
+            </p>
+            
+            <div class="mode-comparison" style="margin-top: 1.5rem;">
+              <span class="card-meta">Execution Modes & Tradeoffs</span>
+              <table style="width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.82rem;">
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.4rem 0.5rem 0.4rem 0; font-weight: 500; color: var(--accent); white-space: nowrap; width: 70px; vertical-align: top;">Quality</td>
+                  <td style="padding: 0.4rem 0; color: var(--text-muted); line-height: 1.4;">Full pipeline: local layout parse + block-guided LLM restoration + vision crop verification. Best accuracy for damaged pages.</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.4rem 0.5rem 0.4rem 0; font-weight: 500; color: var(--text); white-space: nowrap; width: 70px; vertical-align: top;">Balanced</td>
+                  <td style="padding: 0.4rem 0; color: var(--text-muted); line-height: 1.4;">Saves time: local layout parse + direct block-guided text restoration. Skips costly iterative layout reviews.</td>
+                </tr>
+                <tr>
+                  <td style="padding: 0.4rem 0.5rem 0.4rem 0; font-weight: 500; color: var(--text-muted); white-space: nowrap; width: 70px; vertical-align: top;">Fast</td>
+                  <td style="padding: 0.4rem 0; color: var(--text-muted); line-height: 1.4;">Max speed: bypasses block mapping, visual segment prompting, role classification, and crops. Fast pure text extraction.</td>
+                </tr>
+              </table>
+            </div>
+          </div>
+
+          <div>
+            <div class="workflow-flowchart">
+              <div class="flow-node">
+                <span class="node-tag">Stage 1</span>
+                <div class="node-box">
+                  <strong>Local Page Segmentation</strong>
+                  <span>Detects page geometry (columns, coordinates) using local engine backends.</span>
+                </div>
+              </div>
+              <div class="flow-arrow">▼</div>
+              <div class="flow-node">
+                <span class="node-tag">Stage 2</span>
+                <div class="node-box">
+                  <strong>Reading Order Sort</strong>
+                  <span>Orders blocks sequentially to prevent text column mixing.</span>
+                </div>
+              </div>
+              <div class="flow-arrow">▼</div>
+              <div class="flow-node">
+                <span class="node-tag">Stage 3</span>
+                <div class="node-box">
+                  <strong>Block-Guided LLM Restoration</strong>
+                  <span>Reconstructs damaged text segment-by-segment using <code>[BLOCK x]</code> tags.</span>
+                </div>
+              </div>
+              <div class="flow-arrow">▼</div>
+              <div class="flow-node">
+                <span class="node-tag">Stage 4</span>
+                <div class="node-box">
+                  <strong>Extraction & Exporters</strong>
+                  <span>Parses CSV tables, crops visual figures, and generates MD/DOCX/EPUB/PDF.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+      </div>
+
+      <div class="slide-footer">
+        <span>akshara-vision</span>
+        <span>Slide 3</span>
+      </div>
+    </section>
+
+    <!-- SLIDE 4: GROUNDED LOCAL CHAT -->
+    <section class="slide" id="slide-4">
+      <div class="slide-header">
+        <span>03 / Grounded Chat</span>
+        <span>Conversational Review</span>
+      </div>
+
+      <div class="slide-content">
+        <div class="grid-2">
+          <div>
+            <span class="card-meta">Interactive Verification</span>
+            <h2>Grounded Q&A over run manifests and raw layout files.</h2>
+            <div class="divider"></div>
+            <p style="margin-bottom: 1.25rem; font-size: 1.05rem; color: var(--text-muted);">
+              Ask questions directly over processed run directories. All answers are strictly grounded in indexed source text chunks, maintaining absolute audit trails.
+            </p>
+            
+            <ul class="editorial-list">
+              <li>
+                <strong>Vision Mode Support</strong>
+                <span>Supports direct discussions over raw images (signboards, charts, tables) or page-specific queries inside PDFs without full corpus pre-indexing.</span>
+              </li>
+              <li>
+                <strong>Dynamic Re-querying</strong>
+                <span>Re-opens and queries the source visual image directly if the indexed OCR text is incomplete or ambiguous.</span>
+              </li>
+              <li>
+                <strong>Local Diagnostic Commands</strong>
+                <span>Index search using terminal shortcuts: `/sources` to list segments, `/find` to search keywords, and `/open` to view specific chunks offline.</span>
+              </li>
+            </ul>
+          </div>
+
+          <div class="terminal-window" style="margin: 0; width: 100%;">
+            <div class="terminal-header">
+              <div class="terminal-dots">
+                <span class="terminal-dot close"></span>
+                <span class="terminal-dot minimize"></span>
+                <span class="terminal-dot zoom"></span>
+              </div>
+              <span class="terminal-title">akv chat --session S1</span>
+            </div>
+            <div class="terminal-body" style="padding: 1.5rem; display: block; align-items: stretch; justify-content: flex-start;">
+              <pre class="ascii-art" style="color: #ECE7E2; font-size: 0.74rem; line-height: 1.45; font-family: var(--font-mono); white-space: pre-wrap;"><span class="prompt" style="color: var(--accent); font-weight: bold;">$</span> akv chat examples/sample.txt
+<span class="output" style="color: #D3C9C4;">[i] Running grounded chat over examples/sample.txt
+[i] Type /exit or Ctrl+D to end.
+
+akv chat › /find land grant
+[i] Found 2 matches in sources:
+  * Page 3 (Paragraph block 1)
+  * Page 7 (Footnote block 4)
+
+akv chat › What year was the land grant executed?
+The land grant was executed in 1823 during the reign of Serfoji II (Page 3).</span></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="slide-footer">
+        <span>akshara-vision</span>
+        <span>Slide 4</span>
+      </div>
+    </section>
+
+    <!-- SLIDE 5: VISUAL REVIEW CLI -->
+    <section class="slide" id="slide-5">
+      <div class="slide-header">
+        <span>04 / Auditing</span>
+        <span>Visual Layout Review</span>
+      </div>
+
+      <div class="slide-content">
+        <div style="margin-bottom: 2rem;">
+          <span class="card-meta">Human-In-The-Loop Validation</span>
+          <h2>Auditing layout nodes, block confidence, and figure crops.</h2>
+        </div>
+        
+        <p style="margin-bottom: 2.2rem; font-size: 1.1rem; color: var(--text-muted); line-height: 1.6; max-width: 800px;">
+          Run folders can be reviewed visually inside the terminal or compared side-by-side inside a browser to verify rendering and layout composition.
+        </p>
+        
+        <div class="grid-3">
+          <div class="card">
+            <span class="card-meta">Terminal Preview</span>
+            <h3 class="card-title">Visual Block-Map</h3>
+            <p class="card-desc">Plots text columns and figure regions directly in a terminal-native layout preview screen before generating exports.</p>
+          </div>
+          
+          <div class="card">
+            <span class="card-meta">Browser Reports</span>
+            <h3 class="card-title">Comparison Views</h3>
+            <p class="card-desc">`akv compare` compiles a side-by-side visual report of raw pages and restored text to review image crops and layout flow.</p>
+          </div>
+          
+          <div class="card">
+            <span class="card-meta">Asset Control</span>
+            <h3 class="card-title">Review Markdown</h3>
+            <p class="card-desc">Saves a readable `layout_review.md` in the run directory. Delete incorrect figure crop assets locally to skip them automatically.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="slide-footer">
+        <span>akshara-vision</span>
+        <span>Slide 5</span>
+      </div>
+    </section>
+
+    <!-- SLIDE 6: CORE CAPABILITIES -->
+    <section class="slide" id="slide-6">
+      <div class="slide-header">
+        <span>05 / Capabilities</span>
+        <span>Feature Overview</span>
+      </div>
+
+      <div class="slide-content">
+        <div style="margin-bottom: 2rem;">
+          <span class="card-meta">Key Architectural Strengths</span>
+          <h2>A production-ready framework for digital preservation.</h2>
+        </div>
+
+        <div class="grid-4">
+          <div class="card">
+            <span class="card-meta">Model Routing</span>
+            <h3 class="card-title">Backend Agnostic</h3>
+            <p class="card-desc">Routes queries transparently. Run offline local models (Ollama, LM Studio, Jan, llama.cpp) for privacy and zero cost, or scale out to cloud APIs (Gemini, OpenRouter, Anthropic).</p>
+            <div class="tag-container">
+              <span class="tag">Local GGUF</span>
+              <span class="tag">Cloud APIs</span>
+            </div>
+          </div>
+
+          <div class="card">
+            <span class="card-meta">Resumable Runs</span>
+            <h3 class="card-title">Fault-Tolerant Stages</h3>
+            <p class="card-desc">Writes page/chunk stage checkpoints. Interruptions (Ctrl+C, network crash) do not force re-processing. Simply run resume to recover completed pages and compile state.</p>
+            <div class="tag-container">
+              <span class="tag">Zero-Loss</span>
+              <span class="tag">Staged Runs</span>
+            </div>
+          </div>
+
+          <div class="card">
+            <span class="card-meta">Structure Engine</span>
+            <h3 class="card-title">Document Intelligence</h3>
+            <p class="card-desc">Caches `layout_tree`, `semantic_units`, and `layout_profile`. Detects footnotes, running headers, table of contents, contributors, and page boundaries for clean formatting.</p>
+            <div class="tag-container">
+              <span class="tag">Layout trees</span>
+              <span class="tag">Page roles</span>
+            </div>
+          </div>
+
+          <div class="card">
+            <span class="card-meta">Publication Delivery</span>
+            <h3 class="card-title">Rich Exporters</h3>
+            <p class="card-desc">Builds structured book packages. Outputs clean copy-paste text, formatted Markdown, HTML, DOCX, publication-ready EPUB files, and formatted PDF documents.</p>
+            <div class="tag-container">
+              <span class="tag">EPUB & DOCX</span>
+              <span class="tag">Styled PDF</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="slide-footer">
+        <span>akshara-vision</span>
+        <span>Slide 6</span>
+      </div>
+    </section>
+
+    <!-- SLIDE 7: ARCHITECTURE & QUALITY -->
+    <section class="slide" id="slide-7">
+      <div class="slide-header">
+        <span>06 / Operations</span>
+        <span>Architecture & Quality Standards</span>
+      </div>
+
+      <div class="slide-content">
+        <div class="grid-2">
+          <div>
+            <span class="card-meta">Extensible Integration Architecture</span>
+            <h2>Engineered for durability, speed, and auditability.</h2>
+            <div class="divider"></div>
+            <p style="margin-bottom: 1.5rem; font-size: 1.05rem; color: var(--text-muted);">
+              Built with a modular backend routing layer, abstract layout interfaces, and extensible file exporters.
+            </p>
+            <p style="font-size: 0.95rem; color: var(--text-muted);">
+              Ensures high runtime reliability and seamless integration with existing archival pipelines.
+            </p>
+          </div>
+
+          <div>
+            <ul class="editorial-list">
+              <li>
+                <strong>Automated Quality Assurance</strong>
+                <span>Maintains an extensive verification suite with 119 unit tests passing in under 3 seconds to guarantee parser, state machine, and exporter consistency.</span>
+              </li>
+              <li>
+                <strong>Flexible PDF Composition</strong>
+                <span>Exports PDF files using two distinct layout engines: headlessly printing through `weasyprint` or headless Chromium when installed to guarantee publication-quality rendering.</span>
+              </li>
+              <li>
+                <strong>Metadata Anonymity</strong>
+                <span>All metrics, profiles, and structural layout logs remain strictly in the local run manifest folder, keeping all files private and local-first.</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="slide-footer">
+        <span>akshara-vision</span>
+        <span>Slide 7</span>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- Slide Navigation & Scroll Snapping Script -->
+  <script>
+    const slides = document.querySelectorAll('.slide');
+    const slideNum = document.getElementById('slideNum');
+    const progressBar = document.getElementById('progressBar');
+    
+    let currentSlide = 0;
+
+    // Sync progress bar and active slide counter
+    function updateSlideUI() {
+      slideNum.textContent = `${currentSlide + 1} / ${slides.length}`;
+      const percentage = ((currentSlide) / (slides.length - 1)) * 100;
+      progressBar.style.width = `${percentage}%`;
+    }
+
+    // Smooth scroll to slide index
+    function scrollToSlide(index) {
+      if (index < 0 || index >= slides.length) return;
+      currentSlide = index;
+      slides[currentSlide].scrollIntoView({ behavior: 'smooth' });
+      updateSlideUI();
+    }
+
+    // Floating UI controls
+    window.navigate = function(direction) {
+      scrollToSlide(currentSlide + direction);
+    };
+
+    // Keyboard navigation
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowRight' || e.key === ' ') {
+        e.preventDefault();
+        scrollToSlide(currentSlide + 1);
+      } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+        e.preventDefault();
+        scrollToSlide(currentSlide - 1);
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        scrollToSlide(0);
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        scrollToSlide(slides.length - 1);
+      }
+    });
+
+    // Detect scrolled slide (especially when using trackpad / mousewheel scrolling)
+    let isScrolling;
+    window.addEventListener('scroll', () => {
+      window.clearTimeout(isScrolling);
+      isScrolling = setTimeout(() => {
+        const scrollPosition = window.scrollY;
+        const windowHeight = window.innerHeight;
+        const newSlideIndex = Math.round(scrollPosition / windowHeight);
+        if (newSlideIndex !== currentSlide && newSlideIndex >= 0 && newSlideIndex < slides.length) {
+          currentSlide = newSlideIndex;
+          updateSlideUI();
+        }
+      }, 80);
+    }, { passive: true });
+
+    // Initial run
+    updateSlideUI();
+  </script>
+</body>
+</html>

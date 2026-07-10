@@ -104,7 +104,6 @@ PROVIDER_TYPES = [
     "lm-studio",
     "jan",
     "llama-cpp",
-    "sarvam",
     "openai",
     "anthropic",
     "gemini",

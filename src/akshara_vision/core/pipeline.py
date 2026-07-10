@@ -626,9 +626,11 @@ def run_pipeline(
         try:
             if suffix not in TEXT_EXTENSIONS:
                 if not _is_vision_model(profile.model.model):
-                    raise RuntimeError(
-                        f"Processing {source_label} requires a multimodal vision model. "
-                        f"The selected model '{profile.model.model}' is text-only."
+                    import warnings
+                    warnings.warn(
+                        f"The selected model '{profile.model.model}' might not have multimodal vision capabilities. "
+                        "If you experience errors, please select a verified vision model (e.g. Qwen2-VL, Gemini, GPT-4o).",
+                        UserWarning
                     )
                 _notify(progress, "decode", f"Preparing multimodal {source_label}", advance=1)
                 if suffix == ".pdf":
@@ -2059,15 +2061,9 @@ def _execution_mode(profile: Optional[WorkflowProfile]) -> str:
 def _is_vision_model(model: str) -> bool:
     model_lower = model.lower()
     vision_keywords = [
-        "vision",
-        "-vl",
-        "vl:",
-        "gemma4",
-        "gpt-5",
-        "claude-3-5",
-        "claude-sonnet-5",
-        "claude-fable-5",
-        "gemini-",
+        "vision", "multimodal", "-vl", "vl:", "llava", "minicpm", "internvl",
+        "gemma4", "gemma2", "gemma", "qwen", "qwen2", "gpt-4", "gpt-5", "gpt", "claude", "gemini",
+        "llama-3.2", "llama3.2", "phi-3.5", "phi3.5"
     ]
     return any(kw in model_lower for kw in vision_keywords)
 
@@ -3693,19 +3689,34 @@ def _page_layout(
         backend_name = "native"
     if backend_name in {"off", "none", "disabled"}:
         return {}
-    if backend_name in {"native", "auto"}:
+    if backend_name == "auto":
         preferred = _preferred_layout_backend()
         if preferred and preferred not in {"native", "off"}:
             backend_name = preferred
-    backend = _LAYOUT_BACKENDS.get(backend_name) or _LAYOUT_BACKENDS.get("native")
+    backend = _LAYOUT_BACKENDS.get(backend_name)
+    if backend is None:
+        if backend_name != "native":
+            import warnings
+            warnings.warn(
+                f"Layout backend '{backend_name}' is not installed or registered. "
+                "Falling back to native heuristic layout parser.",
+                UserWarning
+            )
+        backend = _LAYOUT_BACKENDS.get("native")
+
     if backend is None:
         layout = _native_page_layout(image_path, document_type)
     else:
         try:
             layout = backend(image_path)
         except Exception:
-            if backend_name == "native":
-                return {}
+            if backend_name != "native":
+                import warnings
+                warnings.warn(
+                    f"Layout backend '{backend_name}' failed at runtime. "
+                    "Falling back to native heuristic layout parser.",
+                    UserWarning
+                )
             layout = _native_page_layout(image_path, document_type)
 
     mode = _execution_mode(profile) if profile else "balanced"

@@ -103,6 +103,10 @@ class MonoUI:
         else:
             print(message)
 
+    def write_dim(self, message: str = "") -> None:
+        style = "#7a6a5a" if self.theme == "light" else "dim"
+        self._print_colored(message, style)
+
     def _fill_background(self, message: str) -> str:
         width = shutil.get_terminal_size((78, 20)).columns
         if not message:

@@ -49,6 +49,7 @@ from akshara_vision.core.pipeline import (
     combine_stage_outputs,
     find_executable,
     _render_pdf_page,
+    _slugify,
     run_pipeline,
 )
 from akshara_vision.instructions import (
@@ -562,7 +563,6 @@ def choose_model(current: Optional[ModelSettings] = None) -> Optional[ModelSetti
         return current
     if source == "cloud":
         provider_names = [
-            "sarvam",
             "openai",
             "anthropic",
             "gemini",
@@ -1023,6 +1023,7 @@ def chat_command(
     ui.heading("Akshara Vision", "Document Chat")
     input_values = list(inputs or [])
     session_path: Optional[Path] = None
+    session_title: Optional[str] = None
     if ui.interactive() and not _chat_model_usable(_chat_model(profile)):
         prompted = _prompt_missing_model(profile, "chat", store=store, persist=True)
         if prompted is False:
@@ -1050,7 +1051,8 @@ def chat_command(
                 history = load_chat_history(session_path)
                 session_notes = load_chat_notes(session_path)
                 metadata = load_chat_metadata(session_path)
-                title = str(metadata.get("title") or session_path.stem)
+                session_title = str(metadata.get("title") or "")
+                title = session_title or session_path.stem.replace("-", " ").strip().title()
                 ui.status("info", f"Resumed saved conversation: {title}")
                 chat_model = _chat_model(profile)
                 if ui.interactive() and not _chat_model_usable(chat_model):
@@ -1065,12 +1067,12 @@ def chat_command(
             input_values = []
             break
     pending_question = question
-    if not pending_question and ui.interactive() and input_values and (_can_lazy_chat(input_values) or _has_folder_input(input_values)):
+    if not pending_question and ui.interactive() and input_values:
         if _can_lazy_chat(input_values):
-            ui.note("For a single image or page-specific PDF question, Akshara can answer without pre-indexing the whole file.")
-        if _has_folder_input(input_values):
+            ui.note("For a single image or page-specific PDF, Akshara can answer without pre-indexing the whole file.")
+        elif _has_folder_input(input_values):
             ui.note("For folders, describe the file, nested folder, page, or topic so Akshara can focus before indexing.")
-        pending_question = ui.text("Ask your first question")
+        pending_question = ui.text("Ask a question> ")
     bundle = None
     if input_values:
         with ui.progress("Indexing chat sources...") as reporter:
@@ -1112,8 +1114,13 @@ def chat_command(
     session_notes: List[str] = load_chat_notes(session_path)
     citation_source_ids: List[str] = []
     if history:
-        ui.status("info", f"Loaded {len(history)} previous chat turn(s).")
-    if ui.interactive():
+        ui.section("Saved Conversation History")
+        for q_idx, (past_q, past_a) in enumerate(history, start=1):
+            ui.write_dim(f"User › {past_q}")
+            ui.write_dim(f"Akshara › {past_a}")
+            ui.write_dim()
+        ui.status("info", f"Loaded {len(history)} previous chat turn(s) above.")
+    if ui.interactive() and bundle is not None:
         guide = _current_guide_level()
         if guide == "full":
             ui.section("Chat Controls")
@@ -1129,143 +1136,162 @@ def chat_command(
         elif guide == "balanced":
             ui.note("Tip: /where narrows, /cite pins, and /remember stores a small note. Use /help for the full list.")
     while True:
-        if not pending_question:
-            pending_question = ui.text("Ask a question about these sources")
-        pending_question = str(pending_question or "").strip()
-        if not pending_question:
-            break
-        if pending_question.startswith("/"):
-            command_name = pending_question.split(maxsplit=1)[0].lower()
-            if command_name == "/help":
-                _show_chat_help()
-                pending_question = ""
-                continue
-            if command_name == "/attach":
-                attached = _attach_chat_sources(
-                    pending_question,
-                    profile=profile,
-                    recursive=recursive,
-                )
-                if attached is not None:
-                    bundle, attached_inputs = attached
-                    input_values = attached_inputs
-                    session_path = chat_session_path(input_values)
-                    history = load_chat_history(session_path)
-                    session_notes = load_chat_notes(session_path)
-                    citation_source_ids = []
-                    ui.status("success", f"Attached {len(bundle.sources)} source(s).")
-                pending_question = ""
-                continue
-            if bundle is None:
-                ui.status("warning", "Chat tools like /where and /cite need a document source. Use /attach to add one first.")
-                pending_question = ""
-                continue
-            result = _handle_chat_tool(
-                pending_question,
-                bundle,
-                history,
-                session_path,
-                session_notes=session_notes,
-                citation_source_ids=citation_source_ids,
-            )
-            if result is False:
+        try:
+            if not pending_question:
+                pending_question = ui.text("Ask a question> ")
+            pending_question = str(pending_question or "").strip()
+            if not pending_question:
                 break
-            if isinstance(result, dict):
-                if "bundle" in result and result["bundle"] is not None:
-                    bundle = result["bundle"]
-                if "citation_source_ids" in result:
-                    citation_source_ids = list(result["citation_source_ids"] or [])
-                if "session_notes" in result:
-                    session_notes = list(result["session_notes"] or [])
-                if "history" in result:
-                    history = list(result["history"] or history)
-            pending_question = ""
-            continue
-        chat_model = _chat_model(profile)
-        if ui.interactive() and not _chat_model_usable(chat_model):
-            ui.section("Chat Model")
-            prompted = _prompt_missing_model(profile, "chat", store=store, persist=True)
-            if prompted is False:
-                ui.status(
-                    "warning",
-                    "No usable chat model is configured. Open /models or edit the profile to choose a chat model.",
-                )
-                return None
-            chat_model = _chat_model(profile)
-        if bundle is None:
-            with ui.progress("Answering...") as reporter:
-                answer, usage = answer_general_question(
-                    copy.deepcopy(profile),
+            if pending_question.startswith("/"):
+                command_name = pending_question.split(maxsplit=1)[0].lower()
+                if command_name == "/help":
+                    _show_chat_help()
+                    pending_question = ""
+                    continue
+                if command_name == "/attach":
+                    attached = _attach_chat_sources(
+                        pending_question,
+                        profile=profile,
+                        recursive=recursive,
+                    )
+                    if attached is not None:
+                        bundle, attached_inputs = attached
+                        input_values = attached_inputs
+                        session_path = chat_session_path(input_values)
+                        history = load_chat_history(session_path)
+                        session_notes = load_chat_notes(session_path)
+                        citation_source_ids = []
+                        ui.status("success", f"Attached {len(bundle.sources)} source(s).")
+                    pending_question = ""
+                    continue
+                if bundle is None:
+                    ui.status("warning", "Chat tools like /where and /cite need a document source. Use /attach to add one first.")
+                    pending_question = ""
+                    continue
+                result = _handle_chat_tool(
                     pending_question,
-                    system_prompt=system_prompt,
-                    history=history,
-                    notes=session_notes,
-                )
-                reporter.finish("Complete")
-            selected_sources = []
-        else:
-            with ui.progress("Answering...") as reporter:
-                answer, usage, selected_sources = answer_question(
                     bundle,
-                    pending_question,
-                    system_prompt=system_prompt,
-                    history=history,
-                    notes=session_notes,
+                    history,
+                    session_path,
+                    session_notes=session_notes,
                     citation_source_ids=citation_source_ids,
                 )
-                reporter.finish("Complete")
-        ui.section("Answer")
-        stream_pause = 0.012 if len(answer or "") <= 1200 else 0.006
-        ui.stream(answer or "[no answer]", pause=stream_pause)
-        if selected_sources:
-            ui.section("Sources")
-            ui.bullet_list(
-                [
-                    f"{source.source_id}: {source.label}"
-                    for source in selected_sources
-                ]
-            )
-        if isinstance(usage, dict) and (
-            usage.get("prompt_tokens") or usage.get("completion_tokens") or usage.get("total_tokens")
-        ):
-            prompt_tokens = int(usage.get("prompt_tokens") or 0)
-            completion_tokens = int(usage.get("completion_tokens") or 0)
-            total_tokens = int(usage.get("total_tokens") or (prompt_tokens + completion_tokens))
-            if usage.get("truncated"):
-                suffix = " (still truncated after retry)" if usage.get("retry_attempted") else " (truncated)"
+                if result is False:
+                    break
+                if isinstance(result, dict):
+                    if "bundle" in result and result["bundle"] is not None:
+                        bundle = result["bundle"]
+                    if "citation_source_ids" in result:
+                        citation_source_ids = list(result["citation_source_ids"] or [])
+                    if "session_notes" in result:
+                        session_notes = list(result["session_notes"] or [])
+                    if "history" in result:
+                        history = list(result["history"] or history)
+                pending_question = ""
+                continue
+            chat_model = _chat_model(profile)
+            if ui.interactive() and not _chat_model_usable(chat_model):
+                ui.section("Chat Model")
+                prompted = _prompt_missing_model(profile, "chat", store=store, persist=True)
+                if prompted is False:
+                    ui.status(
+                        "warning",
+                        "No usable chat model is configured. Open /models or edit the profile to choose a chat model.",
+                    )
+                    return None
+                chat_model = _chat_model(profile)
+            if bundle is None:
+                with ui.progress("Answering...") as reporter:
+                    answer, usage = answer_general_question(
+                        copy.deepcopy(profile),
+                        pending_question,
+                        system_prompt=system_prompt,
+                        history=history,
+                        notes=session_notes,
+                    )
+                    reporter.finish("Complete")
+                selected_sources = []
             else:
-                suffix = " (retry recovered clipped answer)" if usage.get("retry_attempted") else ""
-            ui.write(
-                f"Token usage: input {prompt_tokens}, output {completion_tokens}, total {total_tokens}{suffix}"
+                with ui.progress("Answering...") as reporter:
+                    answer, usage, selected_sources = answer_question(
+                        bundle,
+                        pending_question,
+                        system_prompt=system_prompt,
+                        history=history,
+                        notes=session_notes,
+                        citation_source_ids=citation_source_ids,
+                    )
+                    reporter.finish("Complete")
+            ui.section("Answer")
+            stream_pause = 0.012 if len(answer or "") <= 1200 else 0.006
+            ui.stream(answer or "[no answer]", pause=stream_pause)
+            if selected_sources:
+                ui.section("Sources")
+                for source in selected_sources:
+                    ui.write_dim(f"  - {source.source_id}: {source.label}")
+            if isinstance(usage, dict) and (
+                usage.get("prompt_tokens") or usage.get("completion_tokens") or usage.get("total_tokens")
+            ):
+                prompt_tokens = int(usage.get("prompt_tokens") or 0)
+                completion_tokens = int(usage.get("completion_tokens") or 0)
+                total_tokens = int(usage.get("total_tokens") or (prompt_tokens + completion_tokens))
+                if usage.get("truncated"):
+                    suffix = " (still truncated after retry)" if usage.get("retry_attempted") else " (truncated)"
+                else:
+                    suffix = " (retry recovered clipped answer)" if usage.get("retry_attempted") else ""
+                ui.write_dim(
+                    f"Token usage: input {prompt_tokens}, output {completion_tokens}, total {total_tokens}{suffix}"
+                )
+            history.append((pending_question, answer))
+            metadata = _chat_session_metadata(profile, bundle, input_values, session_path)
+            
+            # On the first turn, generate a descriptive title instantly in 0.0 seconds!
+            if len(history) == 1 and ui.interactive():
+                session_title = generate_chat_title(pending_question)
+                metadata["title"] = session_title
+                
+                # If this is a general chat session (saved in config dir), rename it!
+                if session_path and session_path.parent == chat_sessions_root():
+                    new_slug = re.sub(r"[^A-Za-z0-9]+", "-", session_title.lower()).strip("-") or "chat"
+                    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                    new_path = chat_sessions_root() / f"{new_slug}-{stamp}.json"
+                    
+                    if session_path.exists():
+                        try:
+                            session_path.unlink()
+                        except OSError:
+                            pass
+                    session_path = new_path
+                    metadata["path"] = str(session_path)
+            
+            if session_title:
+                metadata["title"] = session_title
+
+            save_chat_history(
+                session_path,
+                history,
+                notes=session_notes,
+                metadata=metadata,
             )
-        history.append((pending_question, answer))
-        save_chat_history(
-            session_path,
-            history,
-            notes=session_notes,
-            metadata=_chat_session_metadata(profile, bundle, input_values, session_path),
-        )
-        if question is not None or not ui.interactive():
+            ui.write_dim("  (Press Enter on an empty line or Ctrl+C to exit chat)")
+            pending_question = ""
+            if question is not None or not ui.interactive():
+                break
+            pending_question = ""
+        except KeyboardInterrupt:
+            ui.write()
+            if session_path and history:
+                metadata = _chat_session_metadata(profile, bundle, input_values, session_path)
+                if session_title:
+                    metadata["title"] = session_title
+                save_chat_history(
+                    session_path,
+                    history,
+                    notes=session_notes,
+                    metadata=metadata,
+                )
+            ui.status("info", "Safe stop complete. Chat session closed.")
             break
-        if not ui.confirm("Ask another question?", True):
-            break
-        if bundle is None and ui.interactive():
-            if ui.confirm("Attach a document or folder for the next question?", False):
-                entered = ui.text("Path(s) to run folders, output files, files, folders, or globs")
-                next_inputs = [item.strip() for item in entered.split(",") if item.strip()]
-                if next_inputs:
-                    with ui.progress("Indexing chat sources...") as reporter:
-                        bundle = build_chat_bundle(
-                            next_inputs,
-                            profile=profile,
-                            recursive=recursive,
-                            question=None,
-                        )
-                        reporter.finish(f"Indexed {len(bundle.sources)} source chunk(s)")
-                    bundle.profile.model = copy.deepcopy(_chat_model(profile))
-                    _remember_chat_source_pool(bundle)
-                    session_path = chat_session_path(next_inputs)
-        pending_question = ""
     _next_recommendations(
         _next_steps_for_context("chat", run_dir=Path(input_values[0]) if input_values else None)
     )
@@ -1367,6 +1393,17 @@ def _model_usable(model: ModelSettings) -> bool:
     except Exception:
         return False
     return bool(status.available)
+
+
+def generate_chat_title(question: str) -> str:
+    words = re.findall(r"\b\w+\b", str(question or ""))
+    if not words:
+        return "Grounded Chat Session"
+    title_words = words[:5]
+    title = " ".join(title_words).title()
+    if len(words) > 5:
+        title += "..."
+    return title
 
 
 def _new_general_chat_session(profile: WorkflowProfile) -> Path:
@@ -2932,43 +2969,43 @@ def _compare_review_html(run_dir: Path, metadata: Dict[str, object], comparisons
         "<style>"
         "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');"
         "*{box-sizing:border-box;}"
-        "body{margin:0;padding:2rem;background:#0f1117;color:#e8e0d0;font-family:'Inter',system-ui,sans-serif;line-height:1.6;min-height:100vh;}"
+        "body{margin:0;padding:2rem;background:#faf8f5;color:#2c2c2c;font-family:'Inter',system-ui,sans-serif;line-height:1.6;min-height:100vh;}"
         "main{max-width:1400px;margin:0 auto;}"
-        "h1{font-size:1.8rem;font-weight:700;text-align:center;margin:0 0 0.5rem;letter-spacing:-0.02em;color:#f0e8d8;}"
-        ".summary{text-align:center;margin:0 0 2rem;font-size:0.82rem;color:#888;}"
-        ".compare-card{background:#1a1d27;border:1px solid #2a2d3a;margin:0 0 1.5rem;padding:1.25rem;border-radius:10px;}"
-        ".compare-card header h2{margin:0 0 1rem;font-size:1rem;font-weight:600;color:#c8bfa8;letter-spacing:0.01em;}"
+        "h1{font-size:1.8rem;font-weight:700;text-align:center;margin:0 0 0.5rem;letter-spacing:-0.02em;color:#1a1a1a;}"
+        ".summary{text-align:center;margin:0 0 2rem;font-size:0.82rem;color:#666;}"
+        ".compare-card{background:#ffffff;border:1px solid #e3decb;margin:0 0 1.5rem;padding:1.25rem;border-radius:10px;box-shadow:0 2px 8px rgba(0,0,0,0.03);}"
+        ".compare-card header h2{margin:0 0 1rem;font-size:1rem;font-weight:600;color:#1a1a1a;letter-spacing:0.01em;}"
         ".compare-grid{display:grid;grid-template-columns:minmax(320px,1fr) minmax(320px,1fr);gap:1.25rem;align-items:start;}"
-        ".panel{border:1px solid #2a2d3a;padding:1rem;background:#141720;min-width:0;height:clamp(480px,76vh,920px);overflow:auto;border-radius:6px;}"
-        ".panel h3{margin:0 0 0.75rem;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;color:#666;}"
-        ".panel pre{white-space:pre-wrap;word-break:break-word;margin:0;font-size:0.9rem;font-family:'JetBrains Mono',monospace;color:#d4cbb8;line-height:1.6;}"
-        ".page-output{border-left:3px solid #c77a24;padding-left:1rem;background:#1c1a14;border-radius:0 4px 4px 0;padding:0.75rem 1rem;}"
-        ".page-output-meta{font-size:0.72rem;text-transform:uppercase;letter-spacing:0.1em;color:#7a6a4a;margin:0 0 0.5rem;font-weight:600;}"
+        ".panel{border:1px solid #e3decb;padding:1rem;background:#ffffff;min-width:0;height:clamp(480px,76vh,920px);overflow:auto;border-radius:6px;}"
+        ".panel h3{margin:0 0 0.75rem;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;color:#888;}"
+        ".panel pre{white-space:pre-wrap;word-break:break-word;margin:0;font-size:0.9rem;font-family:'JetBrains Mono',monospace;color:#2c2c2c;line-height:1.6;}"
+        ".page-output{border-left:3px solid #c77a24;padding-left:1rem;background:#fdfcf9;border-radius:0 4px 4px 0;padding:0.75rem 1rem;}"
+        ".page-output-meta{font-size:0.72rem;text-transform:uppercase;letter-spacing:0.1em;color:#8e744a;margin:0 0 0.5rem;font-weight:600;}"
         ".preview-image img{max-width:100%;height:auto;display:block;}"
         ".preview-image{margin:0;}"
         ".overlay-figure{position:relative;margin:0;display:block;width:100%;}"
         ".overlay-figure img{display:block;width:100%;height:auto;}"
         ".overlay-layer{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;}"
         ".overlay-block{position:absolute;border:1.5px solid;border-radius:2px;box-sizing:border-box;}"
-        ".overlay-block .block-num{position:absolute;left:2px;top:2px;display:flex;align-items:center;justify-content:center;min-width:15px;height:15px;padding:0 3px;font-size:8px;font-weight:700;color:#fff;border-radius:8px;line-height:1;font-family:'Inter',sans-serif;box-shadow:0 1px 3px rgba(0,0,0,.5);}"
-        ".preview-frame,.preview-pdf{width:100%;min-height:520px;border:1px solid #2a2d3a;background:#141720;}"
+        ".overlay-block .block-num{position:absolute;left:2px;top:2px;display:flex;align-items:center;justify-content:center;min-width:15px;height:15px;padding:0 3px;font-size:8px;font-weight:700;color:#fff;border-radius:8px;line-height:1;font-family:'Inter',sans-serif;box-shadow:0 1px 3px rgba(0,0,0,.3);}"
+        ".preview-frame,.preview-pdf{width:100%;min-height:520px;border:1px solid #e3decb;background:#fcfcfc;}"
         ".asset-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:0.75rem;margin-top:0.75rem;}"
         ".missing{opacity:0.5;font-style:italic;color:#888;}"
-        ".layout-legend{display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;padding:0.5rem 0;font-size:0.72rem;font-family:'Inter',sans-serif;border-top:1px solid #2a2d3a;margin-top:0.5rem;}"
-        ".legend-item{display:inline-flex;align-items:center;gap:0.25rem;color:#999;}"
+        ".layout-legend{display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;padding:0.5rem 0;font-size:0.72rem;font-family:'Inter',sans-serif;border-top:1px solid #e3decb;margin-top:0.5rem;}"
+        ".legend-item{display:inline-flex;align-items:center;gap:0.25rem;color:#666;}"
         ".legend-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0;}"
         ".legend-count{margin-left:auto;font-weight:600;color:#666;font-size:0.7rem;}"
         ".blocks-output{display:flex;flex-direction:column;}"
-        ".block-card{padding:0.65rem 0.8rem;border-bottom:1px solid #22252f;transition:background 0.15s;}"
-        ".block-card:hover{background:#1e2130;}"
+        ".block-card{padding:0.65rem 0.8rem;border-bottom:1px solid #e8e4d3;transition:background 0.15s;}"
+        ".block-card:hover{background:#f8f6ee;}"
         ".block-card:first-child{border-top:none;}"
         ".block-card-tag{font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.3rem;font-family:'Inter',sans-serif;}"
-        ".block-text{white-space:pre-wrap;word-break:break-word;margin:0;font-size:0.9rem;line-height:1.6;color:#d4cbb8;}"
+        ".block-text{white-space:pre-wrap;word-break:break-word;margin:0;font-size:0.9rem;line-height:1.6;color:#2c2c2c;}"
         ".extracted-table{width:100%;border-collapse:collapse;font-size:0.82rem;margin:0.25rem 0;}"
-        ".extracted-table th{background:#252836;color:#c8bfa8;font-weight:600;padding:0.4rem 0.6rem;text-align:left;border:1px solid #2a2d3a;font-family:'Inter',sans-serif;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.04em;}"
-        ".extracted-table td{border:1px solid #2a2d3a;padding:0.35rem 0.6rem;color:#d4cbb8;vertical-align:top;}"
-        ".extracted-table tr:nth-child(even) td{background:#191c26;}"
-        ".extracted-table tr:hover td{background:#1e2130;}"
+        ".extracted-table th{background:#f4f0df;color:#1a1a1a;font-weight:600;padding:0.4rem 0.6rem;text-align:left;border:1px solid #e3decb;font-family:'Inter',sans-serif;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.04em;}"
+        ".extracted-table td{border:1px solid #e3decb;padding:0.35rem 0.6rem;color:#2c2c2c;vertical-align:top;}"
+        ".extracted-table tr:nth-child(even) td{background:#fcfbf7;}"
+        ".extracted-table tr:hover td{background:#f8f6ee;}"
         "@media (max-width:900px){.compare-grid{grid-template-columns:1fr}.panel{height:auto;max-height:none}}"
         "@media print{body{background:#fff;color:#000} .compare-card{break-inside:avoid;background:#fff;border:1px solid #ccc;} .panel{height:auto;max-height:none;overflow:visible;background:#fff;} .block-text,.panel pre{color:#000;} .extracted-table th{background:#f5f5f5;color:#000;} .extracted-table td{color:#000;border-color:#ccc;}}"
         "</style>"
@@ -3635,7 +3672,6 @@ def env_command() -> None:
     ui.table(
         [
             ["Provider", "Setup"],
-            ["Sarvam", "SARVAM_API_KEY"],
             ["OpenAI / Anthropic / Gemini", "native provider key"],
             ["OpenRouter / Groq / Mistral", "OpenAI-compatible model listing when available"],
             ["Together / Fireworks / Perplexity", "OpenAI-compatible model listing when available"],
@@ -3689,7 +3725,6 @@ def doctor_command() -> None:
         ]
     )
     for env_name, purpose in [
-        ("SARVAM_API_KEY", "Sarvam cloud models"),
         ("OPENAI_API_KEY", "OpenAI cloud models"),
         ("ANTHROPIC_API_KEY", "Anthropic cloud models"),
         ("GEMINI_API_KEY", "Gemini cloud models"),
@@ -4155,8 +4190,6 @@ def clean_command(yes: bool = False) -> None:
 
 
 def _recommended_models(provider_name: str) -> List[str]:
-    if provider_name == "sarvam":
-        return ["sarvam-vision", "sarvam-105b", "sarvam-30b", "mayura", "sarvam-translate"]
     if provider_name == "ollama":
         return ["gemma4:12b", "qwen3.6:27b", "qwen3.5:4b", "llama3.2-vision:11b"]
     if provider_name in {"openai-compatible-local", "lm-studio", "jan", "llama-cpp"}:
@@ -4171,6 +4204,24 @@ def _recommended_models(provider_name: str) -> List[str]:
 
 
 def _default_endpoint(provider_name: str) -> str:
+    # First check provider-specific base URL overrides (e.g. AKSHARA_CUSTOM_OPENAI_COMPATIBLE_BASE_URL)
+    normalized = str(provider_name or "").upper().replace("-", "_")
+    env_var = f"AKSHARA_{normalized}_BASE_URL"
+    env_val = os.environ.get(env_var)
+    if env_val:
+        return env_val
+        
+    # Local providers fall back to the generic local runtime base URL
+    if provider_name in {
+        "openai-compatible-local",
+        "lm-studio",
+        "jan",
+        "llama-cpp",
+    }:
+        local_env = os.environ.get("AKSHARA_OPENAI_COMPATIBLE_BASE_URL")
+        if local_env:
+            return local_env
+
     return {
         "openai-compatible-local": "http://localhost:1234/v1",
         "lm-studio": "http://localhost:1234/v1",
@@ -4182,7 +4233,6 @@ def _default_endpoint(provider_name: str) -> str:
 
 def _short_detail(detail: str) -> str:
     replacements = {
-        "SARVAM_API_KEY is not set.": "set SARVAM_API_KEY",
         "ollama command not found.": "install ollama",
         "OPENAI_API_KEY is not set.": "set OPENAI_API_KEY",
         "ANTHROPIC_API_KEY is not set.": "set ANTHROPIC_API_KEY",

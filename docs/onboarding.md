@@ -92,3 +92,17 @@ balanced defaults, or the slower quality-focused analysis path.
 For dense pages, damaged scans, or non-English scripts, prefer `quality` mode
 and a stronger vision model. The tool saves extraction before translation, but
 recognition quality and language coverage still depend on the selected model.
+
+---
+
+## Windows Troubleshooting
+
+### WinError 206 (Filename or extension too long)
+When installing with the `layout` extra (`pip install -e ".[layout]"`), Windows may fail during `torch` or `doctr` installation with `OSError: [WinError 206]`. This is caused by the default 260-character path limit on Windows.
+
+To resolve this:
+1. **Enable Long Paths**: Open PowerShell as **Administrator** and run:
+   ```powershell
+   New-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
+   ```
+2. **Use a Virtual Environment**: Create and activate a `.venv` in a short path (e.g. directly in your project folder rather than globally in AppData) to prevent long nested prefix directories.

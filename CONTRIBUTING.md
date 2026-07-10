@@ -1,21 +1,12 @@
 # Contributing
 
-Akshara Vision is early and open-ended. Contributions are welcome across OCR,
-restoration, model providers, exporters, terminal UX, tests, and documentation.
+We welcome feedback, suggestions, and bug reports! If you encounter an issue or have a feature idea, please open a ticket on our issue tracker. Your reports help make Akshara Vision more stable and robust for everyone.
 
-Keep changes small, readable, and respectful of archival source material.
+To maintain development focus and project consistency, Akshara Vision is currently developed and maintained as a focused initiative. We do not accept external pull requests or direct code contributions at this time. 
 
-## Setup
+If you find a bug, please raise an issue describing:
+1. The expected behavior.
+2. The actual behavior.
+3. Steps to reproduce the issue (including sample code or settings if applicable).
 
-```bash
-python -m pip install -e ".[dev]"
-akv check
-```
-
-## Principles
-
-- Never overwrite source files.
-- Do not commit generated outputs, local config, virtual environments, or secrets.
-- Keep the CLI keyboard-first, black-and-white, responsive, and scriptable.
-- Put new providers/exporters behind registries.
-- Mark uncertain restoration instead of guessing.
+We appreciate your interest, cooperation, and support!

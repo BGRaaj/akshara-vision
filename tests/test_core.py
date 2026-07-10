@@ -238,7 +238,7 @@ class CoreTests(unittest.TestCase):
     def test_registries_expose_planned_extensions(self):
         from akshara_vision.core.constants import OUTPUT_FORMATS
 
-        self.assertIn("sarvam", provider_registry())
+        self.assertIn("anthropic", provider_registry())
         self.assertIn("ollama", provider_registry())
         self.assertIn("gemini", provider_registry())
         self.assertIn("txt", exporter_registry())
