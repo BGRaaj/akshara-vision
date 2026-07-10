@@ -926,6 +926,7 @@ def combine_stage_outputs(run_dir: Path) -> Dict[str, object]:
     _write_nested_folder_combines(items_root, language_suffix)
 
     metadata = _combine_metadata(effective_manifest, run_dir, language_suffix)
+    metadata["_records"] = _load_all_records(stage_root / "records")
     metadata["assets"] = _collect_assets_from_records(
         (effective_manifest.get("metadata") or {}).get("restoration")
         if isinstance(effective_manifest.get("metadata"), dict)
@@ -1022,6 +1023,20 @@ def _collect_assets_from_record_checkpoints(records_root: Path) -> List[Dict[str
                 if isinstance(asset, dict):
                     assets.append(asset)
     return assets
+
+
+def _load_all_records(records_root: Path) -> List[Dict[str, object]]:
+    if not records_root.exists():
+        return []
+    records = []
+    for record_path in sorted(records_root.rglob("*-record.json")):
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            if isinstance(record, dict):
+                records.append(record)
+        except Exception:
+            continue
+    return records
 
 
 def _combined_parts_from_items(items_root: Path) -> List[str]:
@@ -3073,7 +3088,8 @@ def _extract_figure_assets(
     try:
         with Image.open(image_path) as image:
             source = ImageOps.exif_transpose(image).convert("RGB")
-            boxes = _candidate_figure_boxes(source)
+            doc_type = profile.document_type if profile else "Book"
+            boxes = _candidate_figure_boxes(source, doc_type)
             assets = []
             for figure_index, bbox in enumerate(boxes[:MAX_FIGURE_CROPS_PER_PAGE], start=1):
                 cropped = source.crop(bbox)
@@ -3109,18 +3125,16 @@ def _verify_figure_assets(
             provider is None
             or profile is None
             or not local_path.exists()
-            or asset_index > verification_limit
         ):
             asset["verification"] = "heuristic"
-            if asset_index > verification_limit:
-                asset["reason"] = "verification skipped by execution mode"
             verified_assets.append(asset)
             continue
         prompt = (
             "Return only JSON: {\"keep\": true|false, \"label\": \"short label\", \"reason\": \"short reason\"}.\n"
-            "The attached crop was already pre-screened as a possible figure from a scanned archival page.\n"
+            "The attached crop was already pre-screened as a possible figure from a scanned page.\n"
             "Keep it only if you are confident it is a real non-text illustration, photograph, map, plate, seal, chart, "
             "diagram, or meaningful visual element.\n"
+            "Reject it if it contains any readable text columns, sentences, paragraphs, or book/manuscript print. It must NOT be a text paragraph.\n"
             "Reject it if it is mostly text, a page border, bleed-through, mirrored back-page impression, stain, crack, "
             "scanner noise, blank margin, or an accidental crop.\n"
             "If you are unsure, reject it.\n"
@@ -3179,7 +3193,7 @@ def _parse_figure_verification(response: str) -> Dict[str, object]:
     return {"keep": False, "label": "", "reason": "verification inconclusive"}
 
 
-def _candidate_figure_boxes(image) -> List[tuple[int, int, int, int]]:
+def _candidate_figure_boxes(image, document_type: str = "Book") -> List[tuple[int, int, int, int]]:
     width, height = image.size
     if width < 120 or height < 120:
         return []
@@ -3233,17 +3247,22 @@ def _candidate_figure_boxes(image) -> List[tuple[int, int, int, int]]:
         bottom = min((max_y + 2) * cell_h, height)
         bbox = (left, top, right, bottom)
         score = _figure_box_score(gray, bbox, width, height)
-        if score >= 0.34 and _looks_like_figure_box(gray, bbox, width, height):
+        if score >= 0.34 and _looks_like_figure_box(gray, bbox, width, height, document_type):
             scored_boxes.append((score, bbox))
     boxes = [bbox for _score, bbox in sorted(scored_boxes, key=lambda item: (-item[0], item[1][1], item[1][0]))]
     return _dedupe_boxes(boxes)
 
 
-def _looks_like_figure_box(gray, bbox: tuple[int, int, int, int], page_w: int, page_h: int) -> bool:
+def _looks_like_figure_box(gray, bbox: tuple[int, int, int, int], page_w: int, page_h: int, document_type: str = "Book") -> bool:
     left, top, right, bottom = bbox
     box_w = right - left
     box_h = bottom - top
-    if box_w < page_w * 0.16 or box_h < page_h * 0.10:
+    
+    # Custom size thresholds depending on document type
+    min_w_ratio = 0.08 if document_type in {"Manuscript", "Archive bundle", "Magazine"} else 0.14
+    min_h_ratio = 0.06 if document_type in {"Manuscript", "Archive bundle", "Magazine"} else 0.09
+    
+    if box_w < page_w * min_w_ratio or box_h < page_h * min_h_ratio:
         return False
     area_ratio = (box_w * box_h) / max(page_w * page_h, 1)
     if area_ratio < 0.025 or area_ratio > 0.75:
@@ -3256,16 +3275,20 @@ def _looks_like_figure_box(gray, bbox: tuple[int, int, int, int], page_w: int, p
     return True
 
 
-def _native_table_signals(gray, bbox: tuple[int, int, int, int], page_w: int, page_h: int) -> bool:
+def _native_table_signals(gray, bbox: tuple[int, int, int, int], page_w: int, page_h: int, document_type: str = "Book") -> bool:
     left, top, right, bottom = bbox
     box_w = right - left
     box_h = bottom - top
     if box_w <= 0 or box_h <= 0:
         return False
+    
+    min_w_ratio = 0.15 if document_type in {"Register", "Finance document", "Legal document"} else 0.22
+    min_h_ratio = 0.05 if document_type in {"Register", "Finance document", "Legal document"} else 0.07
+    
+    if box_w < page_w * min_w_ratio or box_h < page_h * min_h_ratio:
+        return False
     area_ratio = (box_w * box_h) / max(page_w * page_h, 1)
     if area_ratio < 0.03 or area_ratio > 0.70:
-        return False
-    if box_w < page_w * 0.25 or box_h < page_h * 0.08:
         return False
     crop = gray.crop(bbox)
     histogram = crop.histogram()
@@ -3330,11 +3353,245 @@ def _figure_box_score(gray, bbox: tuple[int, int, int, int], page_w: int, page_h
 
 def _dedupe_boxes(boxes: List[tuple[int, int, int, int]]) -> List[tuple[int, int, int, int]]:
     kept = []
-    for box in sorted(boxes, key=lambda item: (item[1], item[0], -(item[2] - item[0]) * (item[3] - item[1]))):
-        if any(_box_overlap_ratio(box, existing) > 0.55 for existing in kept):
+    # Sort primarily by area descending so that larger layout blocks are kept,
+    # and any smaller nested/overlapping blocks inside them are suppressed.
+    sorted_boxes = sorted(boxes, key=lambda item: -((item[2] - item[0]) * (item[3] - item[1])))
+    for box in sorted_boxes:
+        if any(_box_overlap_ratio(box, existing) > 0.40 for existing in kept):
             continue
         kept.append(box)
     return kept
+
+
+def _normalize_llm_role(role: str) -> Optional[str]:
+    r = str(role or "").strip().lower()
+    if r in {"text-region", "text", "paragraph", "body", "prose", "content"}:
+        return "text-region"
+    if r in {"title-region", "title", "heading", "subtitle"}:
+        return "title-region"
+    if r in {"table-region", "table", "grid", "ledger", "register"}:
+        return "table-region"
+    if r in {"figure-region", "figure", "image", "illustration", "photo", "photograph", "plate", "map", "drawing", "decoration"}:
+        return "figure-region"
+    if r in {"chart-region", "chart", "diagram", "graph"}:
+        return "chart-region"
+    if r in {"running-header-or-footer", "footer", "marginalia", "folio"}:
+        return "running-header-or-footer"
+    if r in {"caption-region", "caption"}:
+        return "caption-region"
+    if r in {"list-region", "list", "numbered-list", "bullet-list", "bullet", "numbered"}:
+        return "list-region"
+    if r in {"equation-region", "equation", "formula", "math"}:
+        return "equation-region"
+    if r in {"page-number", "page-no", "small-mark-or-page-number", "page_number"}:
+        return "page-number-region"
+    if r in {"separator-region", "separator", "line", "rule", "divider", "horizontal-rule"}:
+        return "separator-region"
+    if r in {"header", "running-header"}:
+        return "running-header-or-footer"
+    return None
+
+
+def _llm_classify_layout_blocks(
+    image_path: Path,
+    blocks: List[Dict[str, object]],
+    provider,
+    model_settings,
+    progress=None,
+) -> List[Dict[str, object]]:
+    if not provider or not blocks:
+        return blocks
+
+    try:
+        if Image is not None:
+            with Image.open(image_path) as img:
+                page_w, page_h = img.size
+        else:
+            page_w = blocks[0].get("page_width") or 1000
+            page_h = blocks[0].get("page_height") or 1500
+    except Exception:
+        page_w = blocks[0].get("page_width") or 1000
+        page_h = blocks[0].get("page_height") or 1500
+
+    block_lines = []
+    for b in blocks:
+        bbox = b.get("bbox", [])
+        if len(bbox) == 4:
+            pct = [
+                round(bbox[0] / page_w * 100),
+                round(bbox[1] / page_h * 100),
+                round(bbox[2] / page_w * 100),
+                round(bbox[3] / page_h * 100),
+            ]
+            block_lines.append(f"  ID {b.get('order')}: bbox_px={bbox}  pct=[left:{pct[0]}% top:{pct[1]}% right:{pct[2]}% bottom:{pct[3]}%]")
+        else:
+            block_lines.append(f"  ID {b.get('order')}: bbox={bbox}")
+
+    prompt = (
+        f"You are an expert document layout analyzer.\n"
+        f"Image dimensions: width={page_w}px, height={page_h}px.\n\n"
+        "Carefully examine the image and classify each bounding box region below into exactly ONE role.\n\n"
+        "ROLES (use only these exact strings):\n"
+        "  title       — document title, chapter heading, section heading, subtitle, major heading\n"
+        "  paragraph   — body text, prose, running text, footnote text\n"
+        "  list        — bulleted list, numbered list, item list\n"
+        "  table       — any structured table, grid, register, ledger with rows and columns\n"
+        "  figure      — photograph, illustration, plate, map, drawing, diagram, decorative element\n"
+        "  chart       — bar chart, line chart, pie chart, graph (with axes/data visualisation)\n"
+        "  caption     — text caption directly below a figure, table, or chart\n"
+        "  header      — running page header at top of page\n"
+        "  footer      — running page footer at bottom of page\n"
+        "  page-number — standalone page number or folio\n"
+        "  equation    — mathematical formula or equation\n"
+        "  separator   — decorative rule, horizontal line, ornamental divider\n"
+        "  none        — background noise, stain, bleed-through, blank margin — REJECT this block\n\n"
+        "RULES:\n"
+        "1. Use the bounding box coordinates to locate exactly where each block sits in the image.\n"
+        "2. If two or more blocks together form one logical element (e.g. two columns of the same table, \n"
+        "   or a two-part title split across lines), list them in 'merges'.\n"
+        "3. Be strict: only label 'table' if you see a clear grid/row structure with column dividers or aligned columns.\n"
+        "4. Only label 'figure' if the region is a genuine visual — not a text block with diagrams embedded in prose.\n"
+        "5. Small regions at the very top or very bottom (top 5% or bottom 5% of page) are likely header/footer/page-number.\n\n"
+        "CANDIDATE BLOCKS:\n"
+        + "\n".join(block_lines)
+        + "\n\nReturn ONLY a valid JSON object — no markdown, no prose:\n"
+        "{\n"
+        "  \"classifications\": [{\"id\": 1, \"role\": \"paragraph\"}, ...],\n"
+        "  \"merges\": [[2, 3], ...]\n"
+        "}"
+    )
+    
+    try:
+        response, usage = _provider_restore_with_heartbeat(
+            provider, prompt, "", model_settings, media_path=image_path, progress=progress
+        )
+        clean_resp = (response or "").strip()
+        if clean_resp.startswith("```"):
+            lines = clean_resp.splitlines()
+            if len(lines) >= 2 and lines[-1].startswith("```"):
+                clean_resp = "\n".join(lines[1:-1]).strip()
+                if clean_resp.startswith("json"):
+                    clean_resp = clean_resp[4:].strip()
+        try:
+            classifications = json.loads(clean_resp)
+        except Exception:
+            start_list = clean_resp.find("[")
+            end_list = clean_resp.rfind("]")
+            if start_list != -1 and end_list != -1 and end_list > start_list:
+                try:
+                    classifications = json.loads(clean_resp[start_list : end_list + 1])
+                except Exception:
+                    classifications = None
+            else:
+                json_candidate = _extract_json_object(clean_resp)
+                try:
+                    classifications = json.loads(json_candidate) if json_candidate else None
+                except Exception:
+                    classifications = None
+                    
+        merges = []
+        if isinstance(classifications, dict):
+            merges = classifications.get("merges") or []
+            classifications = classifications.get("classifications") or []
+
+        role_map = {}
+        if isinstance(classifications, list):
+            for item in classifications:
+                if isinstance(item, dict) and "id" in item and "role" in item:
+                    norm = _normalize_llm_role(item["role"])
+                    if norm:
+                        role_map[item["id"]] = norm
+                    elif str(item["role"]).lower() in {"none", "ignore", "background", "noise", "margin"}:
+                        role_map[item["id"]] = "delete"
+            
+            updated_blocks = []
+            for b in blocks:
+                order = b.get("order")
+                if order in role_map:
+                    if role_map[order] == "delete":
+                        continue
+                    b["role"] = role_map[order]
+                updated_blocks.append(b)
+            blocks = updated_blocks
+                    
+        if merges and isinstance(merges, list):
+            from collections import defaultdict
+            adj = defaultdict(set)
+            for m in merges:
+                if isinstance(m, list) and len(m) >= 2:
+                    for i in range(len(m) - 1):
+                        u, v = m[i], m[i+1]
+                        adj[u].add(v)
+                        adj[v].add(u)
+                        
+            visited = set()
+            components = []
+            for node in list(adj.keys()):
+                if node not in visited:
+                    visited.add(node)
+                    stack = [node]
+                    comp = []
+                    while stack:
+                        curr = stack.pop()
+                        comp.append(curr)
+                        for neighbor in adj[curr]:
+                            if neighbor not in visited:
+                                visited.add(neighbor)
+                                stack.append(neighbor)
+                    components.append(comp)
+                    
+            block_map = {b.get("order"): b for b in blocks if b.get("order")}
+            merged_ids = set()
+            new_blocks = []
+            
+            for comp in components:
+                valid_blocks = [block_map[node] for node in comp if node in block_map]
+                if len(valid_blocks) < 2:
+                    continue
+                lefts = [b["bbox"][0] for b in valid_blocks if b.get("bbox")]
+                tops = [b["bbox"][1] for b in valid_blocks if b.get("bbox")]
+                rights = [b["bbox"][2] for b in valid_blocks if b.get("bbox")]
+                bottoms = [b["bbox"][3] for b in valid_blocks if b.get("bbox")]
+                if not lefts:
+                    continue
+                merged_bbox = [min(lefts), min(tops), max(rights), max(bottoms)]
+                
+                roles = [b.get("role") for b in valid_blocks]
+                unified_role = "text-region"
+                if "table-region" in roles:
+                    unified_role = "table-region"
+                elif "figure-region" in roles:
+                    unified_role = "figure-region"
+                elif "title-region" in roles:
+                    unified_role = "title-region"
+                elif "running-header-or-footer" in roles:
+                    unified_role = "running-header-or-footer"
+                    
+                min_order = min(b.get("order", 1) for b in valid_blocks)
+                merged_block = {
+                    "order": min_order,
+                    "role": unified_role,
+                    "bbox": merged_bbox,
+                    "relative_bbox": _relative_bbox(merged_bbox, valid_blocks[0].get("page_width") or 1000, valid_blocks[0].get("page_height") or 1500) if valid_blocks[0].get("page_width") else None,
+                    "page_zone": valid_blocks[0].get("page_zone", "middle-center"),
+                    "area_ratio": round(((merged_bbox[2] - merged_bbox[0]) * (merged_bbox[3] - merged_bbox[1])) / max((valid_blocks[0].get("page_width") or 1000) * (valid_blocks[0].get("page_height") or 1500), 1), 4),
+                    "confidence": max(b.get("confidence", 0.70) for b in valid_blocks),
+                }
+                new_blocks.append(merged_block)
+                for node in comp:
+                    merged_ids.add(node)
+                    
+            for b in blocks:
+                if b.get("order") not in merged_ids:
+                    new_blocks.append(b)
+                    
+            new_blocks = sorted(new_blocks, key=lambda x: x.get("order") or 0)
+            for idx, b in enumerate(new_blocks, start=1):
+                b["order"] = idx
+            blocks = new_blocks
+    except Exception:
+        pass
+    return blocks
 
 
 def register_layout_backend(name: str, backend: LayoutBackend) -> None:
@@ -3350,8 +3607,83 @@ def available_layout_backends() -> List[str]:
     )
 
 
-def _page_layout(image_path: Path, profile: Optional[WorkflowProfile] = None) -> Dict[str, object]:
+def _populate_block_texts(layout: Dict[str, object], restored_text: str) -> Dict[str, object]:
+    """Allocate restored page text to individual layout blocks.
+    
+    Strategy:
+    - Split restored text on double newlines to get logical paragraphs/sections.
+    - CSV fenced blocks (```csv...```) are treated as atomic units — they stay together and
+      are allocated to the nearest table-region block.
+    - Figure/separator blocks get no text allocation.
+    - Remaining blocks are matched in order.
+    """
+    if not isinstance(layout, dict) or not layout.get("blocks") or not restored_text:
+        return layout
+    blocks = layout["blocks"]
+
+    # Split restored text into logical segments, preserving CSV fences intact
+    _CSV_FENCE_RE = re.compile(r"```csv.*?```", re.DOTALL | re.IGNORECASE)
+    segments: List[str] = []
+    last_end = 0
+    for m in _CSV_FENCE_RE.finditer(restored_text):
+        before = restored_text[last_end:m.start()]
+        for chunk in before.split("\n\n"):
+            if chunk.strip():
+                segments.append(chunk.strip())
+        segments.append(m.group(0).strip())  # keep CSV fence atomic
+        last_end = m.end()
+    remainder = restored_text[last_end:]
+    for chunk in remainder.split("\n\n"):
+        if chunk.strip():
+            segments.append(chunk.strip())
+
+    # Classify which blocks can receive text
+    skip_roles = {"separator-region", "figure-region"}
+    text_blocks = [b for b in blocks if isinstance(b, dict) and b.get("role") not in skip_roles]
+    table_blocks = [b for b in text_blocks if b.get("role") == "table-region"]
+
+    # First pass: match CSV segments specifically to table blocks
+    csv_segments = [s for s in segments if s.startswith("```csv")]
+    non_csv_segments = [s for s in segments if not s.startswith("```csv")]
+
+    allocations: Dict[int, str] = {}
+
+    # Assign CSV segments to table blocks in order
+    for i, tbl in enumerate(table_blocks):
+        order = tbl.get("order", 0)
+        if i < len(csv_segments):
+            allocations[order] = csv_segments[i]
+
+    # Assign non-CSV segments to non-table text blocks in order
+    non_table_blocks = [b for b in text_blocks if b.get("role") != "table-region"]
+    for i, blk in enumerate(non_table_blocks):
+        order = blk.get("order", 0)
+        if i < len(non_csv_segments):
+            allocations[order] = non_csv_segments[i]
+        else:
+            allocations[order] = ""
+
+    # Overflow: if more non-csv segments than non-table blocks, append to last
+    if len(non_csv_segments) > len(non_table_blocks) and non_table_blocks:
+        last_order = non_table_blocks[-1].get("order", 0)
+        if last_order in allocations:
+            allocations[last_order] += "\n\n" + "\n\n".join(non_csv_segments[len(non_table_blocks):])
+
+    for b in blocks:
+        order = b.get("order")
+        if order in allocations:
+            b["extracted_text"] = allocations[order]
+
+    return layout
+
+
+def _page_layout(
+    image_path: Path,
+    profile: Optional[WorkflowProfile] = None,
+    provider=None,
+) -> Dict[str, object]:
     backend_name = str(getattr(profile, "layout_backend", "native") or "native").strip().lower()
+    document_type = getattr(profile, "document_type", "Book") or "Book"
     if backend_name in {"", "default"}:
         backend_name = "native"
     if backend_name in {"off", "none", "disabled"}:
@@ -3362,13 +3694,19 @@ def _page_layout(image_path: Path, profile: Optional[WorkflowProfile] = None) ->
             backend_name = preferred
     backend = _LAYOUT_BACKENDS.get(backend_name) or _LAYOUT_BACKENDS.get("native")
     if backend is None:
-        return _native_page_layout(image_path)
-    try:
-        layout = backend(image_path)
-    except Exception:
-        if backend_name == "native":
-            return {}
-        layout = _native_page_layout(image_path)
+        layout = _native_page_layout(image_path, document_type)
+    else:
+        try:
+            layout = backend(image_path)
+        except Exception:
+            if backend_name == "native":
+                return {}
+            layout = _native_page_layout(image_path, document_type)
+
+    if isinstance(layout, dict) and layout.get("blocks") and provider:
+        layout["blocks"] = _llm_classify_layout_blocks(
+            image_path, layout["blocks"], provider, profile.model if profile else None
+        )
     return layout if isinstance(layout, dict) else {}
 
 
@@ -3380,27 +3718,54 @@ def _preferred_layout_backend() -> str:
     return "native"
 
 
-def _native_page_layout(image_path: Path) -> Dict[str, object]:
+def _native_page_layout(image_path: Path, document_type: str = "Book") -> Dict[str, object]:
     if Image is None or ImageOps is None:
         return {}
     try:
         with Image.open(image_path) as opened:
             image = ImageOps.exif_transpose(opened).convert("RGB")
-            return _analyze_native_layout(image)
+            return _analyze_native_layout(image, document_type)
     except Exception:
         return {}
 
 
-def _analyze_native_layout(image) -> Dict[str, object]:
+def _sort_blocks_reading_order(blocks: List[Dict[str, object]], column_count: int, page_width: int) -> List[Dict[str, object]]:
+    if not blocks:
+        return blocks
+    if column_count <= 1:
+        # Single-column: sort purely top-to-bottom
+        return sorted(blocks, key=lambda b: (b.get("bbox", [0,0,0,0])[1], b.get("bbox", [0,0,0,0])[0]))
+    
+    # Multi-column: sort column-by-column
+    col_width = page_width / column_count
+    def get_col_index(b):
+        bbox = b.get("bbox", [0,0,0,0])
+        center_x = (bbox[0] + bbox[2]) / 2
+        return min(int(center_x // col_width), column_count - 1)
+        
+    return sorted(blocks, key=lambda b: (get_col_index(b), b.get("bbox", [0,0,0,0])[1]))
+
+
+def _analyze_native_layout(image, document_type: str = "Book") -> Dict[str, object]:
     width, height = image.size
     if width <= 0 or height <= 0:
         return {}
     gray = ImageOps.grayscale(image)
-    components = _native_layout_components(gray, width, height)
-    blocks = [_native_layout_block(gray, bbox, width, height, order) for order, bbox in enumerate(components, start=1)]
+    components = _native_layout_components(gray, width, height, document_type)
+    
+    # First generate layout blocks with initial ordering
+    blocks = [_native_layout_block(gray, bbox, width, height, order, document_type) for order, bbox in enumerate(components, start=1)]
     blocks = [block for block in blocks if block]
-    content_bbox = _merge_bboxes([tuple(block["bbox"]) for block in blocks if block.get("bbox")])
+    
+    # Calculate column count first to sort layout blocks into visual reading order
     column_count = _estimate_native_columns(blocks)
+    blocks = _sort_blocks_reading_order(blocks, column_count, width)
+    
+    # Re-assign sequential reading order index IDs
+    for idx, block in enumerate(blocks, start=1):
+        block["order"] = idx
+
+    content_bbox = _merge_bboxes([tuple(block["bbox"]) for block in blocks if block.get("bbox")])
     flow = _native_flow(blocks, column_count)
     return {
         "engine": "akshara-native-heuristic",
@@ -3411,12 +3776,12 @@ def _analyze_native_layout(image) -> Dict[str, object]:
         "column_count_estimate": column_count,
         "dominant_flow": flow,
         "block_count": len(blocks),
-        "blocks": blocks[:48],
+        "blocks": blocks[:120],
     }
 
 
-def _native_layout_components(gray, page_w: int, page_h: int) -> List[tuple[int, int, int, int]]:
-    grid_x = 56
+def _native_layout_components(gray, page_w: int, page_h: int, document_type: str = "Book") -> List[tuple[int, int, int, int]]:
+    grid_x = 72 if document_type == "Newspaper" else 56
     grid_y = 72
     cell_w = max(page_w // grid_x, 1)
     cell_h = max(page_h // grid_y, 1)
@@ -3432,7 +3797,10 @@ def _native_layout_components(gray, page_w: int, page_h: int) -> List[tuple[int,
             crop = gray.crop((left, top, right, bottom))
             histogram = crop.histogram()
             dark_ratio = sum(histogram[:104]) / max((right - left) * (bottom - top), 1)
-            if 0.025 <= dark_ratio <= 0.88:
+            
+            # Allow slightly lower contrast for faint manuscripts
+            min_dark = 0.015 if document_type in {"Manuscript", "Archive bundle"} else 0.025
+            if min_dark <= dark_ratio <= 0.88:
                 active.add((gx, gy))
 
     boxes = []
@@ -3457,10 +3825,19 @@ def _native_layout_components(gray, page_w: int, page_h: int) -> List[tuple[int,
         max_x = max(x for x, _y in component)
         min_y = min(y for _x, y in component)
         max_y = max(y for _x, y in component)
-        left = max(min_x * cell_w - cell_w, 0)
-        top = max(min_y * cell_h - cell_h, 0)
-        right = min((max_x + 2) * cell_w, page_w)
-        bottom = min((max_y + 2) * cell_h, page_h)
+        
+        # Newspapers have very close columns - expand less to prevent merges
+        if document_type == "Newspaper":
+            left = min_x * cell_w
+            top = min_y * cell_h
+            right = min((max_x + 1) * cell_w, page_w)
+            bottom = min((max_y + 1) * cell_h, page_h)
+        else:
+            left = max(min_x * cell_w - cell_w, 0)
+            top = max(min_y * cell_h - cell_h, 0)
+            right = min((max_x + 2) * cell_w, page_w)
+            bottom = min((max_y + 2) * cell_h, page_h)
+            
         if _native_component_is_meaningful((left, top, right, bottom), page_w, page_h):
             boxes.append((left, top, right, bottom))
     return _dedupe_boxes(boxes)
@@ -3486,6 +3863,7 @@ def _native_layout_block(
     page_w: int,
     page_h: int,
     order: int,
+    document_type: str = "Book",
 ) -> Dict[str, object]:
     left, top, right, bottom = bbox
     box_w = right - left
@@ -3494,12 +3872,12 @@ def _native_layout_block(
     histogram = crop.histogram()
     dark_ratio = sum(histogram[:104]) / max(box_w * box_h, 1)
     chart_signals = _native_chart_signals(gray, bbox, page_w, page_h)
-    table_signals = _native_table_signals(gray, bbox, page_w, page_h)
+    table_signals = _native_table_signals(gray, bbox, page_w, page_h, document_type)
     area_ratio = round((box_w * box_h) / max(page_w * page_h, 1), 4)
     width_ratio = box_w / max(page_w, 1)
     height_ratio = box_h / max(page_h, 1)
     role = "text-region"
-    if _looks_like_figure_box(gray, bbox, page_w, page_h):
+    if _looks_like_figure_box(gray, bbox, page_w, page_h, document_type):
         role = "chart-region" if chart_signals else "figure-region"
     elif width_ratio > 0.65 and height_ratio < 0.08:
         role = "running-header-or-footer"
@@ -3507,6 +3885,8 @@ def _native_layout_block(
         role = "small-mark-or-page-number"
     elif table_signals:
         role = "table-region"
+    elif (page_h * 0.08 < top < page_h * 0.35) and (0.22 <= width_ratio <= 0.88) and (height_ratio < 0.11) and abs((left + right)/2 - page_w/2) < page_w * 0.15:
+        role = "title-region"
     confidence = _native_block_confidence(role, area_ratio, dark_ratio, width_ratio, height_ratio)
     return {
         "order": order,
@@ -3514,6 +3894,8 @@ def _native_layout_block(
         "bbox": [left, top, right, bottom],
         "relative_bbox": _relative_bbox(bbox, page_w, page_h),
         "page_zone": _page_zone(((left + right) / 2) / page_w, ((top + bottom) / 2) / page_h),
+        "page_width": page_w,
+        "page_height": page_h,
         "area_ratio": area_ratio,
         "dark_ratio": round(dark_ratio, 4),
         "chart_signals": chart_signals,
@@ -3526,7 +3908,7 @@ def _native_block_confidence(
     role: str, area_ratio: float, dark_ratio: float, width_ratio: float, height_ratio: float
 ) -> float:
     confidence = 0.52
-    if role == "text-region":
+    if role in {"text-region", "title-region"}:
         confidence += 0.18
         if 0.02 <= area_ratio <= 0.45:
             confidence += 0.08
@@ -3765,6 +4147,26 @@ def _external_layout_block(
 def _external_layout_payload(
     engine: str, width: int, height: int, blocks: List[Dict[str, object]]
 ) -> Dict[str, object]:
+    # Deduplicate overlapping/nested blocks (especially inside tables and headers)
+    sorted_blocks = sorted(blocks, key=lambda b: -(b.get("area_ratio") or 0.0))
+    kept_blocks = []
+    for b in sorted_blocks:
+        bbox = b.get("bbox")
+        if not bbox or len(bbox) != 4:
+            kept_blocks.append(b)
+            continue
+        is_nested = False
+        for k in kept_blocks:
+            kbox = k.get("bbox")
+            if kbox and len(kbox) == 4:
+                overlap = _box_overlap_ratio(tuple(bbox), tuple(kbox))
+                if overlap > 0.40:
+                    is_nested = True
+                    break
+        if not is_nested:
+            kept_blocks.append(b)
+    blocks = sorted(kept_blocks, key=lambda b: b.get("order") or 0)
+
     content_bbox = _merge_bboxes([tuple(block["bbox"]) for block in blocks if block.get("bbox")])
     column_count = _estimate_native_columns(blocks)
     return {
@@ -3776,7 +4178,7 @@ def _external_layout_payload(
         "column_count_estimate": column_count,
         "dominant_flow": _native_flow(blocks, column_count),
         "block_count": len(blocks),
-        "blocks": blocks[:96],
+        "blocks": blocks[:120],
     }
 
 
@@ -4237,6 +4639,7 @@ def _task_text(
     raw_text: str,
     profile: WorkflowProfile,
     consistency_state: Optional[Dict[str, object]] = None,
+    native_layout: Optional[Dict[str, object]] = None,
 ) -> str:
     """Build the user-facing prompt for the LLM.
 
@@ -4250,6 +4653,18 @@ def _task_text(
     """
     execution_mode = _execution_mode(profile)
     consistency_context = _consistency_prompt(consistency_state)
+    
+    layout_context = ""
+    if native_layout and isinstance(native_layout.get("blocks"), list):
+        layout_context = "\nVisual Area Map detected on this page (coordinates are normalized [left, top, right, bottom] in range [0, 1000] where 0 is top/left, 1000 is bottom/right):\n"
+        for block in native_layout["blocks"]:
+            role = block.get("role", "text-region")
+            rbox = block.get("relative_bbox")
+            if isinstance(rbox, list) and len(rbox) == 4:
+                l, t, r, b = [int(x * 1000) for x in rbox]
+                layout_context += f"- {role.replace('-', ' ').title()}: [{l}, {t}, {r}, {b}]\n"
+        layout_context += "\nUse this visual map to guide your extraction. For example, extract content within table-regions as structured tables, ignore running headers/footers when extracting body text, and ensure titles and paragraphs are grouped according to their respective visual boundaries.\n"
+
     context = (
         f"Document type: {profile.document_type}\n"
         f"Source language: {profile.source_language}\n"
@@ -4259,6 +4674,7 @@ def _task_text(
         + _document_type_guidance(profile)
         + _language_policy_guidance(profile)
         + consistency_context
+        + layout_context
     )
 
     if execution_mode == "quality":
@@ -4280,7 +4696,38 @@ def _task_text(
         )
 
     if not raw_text:
-        # Multimodal vision prompt — keep it simple and direct.
+        # Multimodal vision prompt — block-guided if layout is available.
+        if native_layout and isinstance(native_layout.get("blocks"), list) and len(native_layout["blocks"]) > 0:
+            block_list = []
+            for b in native_layout["blocks"]:
+                order = b.get("order")
+                role = b.get("role", "text-region")
+                rbox = b.get("relative_bbox")
+                box_str = ""
+                if isinstance(rbox, list) and len(rbox) == 4:
+                    l, t, r, b_coord = [int(x * 1000) for x in rbox]
+                    box_str = f" bbox=[left:{l}, top:{t}, right:{r}, bottom:{b_coord}]"
+                block_list.append(f"  Block ID {order} (type: {role}){box_str}")
+            
+            return (
+                context
+                + "Look at the attached image carefully.\n"
+                + depth_instruction
+                + "We have identified the layout blocks on this page. Please extract the exact text visible inside each of these blocks.\n"
+                "Format your output exactly as shown below, using block labels to separate the extracted content. Do not include markdown fences around the blocks, JSON format, intro, or other text outside these block dividers:\n\n"
+                "[BLOCK 1]\n"
+                "<extracted text for block 1>\n\n"
+                "[BLOCK 2]\n"
+                "<extracted text for block 2>\n\n"
+                "ROLES GUIDELINES:\n"
+                "- If a block is a 'table-region', extract the table in CSV format inside a ```csv ... ``` block.\n"
+                "- If a block is a 'figure-region' or 'separator-region', leave its content completely blank (empty response after the block tag).\n"
+                "- Join artificial line wraps within prose blocks into paragraphs.\n\n"
+                "LIST OF BLOCKS:\n"
+                + "\n".join(block_list)
+            )
+
+        # Standard fallback multimodal vision prompt — keep it simple and direct.
         return (
             context
             + "Look at the attached image carefully.\n"
@@ -4292,9 +4739,12 @@ def _task_text(
             "page markers, captions, and meaningful layout. For normal body prose, join artificial "
             "scan line wraps into readable paragraphs and keep paragraph breaks. Preserve exact line "
             "breaks only for verse, tables, contents pages, manuscript lineation, addresses, captions, "
-            "and other places where lineation carries meaning.\n"
-            "If the page contains a table or chart, keep rows, cells, labels, axis text, and legend text "
-            "together in reading order; do not collapse them into prose or invent missing cells.\n"
+            "and other places where lineation carries meaning. "
+            "If the page contains a table: extract it in CSV format — the first row should be the header row "
+            "with column names, and each subsequent row should be a data row, with commas separating cells. "
+            "If a cell contains a comma, wrap it in double quotes. Output the CSV block surrounded by triple "
+            "backtick fences labelled csv, like: ```csv\n<rows>\n```. "
+            "For charts, keep labels, axis text, and legend text in reading order.\n"
             "Do not skip non-English, Indic, Sanskrit, Kannada, Hindi, Tamil, Telugu, Malayalam, "
             "Bengali, Marathi, Urdu, or mixed-script text.\n"
             "Apply the language policy above exactly. Preserve clear mixed-language snippets only when "
@@ -4309,7 +4759,8 @@ def _task_text(
             "Do not complete a sentence merely because it continues on the next page.\n"
             "Do not translate yet. Translation happens as a final stage after extraction.\n"
             "Return ONLY the extracted text. Do not add explanations, commentary, "
-            "JSON formatting, code fences, or any other markup.\n"
+            "or JSON formatting. Tables must use the ```csv ... ``` fence format described above; "
+            "all other content must be plain text with no markup.\n"
             "If the page is blank or has no readable text, return an empty response.\n"
             "If the image contains text but it is completely unreadable, return an empty response."
         )
@@ -4341,6 +4792,20 @@ def _task_text(
     )
 
 
+def _parse_block_restorations(response: str) -> Dict[int, str]:
+    if not response:
+        return {}
+    pattern = re.compile(r"\[BLOCK\s*#?(\d+)\]", re.IGNORECASE)
+    matches = list(pattern.finditer(response))
+    results = {}
+    for i, m in enumerate(matches):
+        block_id = int(m.group(1))
+        start = m.end()
+        end = matches[i+1].start() if i + 1 < len(matches) else len(response)
+        results[block_id] = response[start:end].strip()
+    return results
+
+
 def _restore_multimodal_image(
     path: Path,
     instruction: str,
@@ -4359,16 +4824,31 @@ def _restore_multimodal_image(
     bonus — if the model happens to return JSON, we use the structured data;
     otherwise, we take the full response as restored text.
     """
-    prompt = _task_text("", profile, consistency_state)
+    label = source_label or path.name
+    native_layout = _page_layout(path, profile, provider)
+    prompt = _task_text("", profile, consistency_state, native_layout=native_layout)
     result, usage = _restore_with_retry(
         provider, prompt, instruction, profile.model, media_path=path, progress=progress
     )
 
-    # Try JSON parsing first (in case the model does return structured data).
+    # Try JSON or raw text parsing first
     restored_text = _extract_multimodal_text(result)
+    
+    # Try block-level parsing first
+    block_texts = _parse_block_restorations(result)
+    if block_texts and native_layout and native_layout.get("blocks"):
+        for b in native_layout["blocks"]:
+            b["extracted_text"] = block_texts.get(b["order"], "").strip()
+        reconstructed = []
+        for b in native_layout["blocks"]:
+            text_val = b.get("extracted_text", "").strip()
+            if text_val:
+                reconstructed.append(text_val)
+        if reconstructed:
+            restored_text = "\n\n".join(reconstructed)
+    elif native_layout and native_layout.get("blocks"):
+        native_layout = _populate_block_texts(native_layout, restored_text)
     failure_reason = ""
-    label = source_label or path.name
-    native_layout = _page_layout(path, profile)
     assets = []
     if _figure_extraction_enabled(profile):
         assets = _extract_figure_assets(
@@ -4459,10 +4939,14 @@ def _extract_multimodal_text(response: str) -> str:
     cleaned = candidate
     # Remove <think>...</think> blocks (including unclosed ones in case of truncation).
     cleaned = re.sub(r"<think>.*?(?:</think>|$)", "", cleaned, flags=re.DOTALL).strip()
-    # Remove ```...``` code fences.
-    fenced = re.findall(r"```(?:\w+)?\s*\n?(.*?)```", cleaned, re.DOTALL)
-    if fenced:
-        cleaned = "\n\n".join(block.strip() for block in fenced if block.strip())
+    # Strip non-csv code fences; preserve ```csv ... ``` blocks intact.
+    def _fence_replacer(m: re.Match) -> str:
+        lang = (m.group(1) or "").strip().lower()
+        content = (m.group(2) or "").strip()
+        if lang == "csv":
+            return m.group(0)  # keep as-is
+        return content
+    cleaned = re.sub(r"```(\w*)\s*\n?(.*?)```", _fence_replacer, cleaned, flags=re.DOTALL)
     # Remove leading "Here is the extracted text:" style preambles.
     cleaned = re.sub(
         r"^(?:Here\s+is|Below\s+is|The\s+(?:extracted|transcribed|restored)\s+text\s*(?:is)?)[^\n]*\n",
@@ -5039,7 +5523,7 @@ def _restore_multimodal_pdf(
                 break
 
         page_assets = []
-        native_layout = _page_layout(page_img, profile)
+        native_layout = _page_layout(page_img, profile, provider)
         if _figure_extraction_enabled(profile):
             page_assets = _extract_figure_assets(
                 artifacts,
@@ -5059,7 +5543,7 @@ def _restore_multimodal_pdf(
             f"Restoring text from {label} page {idx}/{total_label}",
             advance=1,
         )
-        prompt = _task_text("", profile, consistency_state)
+        prompt = _task_text("", profile, consistency_state, native_layout=native_layout)
         try:
             result, usage = _restore_with_retry(
                 provider,
@@ -5082,6 +5566,21 @@ def _restore_multimodal_pdf(
                     total_usage,
                 )
             restored_text = _extract_multimodal_text(result)
+            
+            # Try block-level parsing first
+            block_texts = _parse_block_restorations(result)
+            if block_texts and native_layout and native_layout.get("blocks"):
+                for b in native_layout["blocks"]:
+                    b["extracted_text"] = block_texts.get(b["order"], "").strip()
+                reconstructed = []
+                for b in native_layout["blocks"]:
+                    text_val = b.get("extracted_text", "").strip()
+                    if text_val:
+                        reconstructed.append(text_val)
+                if reconstructed:
+                    restored_text = "\n\n".join(reconstructed)
+            elif native_layout and native_layout.get("blocks"):
+                native_layout = _populate_block_texts(native_layout, restored_text)
             failure_reason = ""
             if not restored_text:
                 restored_text = ""
@@ -5596,8 +6095,8 @@ def _restore_multimodal_zip(
                     )
                     chunk_idx += 1
                     continue
-                prompt = _task_text("", profile, consistency_state)
-                native_layout = _page_layout(ext_file, profile)
+                native_layout = _page_layout(ext_file, profile, provider)
+                prompt = _task_text("", profile, consistency_state, native_layout=native_layout)
                 assets = []
                 if _figure_extraction_enabled(profile):
                     assets = _extract_figure_assets(
@@ -5631,6 +6130,21 @@ def _restore_multimodal_zip(
                         total_usage,
                     )
                 restored_text = _extract_multimodal_text(result)
+                
+                # Try block-level parsing first
+                block_texts = _parse_block_restorations(result)
+                if block_texts and native_layout and native_layout.get("blocks"):
+                    for b in native_layout["blocks"]:
+                        b["extracted_text"] = block_texts.get(b["order"], "").strip()
+                    reconstructed = []
+                    for b in native_layout["blocks"]:
+                        text_val = b.get("extracted_text", "").strip()
+                        if text_val:
+                            reconstructed.append(text_val)
+                    if reconstructed:
+                        restored_text = "\n\n".join(reconstructed)
+                elif native_layout and native_layout.get("blocks"):
+                    native_layout = _populate_block_texts(native_layout, restored_text)
                 failure_reason = ""
                 if not restored_text:
                     restored_text = ""

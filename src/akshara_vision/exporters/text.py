@@ -418,11 +418,30 @@ def _looks_like_table_text(text: str) -> bool:
 
 
 def _table_rows_from_text(text: str) -> list[list[str]]:
+    cleaned = text.strip()
+    
+    # 1. Check for CSV fenced code block
+    m = re.search(r"```csv\s*\n(.*?)```", cleaned, re.DOTALL | re.IGNORECASE)
+    if m:
+        import csv as _csv
+        import io
+        reader = _csv.reader(io.StringIO(m.group(1).strip()))
+        return [[c.strip() for c in r] for r in reader if any(c.strip() for c in r)]
+        
+    # 2. Check for raw comma-separated table rows
+    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+    if len(lines) >= 2:
+        comma_counts = [line.count(",") for line in lines]
+        if all(c >= 1 for c in comma_counts) and len(set(comma_counts)) == 1:
+            import csv as _csv
+            import io
+            reader = _csv.reader(io.StringIO(cleaned))
+            return [[c.strip() for c in r] for r in reader if any(c.strip() for c in r)]
+
+    # 3. Fallback: pipe, tab, or double-space separated values
     rows: list[list[str]] = []
-    for line in text.splitlines():
+    for line in lines:
         stripped = line.strip()
-        if not stripped:
-            continue
         if "|" in stripped:
             cells = [cell.strip() for cell in stripped.strip("|").split("|")]
         elif "\t" in stripped:
@@ -493,6 +512,228 @@ def _markdown_table_from_text(text: str) -> str:
     return "\n".join([render_row(header), render_row(divider), *[render_row(row) for row in body]])
 
 
+def _chunk_record_for_page(metadata: Optional[Dict[str, object]], page_index: int) -> Optional[Dict[str, object]]:
+    if not metadata:
+        return None
+    records = metadata.get("restoration")
+    if not isinstance(records, list):
+        return None
+    for record in records:
+        chunks = record.get("chunks") if isinstance(record, dict) else None
+        if not isinstance(chunks, list):
+            continue
+        for chunk in chunks:
+            if not isinstance(chunk, dict):
+                continue
+            try:
+                chunk_index = int(chunk.get("index") or chunk.get("page_number") or 0)
+            except (TypeError, ValueError):
+                chunk_index = 0
+            if chunk_index == page_index:
+                return chunk
+    return None
+
+
+def _html_page_body_from_layout(native_layout: Dict[str, object], metadata: Dict[str, object], page_index: int) -> Optional[str]:
+    blocks = native_layout.get("blocks")
+    if not isinstance(blocks, list) or not blocks:
+        return None
+        
+    body_parts = []
+    # Filter assets strictly belonging to the current page number
+    page_assets_list = _page_assets(metadata, page_index)
+    
+    for b in blocks:
+        if not isinstance(b, dict):
+            continue
+        role = str(b.get("role") or "text-region")
+        
+        if role == "figure-region":
+            block_order = b.get("order")
+            block_bbox = b.get("bbox")
+            matched_asset = None
+            for asset in page_assets_list:
+                asset_layout = asset.get("layout") or {}
+                asset_bbox = asset_layout.get("bbox")
+                if asset_bbox == block_bbox or asset.get("figure_index") == block_order:
+                    matched_asset = asset
+                    break
+            
+            if matched_asset:
+                path = str(matched_asset.get("path") or "").strip()
+                render_path = _asset_render_path(path, metadata)
+                classes = " ".join(["figure-marker"] + _asset_figure_classes(matched_asset))
+                style = _asset_figure_style(matched_asset)
+                style_attr = f' style="{html.escape(style, quote=True)}"' if style else ""
+                body_parts.append(
+                    f'<figure class="{html.escape(classes, quote=True)}"{style_attr}>'
+                    f'<img src="{html.escape(render_path, quote=True)}" alt="" />'
+                    f'</figure>'
+                )
+            else:
+                text = str(b.get("extracted_text") or "").strip()
+                if text:
+                    body_parts.append(f'<figure class="figure-marker"><figcaption>{html.escape(text)}</figcaption></figure>')
+            continue
+            
+        text = str(b.get("extracted_text") or "").strip()
+        if not text:
+            continue
+            
+        if role == "table-region":
+            table_html = _html_table_from_text(text)
+            if table_html:
+                body_parts.append(table_html)
+            else:
+                escaped = html.escape(text).replace("\n", "<br />\n")
+                body_parts.append(f"<p>{escaped}</p>")
+        elif role == "title-region":
+            body_parts.append(f"<h2>{html.escape(text)}</h2>")
+        elif role == "list-region":
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            list_items = "".join(f"<li>{html.escape(line.strip('-*• '))}</li>" for line in lines)
+            body_parts.append(f"<ul>{list_items}</ul>")
+        elif role == "equation-region":
+            body_parts.append(f'<p class="equation">{html.escape(text)}</p>')
+        elif role in {"running-header-or-footer", "page-number-region"}:
+            body_parts.append(f'<p class="page-marker">{html.escape(text)}</p>')
+        else:
+            for sub_p in text.split("\n\n"):
+                if sub_p.strip():
+                    escaped = html.escape(sub_p.strip()).replace("\n", "<br />\n")
+                    body_parts.append(f"<p>{escaped}</p>")
+                    
+    return "\n".join(body_parts)
+
+
+def _markdown_page_body_from_layout(native_layout: Dict[str, object], metadata: Dict[str, object], page_index: int) -> Optional[str]:
+    blocks = native_layout.get("blocks")
+    if not isinstance(blocks, list) or not blocks:
+        return None
+        
+    body_parts = []
+    # Filter assets strictly belonging to the current page number
+    page_assets_list = _page_assets(metadata, page_index)
+    
+    for b in blocks:
+        if not isinstance(b, dict):
+            continue
+        role = str(b.get("role") or "text-region")
+        
+        if role == "figure-region":
+            block_order = b.get("order")
+            block_bbox = b.get("bbox")
+            matched_asset = None
+            for asset in page_assets_list:
+                asset_layout = asset.get("layout") or {}
+                asset_bbox = asset_layout.get("bbox")
+                if asset_bbox == block_bbox or asset.get("figure_index") == block_order:
+                    matched_asset = asset
+                    break
+            
+            if matched_asset:
+                path = str(matched_asset.get("path") or "").strip()
+                body_parts.append(f"![]({path})")
+            else:
+                text = str(b.get("extracted_text") or "").strip()
+                if text:
+                    body_parts.append(f"> [Image: {text}]")
+            continue
+            
+        text = str(b.get("extracted_text") or "").strip()
+        if not text:
+            continue
+            
+        if role == "table-region":
+            table_md = _markdown_table_from_text(text)
+            if table_md:
+                body_parts.append(table_md)
+            else:
+                body_parts.append(text)
+        elif role == "title-region":
+            body_parts.append(f"## {text}")
+        elif role == "list-region":
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            list_md = "\n".join(f"- {line.strip('-*• ')}" for line in lines)
+            body_parts.append(list_md)
+        elif role == "running-header-or-footer":
+            body_parts.append(f"<!-- {text} -->")
+        else:
+            body_parts.append(text)
+            
+    return "\n\n".join(body_parts)
+
+
+def _docx_paragraphs_from_layout(
+    native_layout: Dict[str, object],
+    metadata: Dict[str, object],
+    media_by_path: Dict[str, Dict[str, object]],
+    page_index: int
+) -> Optional[list[str]]:
+    blocks = native_layout.get("blocks")
+    if not isinstance(blocks, list) or not blocks:
+        return None
+        
+    paragraphs = []
+    # Filter assets strictly belonging to the current page number
+    page_assets_list = _page_assets(metadata, page_index)
+    
+    for b in blocks:
+        if not isinstance(b, dict):
+            continue
+        role = str(b.get("role") or "text-region")
+        
+        if role == "figure-region":
+            block_order = b.get("order")
+            block_bbox = b.get("bbox")
+            matched_asset = None
+            for asset in page_assets_list:
+                asset_layout = asset.get("layout") or {}
+                asset_bbox = asset_layout.get("bbox")
+                if asset_bbox == block_bbox or asset.get("figure_index") == block_order:
+                    matched_asset = asset
+                    break
+            
+            if matched_asset:
+                path = str(matched_asset.get("path") or "").strip()
+                entry = media_by_path.get(path)
+                if entry:
+                    paragraphs.append(_docx_image_paragraph(entry))
+            else:
+                text = str(b.get("extracted_text") or "").strip()
+                if text:
+                    paragraphs.append(_docx_body_paragraph(f"[Image: {html.escape(text)}]"))
+            continue
+            
+        text = str(b.get("extracted_text") or "").strip()
+        if not text:
+            continue
+            
+        if role == "table-region":
+            table_xml = _docx_table_from_text(text)
+            if table_xml:
+                paragraphs.append(table_xml)
+            else:
+                paragraphs.append(_docx_body_paragraph(html.escape(text)))
+        elif role == "title-region":
+            escaped = html.escape(text)
+            paragraphs.append(
+                f"<w:p><w:pPr><w:pStyle w:val=\"Heading2\"/></w:pPr><w:r><w:t>{escaped}</w:t></w:r></w:p>"
+            )
+        elif role in {"running-header-or-footer", "page-number-region"}:
+            escaped = html.escape(text)
+            paragraphs.append(
+                f"<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr><w:r><w:t>{escaped}</w:t></w:r></w:p>"
+            )
+        else:
+            for sub_p in text.split("\n\n"):
+                if sub_p.strip():
+                    escaped = html.escape(sub_p.strip()).replace("\n", "<w:br/>")
+                    paragraphs.append(_docx_body_paragraph(escaped))
+                    
+    return paragraphs
+
+
 def _markdown_page_body(
     text: str,
     metadata: Optional[Dict[str, object]],
@@ -500,12 +741,28 @@ def _markdown_page_body(
     page_index: int,
     page_count: int,
 ) -> str:
+    chunk = _chunk_record_for_page(metadata, page_index)
+    native_layout = chunk.get("native_layout") if isinstance(chunk, dict) else None
+    if native_layout:
+        body = _markdown_page_body_from_layout(native_layout, metadata or {}, page_index)
+        if body:
+            return body + "\n"
+
     parts = []
+    plain = _markdown_plain_body(text, _export_base_dir(metadata))
     if unit:
         page_heading = _markdown_unit_block(unit)
-        if page_heading:
+        heading = _unit_heading(unit)
+        has_heading = heading and heading.strip().lower() in plain.lower()
+        role = str(unit.get("role") or "body")
+        is_duplicate = False
+        if role == "contents" and ("table" in plain.lower() or "contents" in plain.lower()):
+            is_duplicate = True
+        elif role in {"title", "chapter", "section"} and has_heading:
+            is_duplicate = True
+            
+        if page_heading and not is_duplicate:
             parts.append(page_heading)
-    plain = _markdown_plain_body(text, _export_base_dir(metadata))
     if plain.strip():
         parts.append(plain.strip())
     if not parts:
@@ -520,12 +777,28 @@ def _html_page_body(
     page_index: int,
     page_count: int,
 ) -> str:
+    chunk = _chunk_record_for_page(metadata, page_index)
+    native_layout = chunk.get("native_layout") if isinstance(chunk, dict) else None
+    if native_layout:
+        body = _html_page_body_from_layout(native_layout, metadata or {}, page_index)
+        if body:
+            return body
+
     blocks = []
+    plain = _html_plain_body(text, metadata)
     if unit:
         page_heading = _html_unit_block(unit)
-        if page_heading:
+        heading = _unit_heading(unit)
+        has_heading = heading and heading.strip().lower() in plain.lower()
+        role = str(unit.get("role") or "body")
+        is_duplicate = False
+        if role == "contents" and ("table" in plain.lower() or "contents" in plain.lower()):
+            is_duplicate = True
+        elif role in {"title", "chapter", "section"} and has_heading:
+            is_duplicate = True
+            
+        if page_heading and not is_duplicate:
             blocks.append(page_heading)
-    plain = _html_plain_body(text, metadata)
     if plain.strip():
         blocks.append(plain)
     return "\n".join(blocks)
@@ -750,11 +1023,29 @@ def _docx_document_xml(
     paragraphs = []
     pages = str(text).split("\f")
     for index, page in enumerate(pages, start=1):
-        unit = _semantic_unit_for_page(metadata, index, len(pages))
         if index > 1:
-            paragraphs.append("<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>")
+            paragraphs.append("<w:p><w:r><w:br w:type=\"page\"/></w:p>")
+            
+        chunk = _chunk_record_for_page(metadata, index)
+        native_layout = chunk.get("native_layout") if isinstance(chunk, dict) else None
+        if native_layout:
+            layout_paras = _docx_paragraphs_from_layout(native_layout, metadata or {}, media_by_path, index)
+            if layout_paras:
+                paragraphs.extend(layout_paras)
+                continue
+
+        unit = _semantic_unit_for_page(metadata, index, len(pages))
         if unit:
-            paragraphs.extend(_docx_unit_paragraphs(unit))
+            heading = _unit_heading(unit)
+            has_heading = heading and heading.strip().lower() in page.lower()
+            role = str(unit.get("role") or "body")
+            is_duplicate = False
+            if role == "contents" and ("table" in page.lower() or "contents" in page.lower()):
+                is_duplicate = True
+            elif role in {"title", "chapter", "section"} and has_heading:
+                is_duplicate = True
+            if not is_duplicate:
+                paragraphs.extend(_docx_unit_paragraphs(unit))
         for paragraph in page.split("\n\n"):
             if not paragraph.strip():
                 continue

@@ -2008,7 +2008,8 @@ def _compare_views(run_dir: Path, metadata: Dict[str, object]) -> List[Dict[str,
                 "source_html": source_html,
                 "output_path": output_path,
                 "output_html": _output_preview_html(
-                    output_path, run_dir, page_number=page_number, cache_key=cache_key
+                    output_path, run_dir, page_number=page_number, cache_key=cache_key,
+                    native_layout=record.get("native_layout") if isinstance(record, dict) else None
                 ),
                 "layout_html": layout_html,
                 "assets_html": _compare_assets_html(assets, run_dir),
@@ -2069,7 +2070,7 @@ def _compare_views_from_manifest(
                     "source_path": source_path,
                     "source_html": source_html,
                     "output_path": None,
-                    "output_html": _chunk_output_preview_html(chunk),
+                    "output_html": _chunk_output_preview_html(chunk, chunk.get("native_layout")),
                     "layout_html": layout_html,
                     "assets_html": _compare_assets_html(_chunk_assets(chunk), run_dir),
                 }
@@ -2153,7 +2154,124 @@ def _chunk_assets(chunk: Dict[str, object]) -> List[Dict[str, object]]:
     return [asset for asset in assets if isinstance(asset, dict)]
 
 
-def _chunk_output_preview_html(chunk: Dict[str, object]) -> str:
+def _csv_to_html_table(csv_text: str) -> str:
+    """Parse a CSV block and return an HTML table string."""
+    import csv as _csv
+    import io
+    rows = list(_csv.reader(io.StringIO(csv_text.strip())))
+    rows = [r for r in rows if any(c.strip() for c in r)]
+    if not rows:
+        return ""
+    html_parts = ['<table class="extracted-table">']
+    html_parts.append("<thead><tr>")
+    for cell in rows[0]:
+        html_parts.append(f"<th>{html.escape(cell.strip())}</th>")
+    html_parts.append("</tr></thead><tbody>")
+    for row in rows[1:]:
+        html_parts.append("<tr>")
+        for cell in row:
+            html_parts.append(f"<td>{html.escape(cell.strip())}</td>")
+        html_parts.append("</tr>")
+    html_parts.append("</tbody></table>")
+    return "".join(html_parts)
+
+
+def _table_text_to_html(text: str) -> str:
+    """Convert a table text (CSV fenced block or Markdown pipe table) to HTML."""
+    # Check for ```csv ... ``` fence
+    m = re.search(r"```csv\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
+    if m:
+        return _csv_to_html_table(m.group(1))
+    # Fallback: pipe-delimited Markdown table
+    lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+    rows = []
+    for line in lines:
+        if "|" not in line:
+            continue
+        if line.startswith("|") and line.endswith("|"):
+            cells = [c.strip() for c in line[1:-1].split("|")]
+        else:
+            cells = [c.strip() for c in line.split("|")]
+        if all(set(c) <= {'-', ':', ' '} for c in cells):
+            continue
+        rows.append(cells)
+    if not rows:
+        return ""
+    html_parts = ['<table class="extracted-table">']
+    html_parts.append("<thead><tr>")
+    for cell in rows[0]:
+        html_parts.append(f"<th>{html.escape(cell)}</th>")
+    html_parts.append("</tr></thead><tbody>")
+    for row in rows[1:]:
+        html_parts.append("<tr>")
+        for cell in row:
+            html_parts.append(f"<td>{html.escape(cell)}</td>")
+        html_parts.append("</tr>")
+    html_parts.append("</tbody></table>")
+    return "".join(html_parts)
+
+
+def _per_block_output_html(native_layout: Dict[str, object]) -> str:
+    blocks = native_layout.get("blocks") if isinstance(native_layout, dict) else None
+    if not isinstance(blocks, list) or not blocks:
+        return ""
+    has_any_text = any(str(b.get("extracted_text") or "").strip() for b in blocks if isinstance(b, dict))
+    if not has_any_text:
+        return ""
+
+    role_colors = {
+        "title-region": "#3559d1", "text-region": "#2a8f5b",
+        "table-region": "#d98312", "chart-region": "#9a54d6",
+        "figure-region": "#c03b3b", "running-header-or-footer": "#5f6c7b",
+        "caption-region": "#7a6955", "list-region": "#1a8a7a",
+        "equation-region": "#5346a0", "page-number-region": "#8f6d18",
+        "separator-region": "#999999",
+    }
+    role_labels = {
+        "title-region": "Title", "text-region": "Paragraph",
+        "table-region": "Table", "chart-region": "Chart",
+        "figure-region": "Image", "running-header-or-footer": "Header/Footer",
+        "caption-region": "Caption", "list-region": "List",
+        "equation-region": "Equation", "page-number-region": "Page No.",
+        "separator-region": "Separator",
+    }
+
+    parts = []
+    for b in blocks:
+        if not isinstance(b, dict):
+            continue
+        text = str(b.get("extracted_text") or "").strip()
+        if not text:
+            continue
+        order = b.get("order", 0)
+        role = str(b.get("role") or "text-region")
+        color = role_colors.get(role, "#314e86")
+        label = role_labels.get(role, "Block")
+
+        content_html = ""
+        if role == "table-region":
+            table_html = _table_text_to_html(text)
+            if table_html:
+                content_html = table_html
+        if not content_html:
+            content_html = f'<pre class="block-text">{html.escape(text)}</pre>'
+
+        parts.append(
+            f'<div class="block-card">'
+            f'<div class="block-card-tag" style="color:{color};">{order}. {html.escape(label)}</div>'
+            f'{content_html}'
+            f'</div>'
+        )
+    if not parts:
+        return ""
+    return '<div class="blocks-output">' + "".join(parts) + '</div>'
+
+
+def _chunk_output_preview_html(chunk: Dict[str, object], native_layout: Optional[Dict[str, object]] = None) -> str:
+    if native_layout:
+        per_block = _per_block_output_html(native_layout)
+        if per_block:
+            return per_block
     text = str(
         chunk.get("translated_text")
         or chunk.get("final_text")
@@ -2387,7 +2505,12 @@ def _output_preview_html(
     run_dir: Path,
     page_number: Optional[int] = None,
     cache_key: Optional[str] = None,
+    native_layout: Optional[Dict[str, object]] = None,
 ) -> str:
+    if native_layout:
+        per_block = _per_block_output_html(native_layout)
+        if per_block:
+            return per_block
     try:
         rel = output_path.resolve().relative_to(run_dir.resolve())
     except Exception:
@@ -2475,20 +2598,35 @@ def _compare_layout_overlay_html(
     if not image_src:
         return ""
     overlay = []
-    for block in blocks[:18]:
+    for block in blocks:
         left, top, width, height = block["box"]
         color = block["color"]
+        num = html.escape(block["label"])
         overlay.append(
             f'<div class="overlay-block" style="left:{left}%;top:{top}%;width:{width}%;height:{height}%;'
-            f'border-color:{color};background:{color}22;">'
-            f'<span style="background:{color};">{html.escape(block["label"])}</span></div>'
+            f'border-color:{color};background:{color}08;">'
+            f'<span class="block-num" style="background:{color};">{num}</span></div>'
         )
+
+    # Build color legend
+    seen_roles = {}
+    for block in blocks:
+        r = block.get("role", "text-region")
+        if r not in seen_roles:
+            seen_roles[r] = (block["color"], block.get("short_name", "Block"))
+    legend_items = "".join(
+        f'<span class="legend-item"><span class="legend-dot" style="background:{c};"></span>{html.escape(name)}</span>'
+        for c, name in seen_roles.values()
+    )
+    legend_html = f'<div class="layout-legend">{legend_items}<span class="legend-count">{len(blocks)} blocks detected</span></div>'
+
     return (
         '<figure class="overlay-figure">'
         f'<img src="{image_src}" alt="" />'
         '<div class="overlay-layer">'
         + "".join(overlay)
         + "</div></figure>"
+        + legend_html
     )
 
 
@@ -2696,8 +2834,23 @@ def _compare_layout_blocks(layout_tree: List[object]) -> List[Dict[str, object]]
             bbox = block.get("relative_bbox")
             if not (isinstance(bbox, list) and len(bbox) == 4):
                 continue
-            label = f"{str(block.get('role') or 'block').replace('-', ' ').title()} · p{page}"
             role = str(block.get("role") or "text-region")
+            short_label = {
+                "title-region": "Title",
+                "text-region": "Text",
+                "table-region": "Table",
+                "chart-region": "Chart",
+                "figure-region": "Figure",
+                "running-header-or-footer": "Header/Footer",
+                "small-mark-or-page-number": "Pg No.",
+                "caption-region": "Caption",
+                "list-region": "List",
+                "equation-region": "Equation",
+                "page-number-region": "Pg No.",
+                "separator-region": "Separator",
+            }.get(role, "Block")
+            order = block.get("order", 0)
+            label = str(order)
             color = {
                 "title-region": "#3559d1",
                 "text-region": "#2a8f5b",
@@ -2706,6 +2859,11 @@ def _compare_layout_blocks(layout_tree: List[object]) -> List[Dict[str, object]]
                 "figure-region": "#c03b3b",
                 "running-header-or-footer": "#5f6c7b",
                 "small-mark-or-page-number": "#8f6d18",
+                "caption-region": "#7a6955",
+                "list-region": "#1a8a7a",
+                "equation-region": "#5346a0",
+                "page-number-region": "#8f6d18",
+                "separator-region": "#999999",
             }.get(role, "#314e86")
             blocks.append(
                 {
@@ -2717,9 +2875,12 @@ def _compare_layout_blocks(layout_tree: List[object]) -> List[Dict[str, object]]
                     ],
                     "label": label,
                     "color": color,
+                    "role": role,
+                    "short_name": short_label,
+                    "extracted_text": str(block.get("extracted_text") or ""),
                 }
             )
-    return blocks[:24]
+    return blocks[:120]
 
 
 def _asset_source_from_metadata(asset: Dict[str, object], run_dir: Path) -> Optional[Path]:
@@ -2769,30 +2930,47 @@ def _compare_review_html(run_dir: Path, metadata: Dict[str, object], comparisons
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         f"<title>Compare - {title}</title>\n"
         "<style>"
-        "body{margin:0;padding:2rem;background:#f7f3ea;color:#24170f;font-family:Georgia,'Times New Roman',serif;line-height:1.6;}"
-        "main{max-width:1280px;margin:0 auto;}"
-        "h1{font-size:2.2rem;text-align:center;margin:0 0 1rem;}"
-        ".summary{text-align:center;margin:0 0 2rem;}"
-        ".compare-card{background:#fffdf9;border:1px solid #d9ccb7;margin:0 0 1.5rem;padding:1rem 1rem 1.25rem;break-inside:avoid;}"
-        ".compare-card header h2{margin:0 0 1rem;font-size:1.2rem;}"
-        ".compare-grid{display:grid;grid-template-columns:minmax(280px,1fr) minmax(280px,1fr);gap:1rem;align-items:stretch;}"
-        ".panel{border:1px solid #e0d4c1;padding:0.85rem;background:#fff;min-width:0;height:clamp(420px,72vh,880px);overflow:auto;}"
-        ".panel h3{margin:0 0 .75rem;font-size:1rem;text-transform:uppercase;letter-spacing:.04em;}"
-        ".panel pre{white-space:pre-wrap;word-break:break-word;margin:0;font-size:.98rem;}"
-        ".page-output{border-left:4px solid #c77a24;padding-left:1rem;}"
-        ".page-output-meta{font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:#795431;margin:0 0 .65rem;}"
-        ".preview-image img{max-width:100%;height:auto;display:block;margin:0 auto;}"
+        "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');"
+        "*{box-sizing:border-box;}"
+        "body{margin:0;padding:2rem;background:#0f1117;color:#e8e0d0;font-family:'Inter',system-ui,sans-serif;line-height:1.6;min-height:100vh;}"
+        "main{max-width:1400px;margin:0 auto;}"
+        "h1{font-size:1.8rem;font-weight:700;text-align:center;margin:0 0 0.5rem;letter-spacing:-0.02em;color:#f0e8d8;}"
+        ".summary{text-align:center;margin:0 0 2rem;font-size:0.82rem;color:#888;}"
+        ".compare-card{background:#1a1d27;border:1px solid #2a2d3a;margin:0 0 1.5rem;padding:1.25rem;border-radius:10px;}"
+        ".compare-card header h2{margin:0 0 1rem;font-size:1rem;font-weight:600;color:#c8bfa8;letter-spacing:0.01em;}"
+        ".compare-grid{display:grid;grid-template-columns:minmax(320px,1fr) minmax(320px,1fr);gap:1.25rem;align-items:start;}"
+        ".panel{border:1px solid #2a2d3a;padding:1rem;background:#141720;min-width:0;height:clamp(480px,76vh,920px);overflow:auto;border-radius:6px;}"
+        ".panel h3{margin:0 0 0.75rem;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;color:#666;}"
+        ".panel pre{white-space:pre-wrap;word-break:break-word;margin:0;font-size:0.9rem;font-family:'JetBrains Mono',monospace;color:#d4cbb8;line-height:1.6;}"
+        ".page-output{border-left:3px solid #c77a24;padding-left:1rem;background:#1c1a14;border-radius:0 4px 4px 0;padding:0.75rem 1rem;}"
+        ".page-output-meta{font-size:0.72rem;text-transform:uppercase;letter-spacing:0.1em;color:#7a6a4a;margin:0 0 0.5rem;font-weight:600;}"
+        ".preview-image img{max-width:100%;height:auto;display:block;}"
         ".preview-image{margin:0;}"
-        ".overlay-figure{position:relative;margin:0;}"
-        ".overlay-figure img{max-width:100%;height:auto;display:block;margin:0 auto;}"
-        ".overlay-layer{position:absolute;inset:0;pointer-events:none;}"
-        ".overlay-block{position:absolute;border:2px solid;border-radius:6px;box-sizing:border-box;}"
-        ".overlay-block span{position:absolute;left:0;top:0;display:inline-block;padding:.08rem .35rem;font-size:.7rem;font-weight:700;color:#fff;border-bottom-right-radius:6px;}"
-        ".preview-frame,.preview-pdf{width:100%;min-height:520px;border:1px solid #d8cdbc;background:#fff;}"
-        ".asset-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:.75rem;margin-top:.75rem;}"
-        ".missing{opacity:.7;font-style:italic;}"
-        "@media (max-width:850px){.compare-grid{grid-template-columns:1fr}.panel{height:auto;max-height:none}}"
-        "@media print{body{background:#fff} .compare-card{break-inside:avoid; page-break-inside:avoid;} .panel{height:auto;max-height:none;overflow:visible;} }"
+        ".overlay-figure{position:relative;margin:0;display:block;width:100%;}"
+        ".overlay-figure img{display:block;width:100%;height:auto;}"
+        ".overlay-layer{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;}"
+        ".overlay-block{position:absolute;border:1.5px solid;border-radius:2px;box-sizing:border-box;}"
+        ".overlay-block .block-num{position:absolute;left:2px;top:2px;display:flex;align-items:center;justify-content:center;min-width:15px;height:15px;padding:0 3px;font-size:8px;font-weight:700;color:#fff;border-radius:8px;line-height:1;font-family:'Inter',sans-serif;box-shadow:0 1px 3px rgba(0,0,0,.5);}"
+        ".preview-frame,.preview-pdf{width:100%;min-height:520px;border:1px solid #2a2d3a;background:#141720;}"
+        ".asset-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:0.75rem;margin-top:0.75rem;}"
+        ".missing{opacity:0.5;font-style:italic;color:#888;}"
+        ".layout-legend{display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;padding:0.5rem 0;font-size:0.72rem;font-family:'Inter',sans-serif;border-top:1px solid #2a2d3a;margin-top:0.5rem;}"
+        ".legend-item{display:inline-flex;align-items:center;gap:0.25rem;color:#999;}"
+        ".legend-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0;}"
+        ".legend-count{margin-left:auto;font-weight:600;color:#666;font-size:0.7rem;}"
+        ".blocks-output{display:flex;flex-direction:column;}"
+        ".block-card{padding:0.65rem 0.8rem;border-bottom:1px solid #22252f;transition:background 0.15s;}"
+        ".block-card:hover{background:#1e2130;}"
+        ".block-card:first-child{border-top:none;}"
+        ".block-card-tag{font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.3rem;font-family:'Inter',sans-serif;}"
+        ".block-text{white-space:pre-wrap;word-break:break-word;margin:0;font-size:0.9rem;line-height:1.6;color:#d4cbb8;}"
+        ".extracted-table{width:100%;border-collapse:collapse;font-size:0.82rem;margin:0.25rem 0;}"
+        ".extracted-table th{background:#252836;color:#c8bfa8;font-weight:600;padding:0.4rem 0.6rem;text-align:left;border:1px solid #2a2d3a;font-family:'Inter',sans-serif;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.04em;}"
+        ".extracted-table td{border:1px solid #2a2d3a;padding:0.35rem 0.6rem;color:#d4cbb8;vertical-align:top;}"
+        ".extracted-table tr:nth-child(even) td{background:#191c26;}"
+        ".extracted-table tr:hover td{background:#1e2130;}"
+        "@media (max-width:900px){.compare-grid{grid-template-columns:1fr}.panel{height:auto;max-height:none}}"
+        "@media print{body{background:#fff;color:#000} .compare-card{break-inside:avoid;background:#fff;border:1px solid #ccc;} .panel{height:auto;max-height:none;overflow:visible;background:#fff;} .block-text,.panel pre{color:#000;} .extracted-table th{background:#f5f5f5;color:#000;} .extracted-table td{color:#000;border-color:#ccc;}}"
         "</style>"
         "</head><body><main>"
         f"<h1>{title}</h1>"
@@ -3517,7 +3695,19 @@ def doctor_command() -> None:
         ("GEMINI_API_KEY", "Gemini cloud models"),
     ]:
         rows.append([env_name, "set" if os.environ.get(env_name) else "not set", purpose])
+    
+    import importlib.util
+    for module_name, name_label in [
+        ("doctr", "doctr ML Layout"),
+        ("paddleocr", "paddleocr ML Layout"),
+        ("layoutparser", "layoutparser ML Layout"),
+    ]:
+        is_found = importlib.util.find_spec(module_name) is not None
+        rows.append([name_label, "available" if is_found else "missing (optional)", "ML layout analysis adapter"])
+        
     ui.table(rows)
+    if any(importlib.util.find_spec(mod) is None for mod in ["doctr", "paddleocr", "layoutparser"]):
+        ui.write("Note: Optional ML layout adapters are available for harder documents. Install via: python -m pip install -e \".[layout]\"")
     ui.section("Providers")
     ui.table(provider_status_rows())
 

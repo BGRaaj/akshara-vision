@@ -212,6 +212,29 @@ class CoreTests(unittest.TestCase):
                 else:
                     os.environ["AKSHARA_OPENAI_COMPATIBLE_BASE_URL"] = old_value
 
+    def test_env_file_loading_overwrites_empty_shell(self):
+        import os
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text(
+                "AKSHARA_OPENAI_COMPATIBLE_BASE_URL=http://localhost:9999/v1\n", encoding="utf-8"
+            )
+            old_value = os.environ.get("AKSHARA_OPENAI_COMPATIBLE_BASE_URL")
+            os.environ["AKSHARA_OPENAI_COMPATIBLE_BASE_URL"] = "   "
+            try:
+                loaded = load_env_files([path])
+                self.assertEqual(loaded, [path])
+                self.assertEqual(
+                    os.environ["AKSHARA_OPENAI_COMPATIBLE_BASE_URL"],
+                    "http://localhost:9999/v1",
+                )
+            finally:
+                if old_value is None:
+                    os.environ.pop("AKSHARA_OPENAI_COMPATIBLE_BASE_URL", None)
+                else:
+                    os.environ["AKSHARA_OPENAI_COMPATIBLE_BASE_URL"] = old_value
+
     def test_registries_expose_planned_extensions(self):
         from akshara_vision.core.constants import OUTPUT_FORMATS
 
@@ -593,6 +616,110 @@ class CoreTests(unittest.TestCase):
 
         register_layout_backend("unit-test-layout", backend)
         self.assertIn("unit-test-layout", available_layout_backends())
+
+    def test_dedupe_layout_blocks_suppresses_nested(self):
+        from akshara_vision.core.pipeline import _external_layout_payload
+        blocks = [
+            {"order": 1, "role": "table-region", "bbox": [100, 100, 500, 500], "area_ratio": 0.40},
+            {"order": 2, "role": "text-region", "bbox": [150, 150, 250, 250], "area_ratio": 0.05},  # fully inside table-region
+            {"order": 3, "role": "text-region", "bbox": [600, 100, 900, 200], "area_ratio": 0.08},  # outside table-region
+        ]
+        payload = _external_layout_payload("test-engine", 1000, 1000, blocks)
+        cleaned_blocks = payload["blocks"]
+        # The text-region at index 1 is fully inside table-region and should be deduplicated / suppressed
+        roles = [b["role"] for b in cleaned_blocks]
+        self.assertIn("table-region", roles)
+        self.assertIn("text-region", roles)
+        self.assertEqual(len(cleaned_blocks), 2)
+
+    def test_sidecar_exporters_with_coordinates(self):
+        from akshara_vision.exporters.archive import SidecarExporter
+        
+        metadata = {
+            "_records": [
+                {
+                    "label": "page_1.png",
+                    "native_layout": {
+                        "page_width": 1000,
+                        "page_height": 1500,
+                        "blocks": [
+                            {"order": 1, "role": "title-region", "bbox": [100, 100, 900, 200]},
+                            {"order": 2, "role": "text-region", "bbox": [100, 250, 900, 800]}
+                        ]
+                    },
+                    "chunks": [
+                        {"restored_text": "This is page 1 title.\n\nThis is paragraph 1 text."}
+                    ]
+                }
+            ]
+        }
+        
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "output"
+            
+            # 1. PAGE XML
+            exporter_pagexml = SidecarExporter("pagexml", ".page.xml", "PAGE XML")
+            res_pagexml = exporter_pagexml.export("Full text", dest, metadata)
+            content_pagexml = res_pagexml.path.read_text(encoding="utf-8")
+            self.assertIn("<PcGts", content_pagexml)
+            self.assertIn("points=\"100,100 900,100 900,200 100,200\"", content_pagexml)
+            self.assertIn("This is page 1 title.", content_pagexml)
+            
+            # 2. ALTO XML
+            exporter_alto = SidecarExporter("alto", ".xml", "ALTO XML")
+            res_alto = exporter_alto.export("Full text", dest, metadata)
+            content_alto = res_alto.path.read_text(encoding="utf-8")
+            self.assertIn("<alto", content_alto)
+            self.assertIn("HPOS=\"100\" VPOS=\"100\" WIDTH=\"800\" HEIGHT=\"100\"", content_alto)
+            
+            # 3. hOCR HTML
+            exporter_hocr = SidecarExporter("hocr", ".hocr", "hOCR HTML")
+            res_hocr = exporter_hocr.export("Full text", dest, metadata)
+            content_hocr = res_hocr.path.read_text(encoding="utf-8")
+            self.assertIn("class=\"ocr_page\"", content_hocr)
+            self.assertIn("bbox 100 100 900 200", content_hocr)
+
+    def test_llm_classify_layout_blocks(self):
+        from akshara_vision.core.pipeline import _llm_classify_layout_blocks
+        from akshara_vision.core.models import ModelSettings
+        
+        # Test 1: Direct list classifications
+        blocks1 = [
+            {"order": 1, "role": "text-region", "bbox": [100, 100, 900, 200]},
+            {"order": 2, "role": "figure-region", "bbox": [100, 250, 900, 800]}
+        ]
+        class MockProvider1:
+            name = "mock"
+            def restore_text(self, text, instruction, settings, media_path=None):
+                return '[{"id": 1, "role": "title-region"}, {"id": 2, "role": "text-region"}]', {}
+                
+        with tempfile.TemporaryDirectory() as tmp:
+            img_path = Path(tmp) / "test.png"
+            from PIL import Image
+            Image.new("RGB", (200, 200), "white").save(img_path)
+            res1 = _llm_classify_layout_blocks(img_path, blocks1, MockProvider1(), ModelSettings())
+            self.assertEqual(res1[0]["role"], "title-region")
+            self.assertEqual(res1[1]["role"], "text-region")
+            
+        # Test 2: Structured classifications + merges (e.g. split columns of same table)
+        blocks2 = [
+            {"order": 1, "role": "text-region", "bbox": [100, 100, 450, 800], "page_width": 1000, "page_height": 1000},
+            {"order": 2, "role": "text-region", "bbox": [500, 100, 900, 800], "page_width": 1000, "page_height": 1000}
+        ]
+        class MockProvider2:
+            name = "mock"
+            def restore_text(self, text, instruction, settings, media_path=None):
+                return '{"classifications": [{"id": 1, "role": "table-region"}, {"id": 2, "role": "table-region"}], "merges": [[1, 2]]}', {}
+                
+        with tempfile.TemporaryDirectory() as tmp:
+            img_path = Path(tmp) / "test.png"
+            from PIL import Image
+            Image.new("RGB", (200, 200), "white").save(img_path)
+            res2 = _llm_classify_layout_blocks(img_path, blocks2, MockProvider2(), ModelSettings())
+            # They should be merged into a single block
+            self.assertEqual(len(res2), 1)
+            self.assertEqual(res2[0]["role"], "table-region")
+            self.assertEqual(res2[0]["bbox"], [100, 100, 900, 800])
 
     def test_document_structure_promotes_native_layout_profile(self):
         native_layout = {

@@ -77,3 +77,11 @@ The native layout pass is deliberately conservative and local. It gives Akshara
 Vision first-party page geometry without requiring a separate layout model, while
 remaining compatible with future OCR/layout backends that can write richer block
 and confidence data.
+
+## Hybrid Layout & CSV Table System
+
+Akshara Vision employs a hybrid vision-first document intelligence flow to maximize accuracy and layout integrity:
+1. **Precision Geometry (All Modes)**: Page geometry is detected locally by the native heuristic engine (or layout backends like `doctr`, `paddleocr`) to guarantee that bounding boxes are pixel-accurate and no elements are skipped. This runs unconditionally in all execution modes (`fast`, `balanced`, `quality`).
+2. **Vision Role Refinement**: Bounding boxes are then refined by the Vision model (`_llm_classify_layout_blocks`), mapping them to 13 granular semantic roles (e.g. `title`, `table`, `list`, `caption`) and merging fragmented multi-column tables or multi-line titles.
+3. **Structured CSV Table Extraction**: Table regions are extracted as structured CSV fenced blocks (` ```csv ... ``` `) within the restored text, ensuring columns remain perfectly aligned. Akshara converts these CSV blocks to clean, responsive HTML tables for interactive comparison and exports.
+4. **Reading-Order Text Allocation**: The final restored page text is mapped block-by-block using visual reading order sorting (column-by-column for multi-column documents) to associate the exact text segment to its visual coordinates.

@@ -25,9 +25,19 @@ ENV_KEYS = [
 ]
 
 
+from akshara_vision.core.constants import default_config_dir
+
+
 def load_env_files(paths: Iterable[Path] = None) -> List[Path]:
     """Load simple KEY=value pairs from .env files without overwriting the shell."""
-    candidates = list(paths or [Path.cwd() / ".env", Path.home() / ".akshara-vision" / ".env"])
+    candidates = list(
+        paths
+        or [
+            Path.cwd() / ".env",
+            default_config_dir() / ".env",
+            Path.home() / ".akshara-vision" / ".env",
+        ]
+    )
     loaded = []
     for path in candidates:
         if not path.exists():
@@ -39,7 +49,7 @@ def load_env_files(paths: Iterable[Path] = None) -> List[Path]:
             key, value = line.split("=", 1)
             key = key.strip()
             value = value.strip().strip('"').strip("'")
-            if key and key not in os.environ:
+            if key and (key not in os.environ or not os.environ[key].strip()):
                 os.environ[key] = value
         loaded.append(path)
     return loaded

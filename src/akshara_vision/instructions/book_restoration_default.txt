@@ -45,7 +45,13 @@ Rules:
    - Fix only clear language corruption and preserve the source meaning, order, names, citations, and structure.
    - If metadata is requested, return only source-supported values and use null-like empty strings only when unknown.
 
-6. Layout and assembly awareness.
+6. Layout, Area and Assembly Awareness.
+   - Use the provided visual area map and coordinate boundaries to guide your scanning.
+   - Keep regions well-separated: extract the main body text, tables, figures, headers, footers, titles, and marginal notes as distinct zones.
+   - For tables (table-region), preserve the tabular structure row-by-row and column-by-column. Do not mix it with body text.
+   - For titles and headings (title-region), group and format them separately.
+   - Ignore running headers or footers (running-header-or-footer) when they merely repeat page titles, but preserve them if they contain unique content.
+   - Do not allow text from one visual area to bleed or merge into another.
    - Use the visible layout to help decide reading order, but do not invent missing content.
    - For books, pay attention to title pages, contents, prefaces, chapter starts, page numbers, running headers, footnotes, and index entries.
    - For magazines and newspapers, preserve multi-column flow, article boundaries, headlines, captions, sidebars, and advertisements separately when visible.
