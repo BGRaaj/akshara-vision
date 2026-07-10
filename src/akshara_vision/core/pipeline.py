@@ -1782,6 +1782,8 @@ def _response_needs_retry(response: str) -> bool:
     candidate = (response or "").strip()
     if not candidate:
         return False
+    if "[BLOCK " in candidate or "[BLOCK #" in candidate or "[BLOCK\n" in candidate:
+        return False
     if _looks_like_meta_response(candidate):
         return True
     json_candidate = _extract_json_object(candidate)
@@ -3125,8 +3127,11 @@ def _verify_figure_assets(
             provider is None
             or profile is None
             or not local_path.exists()
+            or asset_index > verification_limit
         ):
             asset["verification"] = "heuristic"
+            if asset_index > verification_limit:
+                asset["reason"] = "verification skipped by execution mode"
             verified_assets.append(asset)
             continue
         prompt = (
@@ -3703,7 +3708,8 @@ def _page_layout(
                 return {}
             layout = _native_page_layout(image_path, document_type)
 
-    if isinstance(layout, dict) and layout.get("blocks") and provider:
+    mode = _execution_mode(profile) if profile else "balanced"
+    if isinstance(layout, dict) and layout.get("blocks") and provider and mode != "fast":
         layout["blocks"] = _llm_classify_layout_blocks(
             image_path, layout["blocks"], provider, profile.model if profile else None
         )
@@ -4696,8 +4702,8 @@ def _task_text(
         )
 
     if not raw_text:
-        # Multimodal vision prompt — block-guided if layout is available.
-        if native_layout and isinstance(native_layout.get("blocks"), list) and len(native_layout["blocks"]) > 0:
+        # Multimodal vision prompt — block-guided if layout is available and NOT fast mode.
+        if native_layout and isinstance(native_layout.get("blocks"), list) and len(native_layout["blocks"]) > 0 and execution_mode != "fast":
             block_list = []
             for b in native_layout["blocks"]:
                 order = b.get("order")
@@ -4831,11 +4837,12 @@ def _restore_multimodal_image(
         provider, prompt, instruction, profile.model, media_path=path, progress=progress
     )
 
+    execution_mode = _execution_mode(profile)
     # Try JSON or raw text parsing first
     restored_text = _extract_multimodal_text(result)
     
-    # Try block-level parsing first
-    block_texts = _parse_block_restorations(result)
+    # Try block-level parsing first (not in fast mode)
+    block_texts = _parse_block_restorations(result) if execution_mode != "fast" else None
     if block_texts and native_layout and native_layout.get("blocks"):
         for b in native_layout["blocks"]:
             b["extracted_text"] = block_texts.get(b["order"], "").strip()
@@ -5567,8 +5574,8 @@ def _restore_multimodal_pdf(
                 )
             restored_text = _extract_multimodal_text(result)
             
-            # Try block-level parsing first
-            block_texts = _parse_block_restorations(result)
+            # Try block-level parsing first (not in fast mode)
+            block_texts = _parse_block_restorations(result) if execution_mode != "fast" else None
             if block_texts and native_layout and native_layout.get("blocks"):
                 for b in native_layout["blocks"]:
                     b["extracted_text"] = block_texts.get(b["order"], "").strip()
@@ -6131,8 +6138,8 @@ def _restore_multimodal_zip(
                     )
                 restored_text = _extract_multimodal_text(result)
                 
-                # Try block-level parsing first
-                block_texts = _parse_block_restorations(result)
+                # Try block-level parsing first (not in fast mode)
+                block_texts = _parse_block_restorations(result) if execution_mode != "fast" else None
                 if block_texts and native_layout and native_layout.get("blocks"):
                     for b in native_layout["blocks"]:
                         b["extracted_text"] = block_texts.get(b["order"], "").strip()
