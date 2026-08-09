@@ -14,28 +14,78 @@ from akshara_vision.core.models import ModelSettings
 from akshara_vision.providers.base import ProviderStatus
 
 
+def _normalize_url(raw: str) -> str:
+    cleaned = str(raw).strip()
+    if not cleaned:
+        return ""
+    if not cleaned.startswith("http://") and not cleaned.startswith("https://"):
+        cleaned = "http://" + cleaned
+    return cleaned.rstrip("/")
+
+
+def get_ollama_base_url(settings: Optional[object] = None) -> str:
+    if settings and getattr(settings, "endpoint", None):
+        raw = str(settings.endpoint).strip()
+        if raw:
+            return _normalize_url(raw)
+    for key in ["AKSHARA_OLLAMA_BASE_URL", "OLLAMA_HOST", "OLLAMA_BASE_URL"]:
+        val = os.environ.get(key)
+        if val and val.strip():
+            return _normalize_url(val.strip())
+    return "http://localhost:11434"
+
+
+def _fetch_ollama_models_http(base_url: str) -> Optional[List[str]]:
+    url = base_url.rstrip("/") + "/api/tags"
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        data = _urlopen_json(request, timeout=2.5)
+        models = []
+        for item in data.get("models", []):
+            name = item.get("name") or item.get("model")
+            if name:
+                models.append(str(name))
+        return models
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, RuntimeError):
+        return None
+
+
 class OllamaProvider:
     name = "ollama"
 
     def status(self) -> ProviderStatus:
-        if shutil.which("ollama") is None:
-            return ProviderStatus(self.name, False, "ollama command not found.", [])
-        try:
-            result = subprocess.run(
-                ["ollama", "list"],
-                check=False,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=5,
+        base_url = get_ollama_base_url()
+        http_models = _fetch_ollama_models_http(base_url)
+        if http_models is not None:
+            return ProviderStatus(
+                self.name,
+                True,
+                f"Connected to Ollama at {base_url}.",
+                http_models,
             )
-        except Exception as exc:  # pragma: no cover - defensive around local installs
-            return ProviderStatus(self.name, False, f"ollama check failed: {exc}", [])
-        models = _parse_ollama_models(result.stdout)
-        available = result.returncode == 0
-        detail = "ollama is installed." if available else "ollama is installed but not responding."
-        return ProviderStatus(self.name, available, detail, models)
+        if shutil.which("ollama") is not None:
+            try:
+                result = subprocess.run(
+                    ["ollama", "list"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=5,
+                )
+                models = _parse_ollama_models(result.stdout)
+                available = result.returncode == 0
+                detail = (
+                    "ollama is running locally."
+                    if available
+                    else "ollama is installed locally but not responding."
+                )
+                return ProviderStatus(self.name, available, detail, models)
+            except Exception as exc:  # pragma: no cover - defensive around local installs
+                return ProviderStatus(self.name, False, f"ollama check failed: {exc}", [])
+        detail = f"Ollama server not reachable at {base_url} and local 'ollama' command not found."
+        return ProviderStatus(self.name, False, detail, [])
 
     def restore_text(
         self,
@@ -45,6 +95,7 @@ class OllamaProvider:
         media_path: Optional[Path] = None,
     ) -> tuple[str, dict]:
         prompt = f"{instruction}\n\nSOURCE TEXT:\n{text}" if text else instruction
+        base_url = get_ollama_base_url(settings)
 
         # If media_path is provided, we MUST use HTTP API because CLI cannot handle images.
         if media_path:
@@ -54,11 +105,12 @@ class OllamaProvider:
                 text,
                 media_path,
                 _request_timeout(settings),
+                base_url=base_url,
             )
             if response:
                 return response, usage
             raise RuntimeError(
-                f"Failed to obtain vision response from Ollama using model '{settings.model}'."
+                f"Failed to obtain vision response from Ollama at {base_url} using model '{settings.model}'."
             )
 
         try:
@@ -68,9 +120,15 @@ class OllamaProvider:
                 text,
                 None,
                 _request_timeout(settings),
+                base_url=base_url,
             )
-        except RuntimeError:
+        except RuntimeError as exc:
+            if shutil.which("ollama") is None:
+                raise RuntimeError(
+                    f"Failed to connect to Ollama server at {base_url} and local 'ollama' CLI is not installed: {exc}"
+                ) from exc
             response, usage = "", {}
+
         if response:
             return response, usage
 
@@ -95,6 +153,30 @@ class OllamaProvider:
         return stdout.strip() + "\n", {}
 
 
+def get_openai_compatible_endpoint(
+    provider_name: str,
+    default_endpoint: str,
+    settings: Optional[object] = None,
+) -> str:
+    if settings and getattr(settings, "endpoint", None):
+        raw = str(settings.endpoint).strip()
+        if raw:
+            return _normalize_url(raw)
+    normalized = str(provider_name or "").upper().replace("-", "_")
+    for key in [
+        f"AKSHARA_{normalized}_BASE_URL",
+        f"{normalized}_BASE_URL",
+        f"{normalized}_HOST",
+        "AKSHARA_OPENAI_COMPATIBLE_BASE_URL",
+        "OPENAI_API_BASE",
+        "OPENAI_BASE_URL",
+    ]:
+        val = os.environ.get(key)
+        if val and val.strip():
+            return _normalize_url(val.strip())
+    return _normalize_url(default_endpoint)
+
+
 class OpenAICompatibleLocalProvider:
     def __init__(
         self,
@@ -105,14 +187,14 @@ class OpenAICompatibleLocalProvider:
         self.default_endpoint = default_endpoint
 
     def status(self) -> ProviderStatus:
-        endpoint = os.environ.get("AKSHARA_OPENAI_COMPATIBLE_BASE_URL") or self.default_endpoint
+        endpoint = get_openai_compatible_endpoint(self.name, self.default_endpoint)
         models = _fetch_openai_compatible_models(endpoint)
         if models:
             return ProviderStatus(self.name, True, f"Connected to {endpoint}.", models)
         return ProviderStatus(
             self.name,
             False,
-            f"Configure an OpenAI-compatible local endpoint, such as {endpoint}.",
+            f"Cannot reach server at {endpoint}. Ensure your local server or Tailscale endpoint is running.",
             [],
         )
 
@@ -123,11 +205,7 @@ class OpenAICompatibleLocalProvider:
         settings: ModelSettings,
         media_path: Optional[Path] = None,
     ) -> tuple[str, dict]:
-        endpoint = (
-            settings.endpoint
-            or os.environ.get("AKSHARA_OPENAI_COMPATIBLE_BASE_URL")
-            or self.default_endpoint
-        )
+        endpoint = get_openai_compatible_endpoint(self.name, self.default_endpoint, settings=settings)
         result, usage = openai_compatible_chat(
             endpoint=endpoint,
             settings=settings,
@@ -182,11 +260,13 @@ def _retryable_http_error(code: Optional[int]) -> bool:
 
 
 def _urlopen_json(request: urllib.request.Request, timeout: Optional[float], attempts: int = 3) -> dict:
+    """Open a URL, read up to 10 MB of response body, and parse as JSON."""
+    _MAX_RESPONSE_BYTES = 10 * 1024 * 1024  # 10 MB cap
     last_exc: Optional[Exception] = None
     for attempt in range(max(1, attempts)):
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
+                return json.loads(response.read(_MAX_RESPONSE_BYTES).decode("utf-8"))
         except urllib.error.HTTPError as exc:
             last_exc = exc
             if not _retryable_http_error(getattr(exc, "code", None)) or attempt >= attempts - 1:
@@ -203,17 +283,24 @@ def _urlopen_json(request: urllib.request.Request, timeout: Optional[float], att
 
 
 def _fetch_openai_compatible_models(endpoint: str, api_key: Optional[str] = None) -> List[str]:
-    url = endpoint.rstrip("/") + "/models"
+    base = endpoint.rstrip("/")
+    urls_to_try = [f"{base}/models"]
+    if not base.endswith("/v1") and not base.endswith("/v1/"):
+        urls_to_try.append(f"{base}/v1/models")
     headers = {"Accept": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    request = urllib.request.Request(url, headers=headers)
-    try:
-        data = _urlopen_json(request, timeout=1.5)
-        values = data.get("data", [])
-        return [str(item.get("id")) for item in values if isinstance(item, dict) and item.get("id")]
-    except (OSError, urllib.error.URLError, json.JSONDecodeError):
-        return []
+    for url in urls_to_try:
+        try:
+            request = urllib.request.Request(url, headers=headers)
+            data = _urlopen_json(request, timeout=2.5)
+            values = data.get("data", [])
+            models = [str(item.get("id")) for item in values if isinstance(item, dict) and item.get("id")]
+            if models:
+                return models
+        except Exception:
+            continue
+    return []
 
 
 def _ollama_chat_http(
@@ -222,8 +309,10 @@ def _ollama_chat_http(
     text: str,
     media_path: Optional[Path] = None,
     timeout: Optional[float] = None,
+    base_url: Optional[str] = None,
 ) -> tuple[str, dict]:
-    url = "http://localhost:11434/api/chat"
+    resolved_base = base_url or get_ollama_base_url(settings)
+    url = resolved_base.rstrip("/") + "/api/chat"
 
     model = settings.model if hasattr(settings, "model") else str(settings)
     ctx_limit = _context_limit(settings)
@@ -301,16 +390,19 @@ def _ollama_chat_http(
     except urllib.error.URLError:
         if media_path:
             raise RuntimeError(
-                f"Could not connect to Ollama local server at {url}. "
-                "Make sure Ollama is running (`ollama serve`) and the model is downloaded."
+                f"Could not connect to Ollama server at {url}. "
+                "Ensure Ollama is running (`ollama serve` locally or check your Tailscale / remote server address)."
             )
         return "", {}
     finally:
         if media_path:
-            media_bytes = None
-            media_base64 = None
-            messages = None
-            payload = None
+            # Guard against UnboundLocalError if read_bytes raised before assignment
+            media_bytes = locals().get("media_bytes")
+            media_base64 = locals().get("media_base64")
+            media_bytes = None  # noqa: F841
+            media_base64 = None  # noqa: F841
+            messages = None  # noqa: F841
+            payload = None  # noqa: F841
             gc.collect()
 
 
@@ -325,7 +417,11 @@ def openai_compatible_chat(
     headers_override: Optional[dict] = None,
     payload_override: Optional[dict] = None,
 ) -> tuple[str, dict]:
-    url = endpoint.rstrip("/") + "/chat/completions"
+    base = endpoint.rstrip("/")
+    if base.endswith("/v1") or "/api/" in base:
+        url = f"{base}/chat/completions"
+    else:
+        url = f"{base}/v1/chat/completions"
 
     model = settings.model if hasattr(settings, "model") else str(settings)
     ctx_limit = _context_limit(settings)

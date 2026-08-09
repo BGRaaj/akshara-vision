@@ -2949,6 +2949,51 @@ class CoreTests(unittest.TestCase):
                 self.assertEqual(usage["completion_tokens"], 80)
                 self.assertEqual(usage["total_tokens"], 280)
 
+    def test_ollama_remote_tailscale_endpoint(self):
+        from akshara_vision.providers.local import OllamaProvider
+
+        with patch.dict("os.environ", {"OLLAMA_HOST": "http://100.80.0.5:11434"}):
+            with patch("akshara_vision.providers.local._fetch_ollama_models_http", return_value=["gemma4:12b", "qwen3.6:27b"]):
+                with patch("shutil.which", return_value=None):
+                    provider = OllamaProvider()
+                    status = provider.status()
+                    self.assertTrue(status.available)
+                    self.assertIn("100.80.0.5:11434", status.detail)
+                    self.assertEqual(status.models, ["gemma4:12b", "qwen3.6:27b"])
+
+    def test_ollama_remote_restore_text(self):
+        from akshara_vision.providers.local import OllamaProvider
+        from akshara_vision.core.models import ModelSettings
+
+        settings = ModelSettings(provider="ollama", model="gemma4:12b")
+        with patch.dict("os.environ", {"OLLAMA_HOST": "http://100.80.0.5:11434"}):
+            with patch("shutil.which", return_value=None):
+                with patch("akshara_vision.providers.local._ollama_chat_http", return_value=("remote restored\n", {})) as mock_chat:
+                    provider = OllamaProvider()
+                    text, _ = provider.restore_text("hello", "instruction", settings)
+                    self.assertEqual(text, "remote restored\n")
+                    self.assertEqual(mock_chat.call_args.kwargs["base_url"], "http://100.80.0.5:11434")
+
+    def test_openai_compatible_remote_tailscale_endpoint(self):
+        from akshara_vision.providers.local import OpenAICompatibleLocalProvider
+
+        with patch.dict("os.environ", {"AKSHARA_LM_STUDIO_BASE_URL": "http://100.80.0.10:1234/v1"}):
+            with patch("akshara_vision.providers.local._fetch_openai_compatible_models", return_value=["gemma-4-12b-it"]):
+                provider = OpenAICompatibleLocalProvider("lm-studio", "http://localhost:1234/v1")
+                status = provider.status()
+                self.assertTrue(status.available)
+                self.assertIn("100.80.0.10:1234", status.detail)
+                self.assertEqual(status.models, ["gemma-4-12b-it"])
+
+    def test_url_normalization_helpers(self):
+        from akshara_vision.providers.local import _normalize_url, get_ollama_base_url
+
+        self.assertEqual(_normalize_url("100.80.0.5:11434"), "http://100.80.0.5:11434")
+        self.assertEqual(_normalize_url("http://100.80.0.5:11434/"), "http://100.80.0.5:11434")
+        with patch.dict("os.environ", {"OLLAMA_HOST": "100.80.0.5:11434"}):
+            self.assertEqual(get_ollama_base_url(), "http://100.80.0.5:11434")
+
 
 if __name__ == "__main__":
     unittest.main()
+

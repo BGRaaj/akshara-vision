@@ -96,7 +96,35 @@ Select an execution mode based on your priority for speed, cost, and complexity:
 
 ---
 
-## 3. Quick Start
+## 3. Akshara Verify: Offline Digitization Preflight & Quality Audit
+
+In high-volume digitization tenders (e.g., National Archives, Gyan Bharatam Mission, High Courts), if even 1–2% of delivered scanned pages are blurry, blank, skewed, missing sequence numbers, or have broken metadata, the client rejects the **entire delivery batch** and penalizes the scanning contractor.
+
+**Akshara Verify (`akv verify`)** is an offline-first acceptance preflight and audit engine that allows digitization contractors to inspect **100% of scanned output batches** locally before client delivery.
+
+```mermaid
+graph LR
+    Batch[Scan Contractor Output Folder] --> Verify["akv verify --profile gyan-bharatam-2025"]
+    Verify --> L1[File Integrity & Sequence Gaps]
+    Verify --> L2[Blur / Skew / Blank / Near-Duplicates]
+    Verify --> L3[Metadata Schema & Dublin Core]
+    Verify --> L4[PDF/A-1b / PDF/A-2b Compliance]
+    L1 & L2 & L3 & L4 --> Reports[Audit Report Bundle]
+    Reports --> HTML[executive-summary.html]
+    Reports --> UI["akv review-batch (Local Web UI)"]
+```
+
+### What & How Does It Verify?
+* **Input vs Output**: It verifies the **output of scanning** (master TIFFs, derivative JPEGs/PDFs, metadata CSV/JSON) before it is delivered as an **input to repository ingestion / DMS**.
+* **Why It is Useful**: Replaces manual 1%–5% spreadsheet sampling with automated 100% full-batch inspection. Catches defects on-site within minutes so pages can be rescanned before scanning hardware is moved.
+* **Tender-Specific Rules**: Built-in TOML profiles for **Gyan Bharatam Mission 2025** (`gyan-bharatam-2025`) and **National Archives of India** (`nai-archival`).
+* **PDF/A Archival Verification**: Validates PDF/A-1b and PDF/A-2b compliance, font embedding, XMP metadata, and encryption restrictions.
+* **Calibrated Archival Classifier**: Distinguishes genuine historical manuscript degradation (aged paper staining, ink bleed-through) from camera/motion blur.
+* **Interactive Human QA Queue**: Run `akv review-batch <batch-folder>` to launch a lightweight local Web UI (`localhost:8080`) to inspect flagged pages side-by-side, mark decisions (`Approve / Rescan / Fix Metadata`), and automatically calibrate profile thresholds via `akv calibrate-profile`.
+
+---
+
+## 4. Quick Start
 
 ### Installation
 
@@ -110,8 +138,11 @@ Select an execution mode based on your priority for speed, cost, and complexity:
    # For basic restoration:
    pip install -e .
    
-   # OR for layout-boosted ML parsing (highly recommended for multi-column pages):
+   # For layout-boosted ML parsing (recommended for multi-column pages):
    pip install -e ".[layout]"
+   
+   # For Akshara Verify (preflight audit, PDF/A compliance, ONNX classifiers):
+   pip install -e ".[verify]"
    ```
 
    > **Note for Windows Users**: If you encounter a `WinError 206 (filename too long)` error during installation of ML layout modules, please refer to the **[Windows Troubleshooting Guide](docs/onboarding.md#windows-troubleshooting)** to enable long path support.
@@ -128,6 +159,21 @@ To run the interactive guided setup to configure your default model and profile:
 akshara
 ```
 
+To verify a digitization contractor scan batch against Gyan Bharatam tender rules:
+```bash
+akv verify ./my-scan-batch --profile gyan-bharatam-2025 --output ./audit-report
+```
+
+To launch the interactive local Human QA Review Web UI for a flagged batch:
+```bash
+akv review-batch ./my-scan-batch --output ./audit-report --port 8080
+```
+
+To automatically calibrate profile thresholds from QA supervisor review decisions:
+```bash
+akv calibrate-profile ./audit-report/review_decisions.json --profile gyan-bharatam-2025
+```
+
 To run a fast document extraction using your active profile:
 ```bash
 akv q path/to/document.pdf
@@ -140,7 +186,7 @@ akv compare akshara-output/run-folder-name
 
 ---
 
-## 4. Documentation Directory
+## 5. Documentation Directory
 
 For deep dives into specific subsystems and configurations, refer to the centralized **[index.md](index.md)** documentation hub:
 
@@ -149,6 +195,7 @@ For deep dives into specific subsystems and configurations, refer to the central
 * **[Profiles Configuration](docs/profiles.md)**: Writing portable TOML profiles to manage languages, export formats, and execution defaults.
 * **[Document Intelligence](docs/document-intelligence.md)**: Bounding boxes, layout trees, reading order, and page segment classifications.
 * **[Workflows & CLI Design](docs/workflows.md)**: Deeper look at batch processing, resumable staged runs, and visual reviews.
+* **[Akshara Verify (Preflight & Audit)](docs/verify.md)**: 100% automated offline quality audit, PDF/A compliance, interactive QA review queue (`akv review-batch`), and profile threshold calibration (`akv calibrate-profile`).
 * **[Grounded Document Chat](docs/chat.md)**: Guide to query processed runs and audit segment citations.
 * **[Inputs and Exporters](docs/inputs-outputs.md)**: Detailed mapping of supported formats (Markdown, HTML, DOCX, EPUB, PDF).
 * **[Privacy & Security](docs/privacy.md)**: Metadata handling, cache isolation, and key management.

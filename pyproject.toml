@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "akshara-vision"
-version = "0.1.0"
+version = "1.1.0"
 description = "A local-first terminal tool for restoring, OCR-cleaning, translating, and exporting archival books."
 readme = "README.md"
 requires-python = ">=3.9"
-license = "MIT"
+license = "AGPL-3.0-only"
 authors = [
   { name = "Akshara Vision contributors" }
 ]
-keywords = ["ocr", "book-restoration", "archives", "cli", "llm", "translation"]
+keywords = ["ocr", "book-restoration", "archives", "cli", "llm", "translation", "digitization", "preflight", "audit", "pdfa"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
@@ -45,6 +45,11 @@ layout = [
   "paddleocr>=2.7.0",
   "layoutparser>=0.3.4",
   "opencv-python-headless>=4.9.0"
+]
+verify = [
+  "opencv-python-headless>=4.9.0",
+  "pikepdf>=8.0.0",
+  "onnxruntime>=1.16.0"
 ]
 
 [project.urls]

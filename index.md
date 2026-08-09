@@ -68,6 +68,7 @@ Refer to the following sections for formal guides on each subsystem:
 * **[Execution Workflows](docs/workflows.md)**: Staged processing, resumable checkpoints, batch input discovery, and visual overlays (`akv compare`).
 * **[Document Intelligence](docs/document-intelligence.md)**: Bounding boxes, layout trees, reading order, and page segment classifications.
 * **[Instruction Presets](docs/instructions.md)**: Customizing language model correction and translation rules safely.
+* **[Akshara Verify (Preflight & Audit)](docs/verify.md)**: 100% automated offline quality audit, PDF/A compliance, interactive QA review queue (`akv review-batch`), and profile threshold calibration (`akv calibrate-profile`).
 
 ### Interfaces & Formats
 * **[Grounded Document Chat](docs/chat.md)**: Conducting semantic Q&A over run manifests and auditing sources with page-level visual rechecks.

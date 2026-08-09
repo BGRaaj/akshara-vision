@@ -1,0 +1,18 @@
+name = "nai-archival"
+version = "1.0.0"
+description = "Acceptance profile for National Archives of India digitization quality audit"
+
+allowed_master_formats = [".tif", ".tiff"]
+allowed_derivative_formats = [".jpg", ".jpeg", ".pdf"]
+expected_dpi = 300
+min_dpi = 300
+expected_color_mode = "RGB"
+
+metadata_required_fields = ["accession_number", "title", "date", "department", "file_number", "page_count", "language", "condition"]
+metadata_unique_fields = ["accession_number"]
+
+blur_threshold = 120.0
+skew_threshold_degrees = 3.0
+blank_threshold = 0.98
+near_duplicate_hash_threshold = 3
+max_flag_rate = 0.05

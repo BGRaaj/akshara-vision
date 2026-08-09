@@ -69,6 +69,9 @@ HOME_ACTIONS = [
     "Core - Batch process",
     "Core - Chat over files",
     "Core - Guided setup",
+    "Core - Verify batch (Preflight audit)",
+    "Core - QA Review Web UI",
+    "Core - Calibrate profile thresholds",
     "Core - Profiles",
     "Core - Models",
     "Core - Instructions",
@@ -126,6 +129,9 @@ def _render_home(expanded: bool = True) -> None:
         ui.board(
             [
                 ("Batch", "/batch", "Folders and manifests"),
+                ("Verify", "/verify", "Preflight acceptance audit"),
+                ("Review QA", "/review-batch", "Interactive QA review UI"),
+                ("Calibrate", "/calibrate-profile", "Tune profile thresholds"),
                 ("Setup", "/init", "Create your workflow"),
                 ("Instructions", "/instructions", "Restoration prompt presets"),
             ],
@@ -217,6 +223,9 @@ def _menu_command() -> str:
         "Core - Batch process": "/batch",
         "Core - Chat over files": "/chat",
         "Core - Guided setup": "/init",
+        "Core - Verify batch (Preflight audit)": "/verify",
+        "Core - QA Review Web UI": "/review-batch",
+        "Core - Calibrate profile thresholds": "/calibrate-profile",
         "Core - Profiles": "/profiles",
         "Core - Models": "/models",
         "Core - Instructions": "/instructions",
@@ -337,6 +346,15 @@ def _dispatch_session_command(raw: str) -> bool:
         check_command()
     elif command in {"/docs"}:
         docs_command()
+    elif command in {"/verify", "/audit"}:
+        batch = args[0] if args else None
+        verify_command(batch_dir=batch)
+    elif command in {"/review-batch", "/verify-review", "/review-qa"}:
+        batch = args[0] if args else None
+        review_batch_command(batch_dir=batch)
+    elif command in {"/calibrate-profile", "/calibrate"}:
+        decisions = args[0] if args else None
+        calibrate_profile_command(decisions_file=decisions)
     elif command in {"/clean"}:
         clean_command(yes=False)
     else:
@@ -383,6 +401,9 @@ def _session_help() -> None:
             ["/review [run-folder]", "Inspect layout, assets, and confidence"],
             ["/compare [run-folder]", "Render source and output side by side"],
             ["/export [path]", "Convert a run folder or existing output to another format"],
+            ["/verify [batch-folder]", "Automated offline acceptance preflight audit"],
+            ["/review-batch [batch-folder]", "Interactive QA review queue Web UI"],
+            ["/calibrate-profile [decisions.json]", "Tune profile thresholds from review decisions"],
             ["/install", "Install PDF/image system dependencies"],
             ["/check, /test", "Compile and run unit tests"],
             ["/clean", "Remove local generated outputs"],
@@ -3702,14 +3723,35 @@ def instruct_command(action: str = "view", preset: str = DEFAULT_PRESET) -> None
 
 
 def doctor_command() -> None:
+    from akshara_vision.providers.local import OllamaProvider, OpenAICompatibleLocalProvider
+
     ui.heading("Akshara Vision", "Doctor")
-    tools = [
-        ("pdftoppm", "PDF page rendering for multimodal vision"),
-        ("ollama", "Local model runtime"),
-    ]
     rows = [["Check", "State", "Purpose"]]
-    for command, purpose in tools:
-        rows.append([command, "found" if find_executable(command) else "missing", purpose])
+    rows.append(
+        [
+            "pdftoppm",
+            "found" if find_executable("pdftoppm") else "missing",
+            "PDF page rendering for multimodal vision",
+        ]
+    )
+
+    ollama_state = "missing"
+    if find_executable("ollama"):
+        ollama_state = "found (local)"
+    elif OllamaProvider().status().available:
+        ollama_state = "connected (remote/HTTP)"
+    rows.append(["ollama / OLLAMA_HOST", ollama_state, "Local or Tailscale model runtime"])
+
+    local_openai_state = (
+        "connected" if OpenAICompatibleLocalProvider().status().available else "not running"
+    )
+    rows.append(
+        [
+            "LM Studio / Jan / llama.cpp",
+            local_openai_state,
+            "OpenAI-compatible local / Tailscale server",
+        ]
+    )
     html_pdf_renderers = (
         "chromium",
         "chromium-browser",
@@ -4145,6 +4187,7 @@ def docs_command() -> None:
         "docs/models.md",
         "docs/profiles.md",
         "docs/instructions.md",
+        "docs/verify.md",
         "docs/privacy.md",
         "SECURITY.md",
         "CONTRIBUTING.md",
@@ -4204,14 +4247,17 @@ def _recommended_models(provider_name: str) -> List[str]:
 
 
 def _default_endpoint(provider_name: str) -> str:
-    # First check provider-specific base URL overrides (e.g. AKSHARA_CUSTOM_OPENAI_COMPATIBLE_BASE_URL)
     normalized = str(provider_name or "").upper().replace("-", "_")
-    env_var = f"AKSHARA_{normalized}_BASE_URL"
-    env_val = os.environ.get(env_var)
-    if env_val:
-        return env_val
-        
-    # Local providers fall back to the generic local runtime base URL
+    for key in [
+        f"AKSHARA_{normalized}_BASE_URL",
+        f"{normalized}_BASE_URL",
+        f"{normalized}_HOST",
+    ]:
+        env_val = os.environ.get(key)
+        if env_val:
+            return env_val
+    if provider_name == "ollama":
+        return os.environ.get("OLLAMA_HOST") or "http://localhost:11434"
     if provider_name in {
         "openai-compatible-local",
         "lm-studio",
@@ -4223,6 +4269,7 @@ def _default_endpoint(provider_name: str) -> str:
             return local_env
 
     return {
+        "ollama": "http://localhost:11434",
         "openai-compatible-local": "http://localhost:1234/v1",
         "lm-studio": "http://localhost:1234/v1",
         "jan": "http://localhost:1337/v1",
@@ -4373,3 +4420,187 @@ def install_command() -> None:
             ui.write("- Recommended: install Scoop, then run `scoop install poppler`")
             ui.write("- Poppler: https://github.com/oschwartz10612/poppler-windows/releases")
             ui.write("Make sure it is added to your environment PATH.")
+
+
+def verify_command(
+    batch_dir: Optional[str] = None,
+    profile_name: Optional[str] = None,
+    metadata: Optional[str] = None,
+    output: Optional[str] = None,
+) -> None:
+    """Run Akshara Verify: offline acceptance-preflight for digitization batches."""
+    from akshara_vision.verify.engine import run_verification, load_profile_by_name
+    from akshara_vision.verify.models import AcceptanceProfile
+
+    ui.section("Akshara Verify")
+    ui.write("Offline acceptance-preflight and audit for document digitization.\n")
+
+    if not batch_dir:
+        batch_dir = ui.text("Path to scan batch folder to verify")
+    if not batch_dir:
+        ui.write("Error: A batch folder path is required.")
+        ui.write("Usage: akv verify <batch-folder> [--profile NAME] [--metadata FILE] [--output DIR]")
+        return
+
+    batch_path = Path(batch_dir).expanduser().resolve()
+    if not batch_path.exists() or not batch_path.is_dir():
+        ui.write(f"Error: Batch directory not found: {batch_path}")
+        return
+
+    # Load profile
+    if profile_name:
+        ui.write(f"Loading acceptance profile: {profile_name}")
+        profile = load_profile_by_name(profile_name)
+        if profile.name == "default" and profile_name != "default":
+            ui.write(f"Warning: Profile '{profile_name}' not found, using default profile.")
+    else:
+        profile = AcceptanceProfile()
+        ui.write("Using default acceptance profile.")
+
+    ui.write(f"Profile: {profile.name} v{profile.version}")
+    ui.write(f"Batch:   {batch_path}")
+
+    # Metadata path
+    metadata_path = None
+    if metadata:
+        metadata_path = Path(metadata).expanduser().resolve()
+        if not metadata_path.exists():
+            ui.write(f"Warning: Metadata file not found: {metadata_path}")
+            metadata_path = None
+        else:
+            ui.write(f"Metadata: {metadata_path}")
+
+    # Output directory
+    output_dir = None
+    if output:
+        output_dir = Path(output).expanduser().resolve()
+    else:
+        output_dir = batch_path.parent / "audit-report"
+    ui.write(f"Output:  {output_dir}\n")
+
+    ui.write("Running verification...\n")
+
+    def progress(msg: str) -> None:
+        ui.write(f"  → {msg}")
+
+    result = run_verification(
+        batch_dir=batch_path,
+        profile=profile,
+        metadata_path=metadata_path,
+        output_dir=output_dir,
+        progress_callback=progress,
+    )
+
+    # Summary
+    ui.write("")
+    ui.section("Results")
+    status = "PASSED" if result.passed else "FAILED"
+    ui.write(f"Status: {status}")
+    ui.write(f"Total files:      {result.manifest.total_files}")
+    ui.write(f"Total exceptions: {result.manifest.total_exceptions}")
+
+    counts = result.summary_counts()
+    if counts.get("CRITICAL", 0):
+        ui.write(f"  Critical: {counts['CRITICAL']}")
+    if counts.get("HIGH", 0):
+        ui.write(f"  High:     {counts['HIGH']}")
+    if counts.get("MEDIUM", 0):
+        ui.write(f"  Medium:   {counts['MEDIUM']}")
+    if counts.get("LOW", 0):
+        ui.write(f"  Low:      {counts['LOW']}")
+    if counts.get("INFO", 0):
+        ui.write(f"  Info:     {counts['INFO']}")
+
+    if output_dir:
+        ui.write(f"\nReports written to: {output_dir}")
+        report_files = [
+            "executive-summary.html",
+            "exceptions.csv",
+            "manifest.json",
+            "checksums.sha256",
+            "machine-report.json",
+        ]
+        for rf in report_files:
+            rf_path = output_dir / rf
+            if rf_path.exists():
+                ui.write(f"  ✓ {rf}")
+
+    if not result.passed:
+        ui.write("\nBatch has CRITICAL or HIGH severity exceptions. Review before delivery.")
+    else:
+        ui.write("\nBatch passed acceptance preflight.")
+
+
+def review_batch_command(
+    batch_dir: Optional[str] = None,
+    report_dir: Optional[str] = None,
+    port: int = 8080,
+) -> None:
+    """Launch the interactive local Web UI queue for human QA supervisors."""
+    from akshara_vision.verify.review_ui import start_review_server
+
+    ui.section("Akshara Verify — QA Review Queue")
+    if not batch_dir:
+        batch_dir = ui.text("Path to scan batch folder to review")
+    if not batch_dir:
+        ui.write("Error: A batch folder path is required.")
+        ui.write("Usage: akv review-batch <batch-folder> [--output DIR] [--port 8080]")
+        return
+
+    batch_path = Path(batch_dir).expanduser().resolve()
+    if not batch_path.exists():
+        ui.write(f"Error: Batch folder not found: {batch_path}")
+        return
+
+    rep_path = Path(report_dir).expanduser().resolve() if report_dir else None
+    ui.write(f"Starting QA Review Server for batch: {batch_path}")
+    ui.write(f"Open your browser at: http://localhost:{port}\n")
+    ui.write("Press Ctrl+C to stop the review server.")
+
+    try:
+        start_review_server(batch_dir=batch_path, report_dir=rep_path, port=port)
+    except KeyboardInterrupt:
+        ui.write("\nReview server stopped.")
+
+
+def calibrate_profile_command(
+    decisions_file: Optional[str] = None,
+    base_profile_name: Optional[str] = None,
+    output_profile: Optional[str] = None,
+) -> None:
+    """Tune acceptance thresholds automatically from QA supervisor review decisions."""
+    from akshara_vision.core.toml_compat import dump_toml
+    from akshara_vision.verify.classifier import calibrate_profile_from_reviews
+    from akshara_vision.verify.engine import load_profile_by_name
+
+    ui.section("Akshara Verify — Profile Calibration")
+    if not decisions_file:
+        decisions_file = ui.text("Path to review_decisions.json file")
+    if not decisions_file:
+        ui.write("Error: Review decisions JSON file required.")
+        ui.write("Usage: akv calibrate-profile <review_decisions.json> [--profile BASE] [--output OUT.toml]")
+        return
+
+    dec_path = Path(decisions_file).expanduser().resolve()
+    if not dec_path.exists():
+        ui.write(f"Error: Decisions file not found: {dec_path}")
+        return
+
+    base_profile = load_profile_by_name(base_profile_name or "default")
+    ui.write(f"Base profile: {base_profile.name} (v{base_profile.version})")
+    ui.write(f"Decisions:    {dec_path}")
+
+    calibrated = calibrate_profile_from_reviews(dec_path, base_profile)
+    out_path = (
+        Path(output_profile).expanduser().resolve()
+        if output_profile
+        else dec_path.parent / f"calibrated-{base_profile.name}.toml"
+    )
+
+    out_path.write_text(dump_toml(calibrated.to_dict()), encoding="utf-8")
+    ui.write(f"\n✓ Calibrated profile saved to: {out_path}")
+    ui.write(f"  Tuned blur_threshold:       {calibrated.blur_threshold}")
+    ui.write(f"  Tuned blank_threshold:      {calibrated.blank_threshold}")
+    ui.write(f"  Tuned skew_threshold_deg:   {calibrated.skew_threshold_degrees}")
+
+

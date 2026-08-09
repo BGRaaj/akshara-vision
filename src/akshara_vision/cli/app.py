@@ -33,6 +33,9 @@ from akshara_vision.cli.workflows import (
     run_guided,
     show_home,
     ui_command,
+    verify_command,
+    review_batch_command,
+    calibrate_profile_command,
 )
 
 
@@ -250,6 +253,47 @@ if typer:
     def customize_ui():
         ui_command()
 
+    @app.command("verify")
+    @app.command("audit")
+    def verify(
+        batch_dir: Optional[str] = typer.Argument(None, help="Path to batch folder to verify."),
+        profile: Optional[str] = typer.Option(
+            None, "--profile", "-p", help="Acceptance profile name (e.g. gyan-bharatam-2025)."
+        ),
+        metadata: Optional[str] = typer.Option(
+            None, "--metadata", "-m", help="Path to metadata CSV or JSON file."
+        ),
+        output: Optional[str] = typer.Option(
+            None, "--output", "-o", help="Output directory for audit report."
+        ),
+    ):
+        verify_command(batch_dir=batch_dir, profile_name=profile, metadata=metadata, output=output)
+
+    @app.command("review-batch")
+    @app.command("verify-review")
+    def review_batch(
+        batch_dir: Optional[str] = typer.Argument(None, help="Path to batch folder to review."),
+        output: Optional[str] = typer.Option(
+            None, "--output", "-o", help="Output audit report directory containing exceptions."
+        ),
+        port: int = typer.Option(
+            8080, "--port", "-p", help="Port for local review HTTP server."
+        ),
+    ):
+        review_batch_command(batch_dir=batch_dir, report_dir=output, port=port)
+
+    @app.command("calibrate-profile")
+    def calibrate_profile(
+        decisions: Optional[str] = typer.Argument(None, help="Path to review_decisions.json."),
+        profile: Optional[str] = typer.Option(
+            None, "--profile", "-p", help="Base profile name to calibrate."
+        ),
+        output: Optional[str] = typer.Option(
+            None, "--output", "-o", help="Path for tuned output TOML profile."
+        ),
+    ):
+        calibrate_profile_command(decisions_file=decisions, base_profile_name=profile, output_profile=output)
+
 
 def main(argv: Optional[List[str]] = None) -> None:
     try:
@@ -284,6 +328,8 @@ def _fallback_main(argv: List[str]) -> None:
     parser.add_argument("--lock", action="store_true")
     parser.add_argument("--yes", "-y", action="store_true")
     parser.add_argument("--format", "-f", action="append", default=None)
+    parser.add_argument("--metadata", "-m", default=None)
+    parser.add_argument("--output", "-o", default=None)
     args = parser.parse_args(argv)
 
     command = args.command
@@ -349,6 +395,24 @@ def _fallback_main(argv: List[str]) -> None:
         mode_command()
     elif command in {"ui", "theme"}:
         ui_command()
+    elif command in {"verify", "audit"}:
+        batch = args.inputs[0] if args.inputs else None
+        verify_command(
+            batch_dir=batch,
+            profile_name=args.profile,
+            metadata=args.metadata,
+            output=args.output,
+        )
+    elif command in {"review-batch", "verify-review"}:
+        batch = args.inputs[0] if args.inputs else None
+        review_batch_command(batch_dir=batch, report_dir=args.output)
+    elif command == "calibrate-profile":
+        decisions = args.inputs[0] if args.inputs else None
+        calibrate_profile_command(
+            decisions_file=decisions,
+            base_profile_name=args.profile,
+            output_profile=args.output,
+        )
     else:
         parser.error(f"unknown command: {command}")
 

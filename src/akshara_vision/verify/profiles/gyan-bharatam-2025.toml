@@ -1,0 +1,18 @@
+name = "gyan-bharatam-2025"
+version = "1.0.0"
+description = "Acceptance profile for Gyan Bharatam Mission digitization projects (2025 RFP)"
+
+allowed_master_formats = [".tif", ".tiff"]
+allowed_derivative_formats = [".jpg", ".jpeg", ".png", ".pdf"]
+expected_dpi = 300
+min_dpi = 200
+expected_color_mode = "RGB"
+
+metadata_required_fields = ["identifier", "title", "creator", "subject", "description", "date", "type", "format", "language", "rights"]
+metadata_unique_fields = ["identifier"]
+
+blur_threshold = 100.0
+skew_threshold_degrees = 5.0
+blank_threshold = 0.99
+near_duplicate_hash_threshold = 5
+max_flag_rate = 0.10

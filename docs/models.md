@@ -61,6 +61,30 @@ OpenAI-compatible local runtimes use chat completions:
 export AKSHARA_OPENAI_COMPATIBLE_BASE_URL=http://localhost:1234/v1
 ```
 
+### Remote & Tailscale Endpoints (No Local Installation Required)
+You can connect Akshara Vision to Ollama, LM Studio, Jan, or Llama.cpp servers running remotely over a LAN or VPN (such as **Tailscale**) without installing local command-line tools:
+
+- **Ollama**:
+  ```bash
+  export OLLAMA_HOST=http://100.80.0.5:11434
+  # Or: export AKSHARA_OLLAMA_BASE_URL=http://100.80.0.5:11434
+  ```
+- **LM Studio**:
+  ```bash
+  export LM_STUDIO_BASE_URL=http://100.80.0.5:1234/v1
+  # Or: export AKSHARA_LM_STUDIO_BASE_URL=http://100.80.0.5:1234/v1
+  ```
+- **Jan**:
+  ```bash
+  export JAN_BASE_URL=http://100.80.0.5:1337/v1
+  ```
+- **Llama.cpp**:
+  ```bash
+  export LLAMA_CPP_BASE_URL=http://100.80.0.5:8080/v1
+  ```
+
+Run `akv doctor` or `akv models` to verify remote connectivity. The CLI will query remote endpoints over HTTP automatically.
+
 Or copy the template:
 
 ```bash
