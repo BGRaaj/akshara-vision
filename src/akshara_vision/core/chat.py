@@ -707,6 +707,21 @@ def _question_terms(question: str) -> List[str]:
         "can",
         "will",
         "please",
+        # short prepositions / linking verbs — too common to be file-name signals
+        "is",
+        "in",
+        "it",
+        "be",
+        "an",
+        "of",
+        "or",
+        "at",
+        "by",
+        "on",
+        "to",
+        "do",
+        "if",
+        "as",
     }
     terms = []
     for term in re.findall(r"[A-Za-z0-9][A-Za-z0-9-]{1,}", question.lower()):
@@ -894,7 +909,10 @@ def _path_match_score(path: Path, question: str) -> int:
     terms = _question_terms(question)
     if not terms:
         return 0
-    normalized = f"{path.name} {path.stem} {path.parent}".lower().replace("_", " ").replace("-", " ")
+    # Use only the immediate parent directory name, not the full absolute path.
+    # The full path often contains project/CI directory names (e.g. "akshara-vision")
+    # that happen to match common query words (e.g. "is" inside "vision").
+    normalized = f"{path.name} {path.stem} {path.parent.name}".lower().replace("_", " ").replace("-", " ")
     score = 0
     for term in terms:
         if term in normalized:

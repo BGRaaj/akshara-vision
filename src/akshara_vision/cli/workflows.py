@@ -57,6 +57,11 @@ from akshara_vision.instructions import (
     install_editable_instruction,
     load_instruction,
 )
+from akshara_vision.providers.vision import (
+    SOURCE_API,
+    SOURCE_NAME_RULES,
+    lookup_vision_models,
+)
 from akshara_vision.registries.exporters import exporter_registry
 from akshara_vision.registries.providers import provider_registry
 
@@ -541,7 +546,7 @@ def onboard(
         return profile
     profile.sync_translation_defaults()
 
-    chosen_model = choose_model(profile.model)
+    chosen_model = choose_model(profile.model, vision_only=True)
     if chosen_model is None:
         return None
     profile.model = chosen_model
@@ -574,8 +579,18 @@ def onboard(
     return profile
 
 
-def choose_model(current: Optional[ModelSettings] = None) -> Optional[ModelSettings]:
+def choose_model(
+    current: Optional[ModelSettings] = None,
+    vision_only: bool = False,
+) -> Optional[ModelSettings]:
+    """Interactively choose a model.
+
+    When *vision_only* is True only models that accept image input are offered
+    (see providers/vision.py). Use it for the restoration/OCR model; the chat
+    model works on extracted text, so it keeps the full list.
+    """
     current = current or ModelSettings()
+    model_label = "Vision model" if vision_only else "Model"
     with ui.progress("Analyzing available model providers...") as reporter:
         statuses = {name: provider.status() for name, provider in provider_registry().items()}
         reporter.finish("Finished analyzing providers.")
@@ -616,17 +631,24 @@ def choose_model(current: Optional[ModelSettings] = None) -> Optional[ModelSetti
         (choice for choice in choices if choice.startswith(f"{default_provider} ")),
         choices[0],
     )
-    selected_label = ui.choose("Model provider", choices + ["Back"], default_label)
+    selected_label = ui.choose(f"{model_label} provider", choices + ["Back"], default_label)
     if selected_label == "Back":
         return None
     provider_name = selected_label.split(" ", 1)[0]
     status = statuses.get(provider_name)
-    model_choices = status.models if status and status.models else _recommended_models(provider_name)
+    all_model_choices = status.models if status and status.models else _recommended_models(provider_name)
+    if vision_only and all_model_choices:
+        with ui.progress("Checking which models support vision...") as reporter:
+            lookup = lookup_vision_models(provider_name, list(all_model_choices))
+            reporter.finish("Finished checking vision support.")
+        model_choices = _apply_vision_lookup(provider_name, all_model_choices, lookup)
+    else:
+        model_choices = all_model_choices
     manual_choice = "Enter exact model name manually"
     if model_choices:
         model_choices = list(dict.fromkeys(model_choices + [manual_choice, "Back"]))
         model = ui.choose(
-            "Model",
+            model_label,
             model_choices,
             current.model if current.model in model_choices else model_choices[0],
         )
@@ -694,7 +716,7 @@ def _prompt_missing_model(
         label = "vision model"
     if not ui.confirm(f"No usable {label} is configured. Add one now?", True):
         return False
-    chosen = choose_model(current)
+    chosen = choose_model(current, vision_only=(target != "chat"))
     if chosen is None:
         return False
     if target == "chat":
@@ -965,7 +987,7 @@ def run_guided(
             if prompted is False:
                 return None
         else:
-            chosen_model = choose_model(profile.model)
+            chosen_model = choose_model(profile.model, vision_only=True)
             if chosen_model is None:
                 return None
             profile.model = chosen_model
@@ -3524,7 +3546,7 @@ def _edit_profile_interactive(store: ConfigStore, name: str) -> None:
             profile.sync_translation_defaults()
         if section in {"Model and limits", "Everything"}:
             ui.note("Vision and chat models can be set independently in this section.")
-            chosen_model = choose_model(profile.model)
+            chosen_model = choose_model(profile.model, vision_only=True)
             if chosen_model is None:
                 continue
             profile.model = chosen_model
@@ -3645,11 +3667,15 @@ def model_command(action: str = "menu") -> None:
         if target == "List providers":
             action = "status"
         else:
-            settings = choose_model()
+            profile = store.load_default_profile()
+            is_vision_target = target != "Model (chat)"
+            settings = choose_model(
+                profile.model if is_vision_target else profile.chat_model,
+                vision_only=is_vision_target,
+            )
             if settings is None:
                 ui.status("info", "Model setup cancelled.")
                 return
-            profile = store.load_default_profile()
             if target == "Model (chat)":
                 profile.chat_model = settings
             else:
@@ -4230,6 +4256,41 @@ def clean_command(yes: bool = False) -> None:
         else:
             path.unlink(missing_ok=True)
     ui.write("Clean complete.")
+
+
+def _apply_vision_lookup(provider_name: str, all_models: List[str], lookup) -> List[str]:
+    """Turn a VisionLookup into the list of models to show, with a short note.
+
+    Trust provider metadata fully. Name rules are only a guess, and an unknown
+    provider cannot be judged, so in those cases never leave the user with an
+    empty list: fall back to every model plus a warning.
+    """
+    if lookup.models is None:
+        ui.note(
+            f"Cannot tell which {provider_name} models support vision. Showing all models; "
+            "pick one that accepts image input."
+        )
+        return list(all_models)
+    if lookup.source == SOURCE_API:
+        if not lookup.models:
+            ui.note(
+                f"{provider_name} reports no vision-capable models for this account. "
+                "Enter a model name manually if you know one that works."
+            )
+        else:
+            ui.note(f"Showing {len(lookup.models)} of {len(all_models)} models that support image input.")
+        return lookup.models
+    if lookup.source == SOURCE_NAME_RULES and not lookup.models:
+        ui.note(
+            f"No {provider_name} model names look vision-capable. Showing all models; "
+            "pick one that accepts image input."
+        )
+        return list(all_models)
+    ui.note(
+        f"Showing {len(lookup.models)} of {len(all_models)} models that look vision-capable "
+        f"by name ({provider_name} does not publish this). Use manual entry for others."
+    )
+    return lookup.models
 
 
 def _recommended_models(provider_name: str) -> List[str]:
