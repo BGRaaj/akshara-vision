@@ -24,7 +24,7 @@ def detect_blank_pages(file_path: Path, profile: AcceptanceProfile) -> List[Page
         with Image.open(file_path) as img:
             img_gray = img.convert("L")
             # Get pixel data
-            pixels = img_gray.getdata()
+            pixels = img_gray.tobytes()  # tobytes() is equivalent to getdata() for mode-L images
             total_pixels = len(pixels)
             if total_pixels == 0:
                 return exceptions
@@ -143,7 +143,7 @@ def compute_perceptual_hash(file_path: Path, hash_size: int = 8) -> Optional[str
         with Image.open(file_path) as img:
             img = img.resize((hash_size, hash_size), Image.Resampling.LANCZOS)
             img = img.convert("L")
-            pixels = list(img.getdata())
+            pixels = list(img.tobytes())  # tobytes() is equivalent to getdata() for mode-L images
             avg = sum(pixels) / len(pixels)
             bits = "".join(['1' if p > avg else '0' for p in pixels])
             hex_representation = "{0:0{1}x}".format(int(bits, 2), (hash_size * hash_size) // 4)
@@ -225,7 +225,7 @@ def detect_crop_risk(file_path: Path, profile: AcceptanceProfile) -> List[PageEx
             
             border_content_ratio = {}
             for name, region in borders.items():
-                pixels = list(region.getdata())
+                pixels = list(region.tobytes())  # tobytes() is equivalent to getdata() for mode-L images
                 # non-white pixels
                 dark_pixels = sum(1 for p in pixels if p < 250)
                 ratio = dark_pixels / len(pixels) if pixels else 0
